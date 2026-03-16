@@ -1,12 +1,5 @@
 """
 virtual_spring.launch.py
-
-Launches the virtual spring node with a config file.
-
-Usage:
-    ros2 launch virtual_spring_ros2 virtual_spring.launch.py \
-        urdf_path:=/path/to/robot.urdf \
-        config:=/path/to/springs.yaml
 """
 
 from launch import LaunchDescription
@@ -19,30 +12,33 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     urdf_path_arg = DeclareLaunchArgument(
         "urdf_path",
-        description="Absolute path to the robot URDF file.",
+        description="Path to the robot URDF or XACRO file.",
     )
 
     config_arg = DeclareLaunchArgument(
         "config",
         default_value=PathJoinSubstitution([
-            FindPackageShare("virtual_spring_ros2"),
+            FindPackageShare("springcontroller"),
             "config",
             "springs.yaml",
         ]),
-        description="Path to the spring configuration YAML.",
+        description="Path to the springs configuration YAML.",
     )
 
     node = Node(
-        package="virtual_spring_ros2",
-        executable="virtual_spring_node.py",
+        package="springcontroller",
+        executable="spring_node",
         name="virtual_spring_node",
         output="screen",
         parameters=[
-            {"urdf_path": LaunchConfiguration("urdf_path")},
-            LaunchConfiguration("config"),
+            {
+                "urdf_path":   LaunchConfiguration("urdf_path"),
+                "config_path": LaunchConfiguration("config"),
+            },
+            LaunchConfiguration("config"),  # also load as params-file for spring defs
         ],
         remappings=[
-            ("~/joint_states", "/joint_states"),
+            ("~/joint_states",  "/joint_states"),
             ("~/joint_torques", "/virtual_spring/joint_torques"),
         ],
     )

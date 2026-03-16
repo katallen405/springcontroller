@@ -1,4 +1,4 @@
-# virtual_spring_ros2
+# springcontroller
 
 A ROS 2 package implementing virtual spring impedance control for robot arms.
 Each spring pulls a point on a robot link toward a fixed target in world space,
@@ -43,7 +43,7 @@ Edit `config/springs.yaml` to define your springs:
 frames with:
 
 ```bash
-ros2 run virtual_spring_ros2 virtual_spring_node.py --ros-args \
+ros2 run springcontroller virtual_spring_node.py --ros-args \
   -p urdf_path:=/path/to/robot.urdf
 # Then: ros2 param get /virtual_spring_node link_names
 ```
@@ -51,7 +51,7 @@ ros2 run virtual_spring_ros2 virtual_spring_node.py --ros-args \
 ## Launch
 
 ```bash
-ros2 launch virtual_spring_ros2 virtual_spring.launch.py \
+ros2 launch springcontroller virtual_spring.launch.py \
   urdf_path:=/path/to/robot.urdf \
   config:=/path/to/springs.yaml
 ```
@@ -73,8 +73,8 @@ ros2 launch virtual_spring_ros2 virtual_spring.launch.py \
 ## Using the library directly
 
 ```python
-from virtual_spring_ros2.virtual_spring import VirtualSpring
-from virtual_spring_ros2.urdf_arm_configuration import URDFArmConfiguration
+from springcontroller.virtual_spring import VirtualSpring
+from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import numpy as np
 
 arm = URDFArmConfiguration("/path/to/robot.urdf", q=np.zeros(6))
