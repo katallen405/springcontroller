@@ -1,0 +1,5 @@
+Some useful test cases:
+
+q=[0,0]: end effector at [0, 0, -1.0]. A spring targeting [1, 0, -1] should produce a pure +X force, which should create torques on both joints.
+q=[1.57, 0]: link_1 points along +X, end effector at [1.0, 0, 0].
+q=[0, 1.57]: elbow bent 90°, end effector at [0.5, 0, -0.5].
