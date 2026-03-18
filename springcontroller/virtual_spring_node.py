@@ -33,7 +33,7 @@ springs.<n>.*     -- per-spring config (see config/springs.yaml)
 
 import os
 
-from typeguard import value
+#from typeguard import value
 
 from geometry_msgs import msg
 import rclpy

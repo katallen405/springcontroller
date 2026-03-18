@@ -27,7 +27,7 @@ def generate_launch_description():
 
     node = Node(
         package="springcontroller",
-        executable="spring_node",
+        executable="virtual_spring_node",
         name="virtual_spring_node",
         output="screen",
         parameters=[
