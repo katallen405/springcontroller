@@ -230,6 +230,7 @@ class VirtualSpring:
     # ------------------------------------------------------------------
 
     def compute_torques(self, arm: ArmConfiguration) -> np.ndarray:
+        print("computing torques")
         """
         Compute the generalized joint torques produced by this spring given
         the current arm configuration.
@@ -280,6 +281,7 @@ class VirtualSpring:
         if self.damping > 0.0:
             J = arm.get_jacobian(self.link_name, self.local_attachment_point)
             Jv = J[:3, :]                                    # translational part
+            print("jacobian", Jv)
             p_dot = Jv @ arm.joint_velocities                # world-space velocity
             f_damp = -self.damping * p_dot
             print(f"{self.name} damping force: {f_damp}")  # debug

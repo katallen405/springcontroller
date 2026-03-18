@@ -145,6 +145,15 @@ class VirtualSpringNode(Node):
             )
             self.get_logger().info(f"Listening for target updates on {topic}")
 
+            # and for the attachment points
+            topic = f"~/attachment/{spring.name}"
+            self.create_subscription(
+                PointStamped,
+                topic,
+                lambda msg, s=spring: self._attachment_cb(msg, s),
+                10,
+            )
+            
         # Services
         self._enable_srv = self.create_service(
             SetBool, "~/enable", self._enable_cb
@@ -237,6 +246,7 @@ class VirtualSpringNode(Node):
             self._arm.update_from_angles(q_arm, qdot)
             self.get_logger().info(f"Springs in collection: {len(self._springs)}, ids: {[s.name for s in self._springs]}")
             torques = self._springs.compute_total_torques(self._arm)
+            self.get_logger().info(f"Total torques: {torques}")
         except Exception as e:
             self.get_logger().error(f"Spring computation failed: {e}")
             return
@@ -254,6 +264,11 @@ class VirtualSpringNode(Node):
             f"Updated target for '{spring.name}': "
             f"[{p.x:.3f}, {p.y:.3f}, {p.z:.3f}]"
         )
+
+    def _attachment_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
+        p = msg.point
+        spring.local_attachment_point = np.array([p.x, p.y, p.z])    
+
     def _declare_or_ignore(self, name, default):
         try:
             self.declare_parameter(name, default)
