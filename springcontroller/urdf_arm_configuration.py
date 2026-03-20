@@ -53,6 +53,11 @@ class URDFArmConfiguration:
     def n_q(self) -> int:
         return self._model.nq
     
+    @property
+    def joint_names(self) -> list[str]:
+        """Joint names in pinocchio's ordering (index 0 is 'universe', skip it)."""
+        return [self._model.names[i] for i in range(1, self._model.njoints)]
+
     @classmethod
     def from_urdf(cls, urdf_path: str) -> "URDFArmConfiguration":
         """Construct with a zero joint configuration inferred from the model."""
@@ -80,7 +85,7 @@ class URDFArmConfiguration:
         R = self._data.oMf[frame_id].rotation
         p_offset = R @ np.asarray(local_point, dtype=float)
         for i in range(self._model.nv):
-            J[:3, i] += np.cross(J[3:, i], -p_offset)
+            J[:3, i] += np.cross(J[3:, i], p_offset)
 
 #        print(f"[get_jacobian] {link_name} Jv=\n{J[:3, :]}")
         return J

@@ -189,6 +189,9 @@ class VirtualSpringNode(Node):
             f"VirtualSpringNode ready. {len(self._springs)} spring(s) loaded."
         )
 
+        self.get_logger().info(f"nq={self._arm.n_q}, nv={self._arm.n_dof}")
+        self.get_logger().info(f"Joint names: {self._arm.joint_names}")
+        
     def _flatten_dict(self, d: dict, prefix: str = "") -> dict:
         """Flatten nested dict to dot-separated keys."""
         result = {}
@@ -238,14 +241,25 @@ class VirtualSpringNode(Node):
             self.get_logger().warn(
                 f"Expected {self._arm.n_dof} joints, got {len(msg.position)}. Skipping."
             )
+            self.get_logger().info(
+                f"Expected joint names are {self._arm.joint_names}")
             return
         q_arm = np.array(msg.position)
         qdot = np.array(msg.velocity) if msg.velocity else np.zeros(self._arm.n_dof)
         try:
             self._arm.update_from_angles(q_arm, qdot)
-            self.get_logger().info(f"Springs in collection: {len(self._springs)}, ids: {[s.name for s in self._springs]}")
+            #self.get_logger().info(f"Springs in collection: {len(self._springs)}, ids: {[s.name for s in self._springs]}")
             torques = self._springs.compute_total_torques(self._arm)
-            self.get_logger().info(f"Total torques: {torques}")
+            for spring in self._springs:
+                if spring._last_state is not None:
+                    self.get_logger().info(
+                        f"{spring.name} attachment: {spring._last_state.world_attachment_point}",
+                        throttle_duration_sec=1.0
+            )
+            self.get_logger().info(f"Total torques: {torques}",
+                                   throttle_duration_sec=1.0
+                                   )
+            
         except Exception as e:
             self.get_logger().error(f"Spring computation failed: {e}")
             return

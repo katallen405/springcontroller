@@ -23,6 +23,8 @@ setup(
     entry_points={
         "console_scripts": [
             "virtual_spring_node = springcontroller.virtual_spring_node:main",
+        "torque_relay = springcontroller.torque_relay:main",
         ],
+
     },
 )
