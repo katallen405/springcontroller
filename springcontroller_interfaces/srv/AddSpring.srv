@@ -5,6 +5,8 @@ float64 damping
 float64 rest_length
 float64[3] local_point
 float64[3] target
+float64 inner_radius
+float64 outer_radius
 ---
 bool success
 string message

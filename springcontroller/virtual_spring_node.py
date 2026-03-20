@@ -131,6 +131,10 @@ class VirtualSpringNode(Node):
             "\n  ".join(f"{i}: {self._arm.model.names[i]}" for i in range(self._arm.model.njoints))
             )
 
+        # Jacobian Debugging
+        for name in self._arm.link_names:
+            T = self._arm.get_link_transform(name)
+            print(f"{name}: {T[:3, 3]}")
         
         # Spring collection
         self._springs = SpringCollection()
@@ -205,7 +209,10 @@ class VirtualSpringNode(Node):
         self._declare_or_ignore(f"{prefix}.stiffness",   0.0)
         self._declare_or_ignore(f"{prefix}.damping",     0.0)
         self._declare_or_ignore(f"{prefix}.rest_length", 0.0)
-
+        self._declare_or_ignore(f"{prefix}.inner_radius", 0.0)
+        self._declare_or_ignore(f"{prefix}.outer_radius", 0.0)
+        
+  
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
             return default if val is None else val
@@ -221,6 +228,8 @@ class VirtualSpringNode(Node):
             damping=float(_get("damping", 0.0)),
             rest_length=float(_get("rest_length", 0.0)),
             name=name,
+            inner_radius=float(_get("inner_radius",0.0)),
+            outer_radius=float(_get("outer_radius",0.0)),
     )
         return spring
     
@@ -300,6 +309,8 @@ class VirtualSpringNode(Node):
                 stiffness=request.stiffness,
                 damping=request.damping,
                 rest_length=request.rest_length,
+                inner_radius=request.inner_radius,
+                outer_radius=request.outer_radius,
             )
 
             
@@ -318,6 +329,9 @@ class VirtualSpringNode(Node):
             f"{prefix}.stiffness":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
             f"{prefix}.damping":     (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
             f"{prefix}.rest_length": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
+            f"{prefix}.inner_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
+            f"{prefix}.outer_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
+            
 }
         for key, (ptype, value) in params.items():
             self._declare_or_ignore(key, value)
@@ -410,6 +424,8 @@ class VirtualSpringNode(Node):
                 f"{prefix}.stiffness",
                 f"{prefix}.damping",
                 f"{prefix}.rest_length",
+                f"{prefix}.inner_radius",
+                f"{prefix}.outer_radius",
         ]:
             try:
                 self.undeclare_parameter(key)

@@ -192,9 +192,11 @@ class VirtualSpring:
         stiffness: float,
         damping: float = 0.0,
         rest_length: float = 0.0,
+        inner_radius: float = 0.0,
+        outer_radius: float = 0.0,    
         enabled: bool = True,
-        name: Optional[str] = None,
-    ) -> None:
+        name: str = "",
+            ):
         self.link_name = link_name
         self.local_attachment_point = np.asarray(local_attachment_point, dtype=float)
         self.target_world_point = np.asarray(target_world_point, dtype=float)
@@ -203,7 +205,8 @@ class VirtualSpring:
         self.rest_length = rest_length
         self.enabled = enabled
         self.name = name or f"spring_{link_name}"
-
+        self.inner_radius = inner_radius
+        self.outer_radius = outer_radius
         # Validate shapes
         if self.local_attachment_point.shape != (3,):
             raise ValueError(
@@ -248,7 +251,7 @@ class VirtualSpring:
         """
         n_dof = arm.n_dof
         zero_torques = np.zeros(n_dof)
-        print(f"Computing torques for {self.name} (enabled={self.enabled})")  # debug
+        #print(f"Computing torques for {self.name} (enabled={self.enabled})")  # debug
         if not self.enabled:
             self._last_state = None
             print(f"{self.name} is disabled; returning zero torques.")
@@ -259,22 +262,25 @@ class VirtualSpring:
         p_local_h = np.append(self.local_attachment_point, 1.0)  # homogeneous
         p_world = (T @ p_local_h)[:3]                       # (3,)
 
-        print(f"{self.name} attachment point in world frame: {p_world}")  # debug
+        #print(f"{self.name} attachment point in world frame: {p_world}")  # debug
 
         # 2. Displacement and extension
         displacement = self.target_world_point - p_world    # points toward target
         extension = np.linalg.norm(displacement)
-        print(f"{self.name} displacement: {displacement}, extension: {extension}")  # debug
+        #print(f"{self.name} displacement: {displacement}, extension: {extension}")  # debug
 
         # 3. Spring force (Hooke's law with optional rest length)
-        if extension < 1e-12:
-            # Attachment point is exactly at target — no force direction
+        if extension <= self.inner_radius:
+            # Attachment point is inside allowable target range
             f_spring = np.zeros(3)
+        elif self.outer_radius > self.inner_radius and extension <=self.outer_radius:
+            t = (extension - self.inner_radius) / (self.outer_radius - self.inner_radius)
+            f_spring = self.stiffness * t * (extension - self.inner_radius) * direction
         else:
             direction = displacement / extension
             stretch = extension - self.rest_length          # can be negative
             f_spring = self.stiffness * stretch * direction
-        print(f"{self.name} spring force: {f_spring}")  # debug
+        #print(f"{self.name} spring force: {f_spring}")  # debug
 
         # 4. Damping force (opposes velocity of the attachment point)
         f_damp = np.zeros(3)
@@ -284,7 +290,7 @@ class VirtualSpring:
             print("jacobian", Jv)
             p_dot = Jv @ arm.joint_velocities                # world-space velocity
             f_damp = -self.damping * p_dot
-            print(f"{self.name} damping force: {f_damp}")  # debug
+           # print(f"{self.name} damping force: {f_damp}")  # debug
         # 5. Total force
         f_total = f_spring + f_damp
         print(f"{self.name} total force: {f_total}")  # debug
@@ -296,7 +302,7 @@ class VirtualSpring:
             Jv = J[:3, :]
 
         torques = Jv.T @ f_total                            # (n_dof,)
-        print(f"{self.name} joint torques: {torques}")  # debug
+        #print(f"{self.name} joint torques: {torques}")  # debug
         # 7. Cache state
         self._last_state = SpringState(
             world_attachment_point=p_world,
@@ -305,7 +311,7 @@ class VirtualSpring:
             force_world=f_total,
             torques=torques,
         )
-        print(f"{self.name} state cached: {self._last_state}")  # debug
+        #print(f"{self.name} state cached: {self._last_state}")  # debug
         return torques
 
     # ------------------------------------------------------------------
