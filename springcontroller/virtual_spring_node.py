@@ -18,16 +18,25 @@ Publications
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
     Update a spring's target at runtime.
 
+~/springs_updated (String)
+    Publishes when the list of springs is changed with add_spring or remove_spring (supports spring_viz, maybe later UI)
+
 Services
 --------
 ~/enable   (std_srvs/SetBool)
     Enable or disable all springs at once.
 
+~/add_spring
+    Add a spring (springcontroller_interfaces/AddSpring)
+
+~/remove_spring (springcontroller_interfaces/RemoveSpring)
+    Remove a spring from the torque calculations
+
+
 Parameters
 ----------
 urdf_path   : str  -- path to the robot URDF or XACRO file
 config_path : str  -- path to the springs YAML file (checked at startup)
-spring_names: list -- names of springs to load
 springs.<n>.*     -- per-spring config (see config/springs.yaml)
 """
 
@@ -47,7 +56,8 @@ from std_srvs.srv import SetBool
 from springcontroller.virtual_spring import VirtualSpring, SpringCollection
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
-
+from springcontroller_interfaces.srv import AddSpring, RemoveSpring
+from std_msgs.msg import String
 
 class VirtualSpringNode(Node):
 
@@ -120,6 +130,8 @@ class VirtualSpringNode(Node):
             f"nq={self._arm.n_q}, nv={self._arm.n_dof}\n  " +
             "\n  ".join(f"{i}: {self._arm.model.names[i]}" for i in range(self._arm.model.njoints))
             )
+
+        
         # Spring collection
         self._springs = SpringCollection()
         self._load_springs_from_params()
@@ -128,12 +140,22 @@ class VirtualSpringNode(Node):
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
         )
+        from std_msgs.msg import String
+        self._springs_updated_pub = self.create_publisher(String,
+                                            "~/springs_updated", 10)
 
         # Subscriptions
         self._js_sub = self.create_subscription(
             JointState, "~/joint_states", self._joint_state_cb, 10
         )
 
+        self._add_spring_srv = self.create_service(
+            AddSpring, "~/add_spring", self._add_spring_cb
+)
+
+        self._remove_spring_srv = self.create_service(
+            RemoveSpring, "~/remove_spring", self._remove_spring_cb
+)
         # Per-spring target update subscriptions
         for spring in self._springs:
             topic = f"~/target/{spring.name}"
@@ -174,66 +196,34 @@ class VirtualSpringNode(Node):
                 result[full_key] = v
         return result
 
-    def _load_springs_from_params(self) -> None:
-        """
-        Read spring definitions from ROS parameters.
-        Each spring is a parameter namespace, e.g.:
+    def _load_one_spring(self, name: str) -> VirtualSpring:
+        """Load a single spring by name from current parameters. Raises on error."""
+        prefix = f"springs.{name}"
+        self._declare_or_ignore(f"{prefix}.link_name",   "")
+        self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
+        self._declare_or_ignore(f"{prefix}.target",      [0.0, 0.0, 0.0])
+        self._declare_or_ignore(f"{prefix}.stiffness",   0.0)
+        self._declare_or_ignore(f"{prefix}.damping",     0.0)
+        self._declare_or_ignore(f"{prefix}.rest_length", 0.0)
 
-            springs.tip_spring.link_name: "tool0"
-            springs.tip_spring.local_point: [0.0, 0.0, 0.1]
-            springs.tip_spring.target: [0.5, 0.0, 0.8]
-            springs.tip_spring.stiffness: 120.0
-            springs.tip_spring.damping: 8.0
-            springs.tip_spring.rest_length: 0.0
-        """
-        
-        self._declare_or_ignore("spring_names", [""])
-        spring_names = (
-            self.get_parameter("spring_names")
-            .get_parameter_value()
-            .string_array_value
-        )
-        self.get_logger().info(f"Spring names from params: {list(spring_names)}")
+        def _get(key, default=None, _prefix=prefix):
+            val = self.get_parameter(f"{_prefix}.{key}").value
+            return default if val is None else val
 
-        for name in spring_names:
-            if not name:
-                continue
-            prefix = f"springs.{name}"
+        link_name = _get("link_name")
+        self._arm.validate_link_name(link_name)  # raises ValueError if bad
 
-            self._declare_or_ignore(f"{prefix}.link_name",   "")
-            self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
-            self._declare_or_ignore(f"{prefix}.target",      [0.0, 0.0, 0.0])
-            self._declare_or_ignore(f"{prefix}.stiffness",   0.0)
-            self._declare_or_ignore(f"{prefix}.damping",     0.0)
-            self._declare_or_ignore(f"{prefix}.rest_length", 0.0)
-
-            def _get(key, default=None, _prefix=prefix):
-                val = self.get_parameter(f"{_prefix}.{key}").value
-                return default if val is None else val
-
-            link_name = _get("link_name")
-
-            # Validate link name against URDF before accepting the spring
-            try:
-                self._arm.validate_link_name(link_name)
-            except ValueError as e:
-                self.get_logger().fatal(
-                    f"Spring '{name}' references an invalid link: {e}"
-                )
-                raise RuntimeError(str(e)) from e
-
-            spring = VirtualSpring(
-                link_name=link_name,
-                local_attachment_point=np.array(_get("local_point", [0, 0, 0])),
-                target_world_point=np.array(_get("target", [0, 0, 0])),
-                stiffness=float(_get("stiffness", 0.0)),
-                damping=float(_get("damping", 0.0)),
-                rest_length=float(_get("rest_length", 0.0)),
-                name=name,
-            )
-            self._springs.add(spring)
-            self.get_logger().info(f"Loaded spring: {spring}")
-
+        spring = VirtualSpring(
+            link_name=link_name,
+            local_attachment_point=np.array(_get("local_point", [0, 0, 0])),
+            target_world_point=np.array(_get("target", [0, 0, 0])),
+            stiffness=float(_get("stiffness", 0.0)),
+            damping=float(_get("damping", 0.0)),
+            rest_length=float(_get("rest_length", 0.0)),
+            name=name,
+    )
+        return spring
+    
     def _joint_state_cb(self, msg: JointState) -> None:
         if len(msg.position) != self._arm.n_dof:
             self.get_logger().warn(
@@ -286,6 +276,157 @@ class VirtualSpringNode(Node):
         self.get_logger().info(response.message)
         return response
 
+    def _add_spring_cb(
+        self, request: AddSpring.Request, response: AddSpring.Response
+) -> AddSpring.Response:
+        name = request.name.strip()
+        if not name:
+            response.success = False
+            response.message = "Spring name must not be empty."
+            return response
+
+        if any(s.name == name for s in self._springs):
+            response.success = False
+            response.message = f"Spring '{name}' already exists."
+            return response
+
+        try:
+            self._arm.validate_link_name(request.link_name)
+            spring = VirtualSpring(
+                name=name,
+                link_name=request.link_name,
+                local_attachment_point=np.array(request.local_point),
+                target_world_point=np.array(request.target),
+                stiffness=request.stiffness,
+                damping=request.damping,
+                rest_length=request.rest_length,
+            )
+
+            
+        except ValueError as e:
+            response.success = False
+            response.message = str(e)
+            return response
+
+        # Mirror the parameter namespace so external tools (e.g. visualisation)
+        # can see this spring the same way as one loaded from YAML
+        prefix = f"springs.{name}"
+        params = {
+            f"{prefix}.link_name":   (rclpy.parameter.Parameter.Type.STRING,       request.link_name),
+            f"{prefix}.local_point": (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
+            f"{prefix}.target":      (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
+            f"{prefix}.stiffness":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
+            f"{prefix}.damping":     (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
+            f"{prefix}.rest_length": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
+}
+        for key, (ptype, value) in params.items():
+            self._declare_or_ignore(key, value)
+            self.set_parameters([rclpy.parameter.Parameter(key, ptype, value)])
+            
+        # Also add the name to spring_names so it shows up if someone lists params
+        current_names = list(
+            self.get_parameter("spring_names").get_parameter_value().string_array_value
+    )
+        if name not in current_names:
+            self.set_parameters([
+                rclpy.parameter.Parameter("spring_names",
+                                          rclpy.Parameter.Type.STRING_ARRAY,
+                                          current_names + [name])
+            ])
+
+        spring = VirtualSpring(
+            name=name,
+            link_name=request.link_name,
+            local_attachment_point=np.array(request.local_point),
+            target_world_point=np.array(request.target),
+            stiffness=request.stiffness,
+            damping=request.damping,
+            rest_length=request.rest_length,
+        )
+
+        self._springs.add(spring)
+        for topic, cb in [
+            (f"~/target/{name}",     lambda msg, s=spring: self._target_cb(msg, s)),
+            (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
+    ]:
+            self.create_subscription(PointStamped, topic, cb, 10)
+
+        response.success = True
+        response.message = f"Spring '{name}' added."
+        response.id = len(self._springs) - 1
+        self.get_logger().info(response.message)
+        self._publish_springs_updated()
+        return response
+
+    def _load_springs_from_params(self) -> None:
+        self._declare_or_ignore("spring_names", [""])
+        spring_names = (
+            self.get_parameter("spring_names")
+            .get_parameter_value()
+            .string_array_value
+        )
+        self.get_logger().info(f"Spring names from params: {list(spring_names)}")
+        for name in spring_names:
+            if not name:
+                continue
+            try:
+                spring = self._load_one_spring(name)
+            except (ValueError, RuntimeError) as e:
+                self.get_logger().fatal(f"Spring '{name}' failed to load: {e}")
+                raise
+            self._springs.add(spring)
+            self.get_logger().info(f"Loaded spring: {spring}")
+
+    def _remove_spring_cb(
+        self, request: RemoveSpring.Request, response: RemoveSpring.Response
+) -> RemoveSpring.Response:
+        name = request.name.strip()
+
+        if not any(s.name == name for s in self._springs):
+            response.success = False
+            response.message = f"Spring '{name}' not found."
+            return response
+        
+        self._springs.remove(name)
+        
+        # Remove from spring_names parameter
+        current_names = list(
+            self.get_parameter("spring_names").get_parameter_value().string_array_value
+        )
+        self.set_parameters([
+            rclpy.parameter.Parameter(
+                "spring_names",
+                rclpy.parameter.Parameter.Type.STRING_ARRAY,
+                [n for n in current_names if n != name]
+            )
+        ])
+
+        # Undeclare the spring's parameter namespace
+        prefix = f"springs.{name}"
+        for key in [
+                f"{prefix}.link_name",
+                f"{prefix}.local_point",
+                f"{prefix}.target",
+                f"{prefix}.stiffness",
+                f"{prefix}.damping",
+                f"{prefix}.rest_length",
+        ]:
+            try:
+                self.undeclare_parameter(key)
+            except rclpy.exceptions.ParameterNotDeclaredException:
+                pass
+
+        response.success = True
+        response.message = f"Spring '{name}' removed."
+        self.get_logger().info(response.message)
+        self._publish_springs_updated()
+        return response
+
+    def _publish_springs_updated(self) -> None:
+        import json
+        msg = String()
+        msg.data = json.dumps([s.name for s in self._springs])
+        self._springs_updated_pub.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)

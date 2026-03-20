@@ -36,7 +36,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
-
+from std_msgs.msg import String
+import json
 
 # ---------------------------------------------------------------------------
 # Forward kinematics (XZ plane, joints rotate around Y)
@@ -95,6 +96,14 @@ class ArmSimNode(Node):
             self._torque_cb,
             10,
         )
+        self.create_subscription(
+            String,
+            "/virtual_spring_node/springs_updated",
+            self._springs_updated_cb,
+            10,
+        )
+
+        self._springs_changed_callback = None # set by main after setup
 
         self.create_timer(0.01, self._step)      # integrate at 100 Hz
         self.create_timer(0.02, self._publish)   # publish at 50 Hz
@@ -178,6 +187,11 @@ class ArmSimNode(Node):
             })
 
         return springs if springs else None
+    def _springs_updated_cb(self, msg:String) -> None:
+        if self._springs_changed_callback is not None:
+            spring_names = json.loads(msg.data)
+            self._springs_changed_callback(spring_names)
+            
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -198,7 +212,7 @@ def main():
     parser = argparse.ArgumentParser()
     # todo- fetch this from URDF?
     parser.add_argument("--link-lengths", nargs=2, type=float, default=[0.5, 0.5])
-    parser.add_argument("--velocity-gain", type=float, default=0.5,
+    parser.add_argument("--velocity-gain", type=float, default=0.05,
                         help="rad/s per N·m")
     parser.add_argument("--springs", nargs="*", default=[],
                         help="frame:lx,ly,lz:tx,ty,tz  (display only)")
@@ -253,7 +267,7 @@ def main():
         att_dot,    = ax.plot([], [], "o",  color=c, markersize=10, zorder=6)
         tgt_dot,    = ax.plot([s["target_xz"][0]], [s["target_xz"][1]],
                               "*", color=c, markersize=14, zorder=6,
-                              label=f"Spring {i+1} target")
+                              label=f"{s['name']} target")
         spring_line,= ax.plot([], [], "--", color=c, linewidth=1.5,
                               alpha=0.7, zorder=4)
         spring_artists.append({
@@ -266,7 +280,48 @@ def main():
 
     info = ax.text(0.02, 0.97, "", transform=ax.transAxes, color="white",
                    fontsize=9, va="top", fontfamily="monospace")
+    def on_springs_changed(spring_names):
+        # Re-read full definitions from param server
+        new_springs = node.read_springs_from_params()
+        if new_springs is None:
+            return
+    
+        # Remove artists for springs that no longer exist
+        current_names = {s["name"] for s in springs}
+        new_names = {s["name"] for s in new_springs}
+    
+        for name in current_names - new_names:
+            idx = next(i for i, s in enumerate(springs) if s["name"] == name)
+            sa = spring_artists.pop(idx)
+            springs.pop(idx)
+            sa["att_dot"].remove()
+            sa["tgt_dot"].remove()
+            sa["spring_line"].remove()
+            if sa["arrow"] is not None:
+                sa["arrow"].remove()
+    
+        # Add artists for new springs
+        for s in new_springs:
+            if s["name"] not in {sp["name"] for sp in springs}:
+                springs.append(s)
+                c = colors[len(spring_artists) % len(colors)]
+                att_dot,     = ax.plot([], [], "o",  color=c, markersize=10, zorder=6)
+                tgt_dot,     = ax.plot([s["target_xz"][0]], [s["target_xz"][1]],
+                                       "*", color=c, markersize=14, zorder=6,
+                                       label=f"{s['name']} target")
+                spring_line, = ax.plot([], [], "--", color=c, linewidth=1.5,
+                                       alpha=0.7, zorder=4)
+                spring_artists.append({
+                    "att_dot": att_dot, "tgt_dot": tgt_dot,
+                    "spring_line": spring_line, "color": c, "arrow": None,
+                })
+            node.watch_targets([s for s in new_springs if s["name"] not in current_names])
+    
+        ax.legend(loc="upper right", facecolor="#1a1a2e", edgecolor="#333355",
+              labelcolor="white", fontsize=9)
 
+    node._springs_changed_callback = on_springs_changed
+    
     def update(_frame):
         q, qdot = node.get_state()
         print("state q=", q, "qdot=", qdot)

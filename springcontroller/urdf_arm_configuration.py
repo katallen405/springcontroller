@@ -82,6 +82,7 @@ class URDFArmConfiguration:
         for i in range(self._model.nv):
             J[:3, i] += np.cross(J[3:, i], -p_offset)
 
+#        print(f"[get_jacobian] {link_name} Jv=\n{J[:3, :]}")
         return J
     
 
