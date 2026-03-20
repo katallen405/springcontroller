@@ -1,0 +1,11 @@
+string name
+string link_name
+float64 stiffness
+float64 damping
+float64 rest_length
+float64[3] local_point
+float64[3] target
+---
+bool success
+string message
+int32 id
