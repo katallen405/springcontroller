@@ -270,6 +270,7 @@ class VirtualSpring:
         #print(f"{self.name} displacement: {displacement}, extension: {extension}")  # debug
 
         # 3. Spring force (Hooke's law with optional rest length)
+        direction = displacement / extension
         if extension <= self.inner_radius:
             # Attachment point is inside allowable target range
             f_spring = np.zeros(3)
@@ -277,31 +278,28 @@ class VirtualSpring:
             t = (extension - self.inner_radius) / (self.outer_radius - self.inner_radius)
             f_spring = self.stiffness * t * (extension - self.inner_radius) * direction
         else:
-            direction = displacement / extension
+
             stretch = extension - self.rest_length          # can be negative
             f_spring = self.stiffness * stretch * direction
         #print(f"{self.name} spring force: {f_spring}")  # debug
 
         # 4. Damping force (opposes velocity of the attachment point)
         f_damp = np.zeros(3)
+        J = arm.get_jacobian(self.link_name, self.local_attachment_point)
+        Jv = J[:3, :]                                    # translational part
+        #print("jacobian", Jv)
+
         if self.damping > 0.0:
-            J = arm.get_jacobian(self.link_name, self.local_attachment_point)
-            Jv = J[:3, :]                                    # translational part
-            print("jacobian", Jv)
-            p_dot = Jv @ arm.joint_velocities                # world-space velocity
+            p_dot = Jv @ arm.joint_velocities # world-space velocity
             f_damp = -self.damping * p_dot
-           # print(f"{self.name} damping force: {f_damp}")  # debug
         # 5. Total force
         f_total = f_spring + f_damp
-        #print(f"{self.name} total force: {f_total}")  # debug
 
         # 6. Joint torques via Jacobian transpose
         if self.damping == 0.0:
-            # Jacobian may not have been fetched yet
-            J = arm.get_jacobian(self.link_name, self.local_attachment_point)
-            Jv = J[:3, :]
-
+            pass
         torques = Jv.T @ f_total                            # (n_dof,)
+
         #print(f"{self.name} joint torques: {torques}")  # debug
         # 7. Cache state
         self._last_state = SpringState(

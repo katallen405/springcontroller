@@ -74,6 +74,7 @@ class URDFArmConfiguration:
 
     def get_jacobian(self, link_name: str, local_point: np.ndarray) -> np.ndarray:
         frame_id = self._model.getFrameId(link_name)
+        # Get the Jacobian at the frame origin
         J = pin.getFrameJacobian(
             self._model,
             self._data,
@@ -81,13 +82,23 @@ class URDFArmConfiguration:
             pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
         ).copy()   # (6, n_dof)
 
-        # Shift Jacobian from frame origin to local_point
-        R = self._data.oMf[frame_id].rotation
-        p_offset = R @ np.asarray(local_point, dtype=float)
-        for i in range(self._model.nv):
-            J[:3, i] += np.cross(J[3:, i], p_offset)
+        # Adjust for local_point offset if non-zero
+        # local_point is in the link's local frame, rotate it to world frame
+        T = self._data.oMf[frame_id]
+        p_world = T.rotation @ local_point  # offset in world frame
+        
+        # Skew-symmetric matrix of the offset
+        # Jp = Jv + skew(p) * Jw  (translational part correction)
+        px, py, pz = p_world
+        skew_p = np.array([
+            [ 0,  -pz,  py],
+            [ pz,   0, -px],
+            [-py,  px,   0],
+        ])
 
-#        print(f"[get_jacobian] {link_name} Jv=\n{J[:3, :]}")
+        # Correct the translational rows (top 3) using the angular rows (bottom 3)
+        J[:3, :] += skew_p @ J[3:, :]
+
         return J
     
 

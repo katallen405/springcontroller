@@ -1,0 +1,11 @@
+torque_relay:
+  ros__parameters:
+    command_topic: "/forward_effort_controller/commands"
+    torque_topic: "/virtual_spring/joint_torques"
+    joint_order:
+      - ur3e_shoulder_pan_joint
+      - ur3e_shoulder_lift_joint
+      - ur3e_elbow_joint
+      - ur3e_wrist_1_joint
+      - ur3e_wrist_2_joint
+      - ur3e_wrist_3_joint

@@ -16,36 +16,48 @@ from std_msgs.msg import Float64MultiArray
 class TorqueRelay(Node):
     def __init__(self):
         super().__init__("torque_relay")
+        self.declare_parameter("joint_order", [""])  # robot-specific order
+        self.declare_parameter("command_topic", "/forward_effort_controller/commands") # where to publish torques, should be specified in the config file
 
-        self.declare_parameter("n_joints", 7)
-        self._n_joints = self.get_parameter("n_joints").value
+        self._joint_order = list(
+            self.get_parameter("joint_order").get_parameter_value().string_array_value
+        )
+        if not self._joint_order or self._joint_order == [""]:
+            self.get_logger().fatal("Parameter 'joint_order' must be set.")
+            raise RuntimeError("joint_order not set")
 
-        self._pub = self.create_publisher(
-            Float64MultiArray,
-            "/forward_effort_controller/commands",
-            10,
-        )
-        self._sub = self.create_subscription(
-            JointState,
-            "/virtual_spring/joint_torques",
-            self._cb,
-            10,
-        )
+        self.declare_parameter("torque_topic", "/virtual_spring/joint_torques")
+        torque_topic = self.get_parameter("torque_topic").get_parameter_value().string_value
+
+        command_topic = self.get_parameter("command_topic").get_parameter_value().string_value # where to publish torques
+
+        self.springtorques_sub = self.create_subscription(JointState, torque_topic, self.springtorques_cb, 10)
+
         self.get_logger().info(
             f"Relaying /virtual_spring/joint_torques -> "
-            f"/forward_effort_controller/commands ({self._n_joints} joints)"
+            f"/forward_effort_controller/commands "
+            f"({len(self._joint_order)} joints: {self._joint_order})"
+        )
+        
+        self.torque_pub = self.create_publisher(
+            Float64MultiArray,
+            command_topic,
+            10,
+        )
+        
+
+        self.get_logger().info(
+            f"Relaying /virtual_spring/joint_torques -> "
+            f"/forward_effort_controller/commands {self._joint_order} joints)"
         )
 
-    def _cb(self, msg: JointState) -> None:
-        effort = list(msg.effort[:self._n_joints])
 
-        # Pad with zeros if fewer torques than expected
-        if len(effort) < self._n_joints:
-            effort += [0.0] * (self._n_joints - len(effort))
-
+    def springtorques_cb(self, msg: JointState) -> None:
+        name_to_effort = dict(zip(msg.name, msg.effort))
+        effort = [name_to_effort.get(n, 0.0) for n in self._joint_order]
         out = Float64MultiArray()
         out.data = effort
-        self._pub.publish(out)
+        self.torque_pub.publish(out)
 
 
 def main(args=None):

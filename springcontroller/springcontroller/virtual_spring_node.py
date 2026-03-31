@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/kat/ros_venv/bin/python3
 """
 virtual_spring_node.py
 
@@ -59,6 +59,7 @@ import yaml
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring
 from std_msgs.msg import String
 
+
 class VirtualSpringNode(Node):
 
     def __init__(self):
@@ -68,6 +69,7 @@ class VirtualSpringNode(Node):
         self.declare_parameter("urdf_path", "")
         self.declare_parameter("config_path", "")
         self.declare_parameter("publish_rate_hz", 100.0)
+        
 
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         if not urdf_path:
@@ -122,6 +124,8 @@ class VirtualSpringNode(Node):
             self.get_logger().fatal(f"Failed to load URDF '{urdf_path}': {e}")
             raise RuntimeError(f"Failed to load URDF: {e}") from e
 
+        self._joint_order = None
+
         self.get_logger().info(
             f"URDF loaded. {self._arm.n_dof} DOF. "
             f"Available frames:\n  " + "\n  ".join(sorted(self._arm.link_names))
@@ -134,7 +138,8 @@ class VirtualSpringNode(Node):
         # Jacobian Debugging
         for name in self._arm.link_names:
             T = self._arm.get_link_transform(name)
-            print(f"{name}: {T[:3, 3]}")
+            #print(f"{name}: {T[:3, 3]}")
+
         
         # Spring collection
         self._springs = SpringCollection()
@@ -150,7 +155,7 @@ class VirtualSpringNode(Node):
 
         # Subscriptions
         self._js_sub = self.create_subscription(
-            JointState, "~/joint_states", self._joint_state_cb, 10
+            JointState, "/joint_states", self._joint_state_cb, 10
         )
 
         self._add_spring_srv = self.create_service(
@@ -235,41 +240,65 @@ class VirtualSpringNode(Node):
             outer_radius=float(_get("outer_radius",0.0)),
     )
         return spring
-    
     def _joint_state_cb(self, msg: JointState) -> None:
+    # Build joint reordering maps on first message
+        if self._joint_order is None:
+            
+            pinocchio_names = self._arm.joint_names  # list in pinocchio order
+            ros_names = list(msg.name) # from the UR3e these come in in a bizarre order, match names to catch issues
+            self.get_logger().info(f"pinocchio_names {pinocchio_names} ros_names {ros_names}")
+            self.get_logger().info(f"ros_message{msg}")
+            try:
+                # For each pinocchio joint, find its index in the ROS message
+                self._joint_order = [ros_names.index(n) for n in pinocchio_names]
+                self.get_logger().info(f"Joint order map (ROS->Pinocchio): {list(zip(pinocchio_names, self._joint_order))}")
+                # For each ROS joint, find its index in the pinocchio torques array
+                self._torque_order = [pinocchio_names.index(n) for n in ros_names]
+                self.get_logger().info(f"Torque order map (Pinocchio->ROS): {list(zip(ros_names, self._torque_order))}")
+            except ValueError as e:
+                self.get_logger().error(f"Joint name mismatch: {e}. ROS names: {ros_names}, Pinocchio names: {pinocchio_names}")
+                return
+
         if len(msg.position) != self._arm.n_dof:
             self.get_logger().warn(
                 f"Expected {self._arm.n_dof} joints, got {len(msg.position)}. Skipping."
-            )
-            self.get_logger().info(
-                f"Expected joint names are {self._arm.joint_names}")
+        )
             return
-        q_arm = np.array(msg.position)
-        qdot = np.array(msg.velocity) if msg.velocity else np.zeros(self._arm.n_dof)
+
+        # Reorder positions and velocities to match Pinocchio's joint ordering
+        pos = np.array(msg.position)
+        vel = np.array(msg.velocity) if msg.velocity else np.zeros(self._arm.n_dof)
+        q_arm = pos[self._joint_order]
+        qdot  = vel[self._joint_order]
+        
         try:
             self._arm.update_from_angles(q_arm, qdot)
-            #self.get_logger().info(f"Springs in collection: {len(self._springs)}, ids: {[s.name for s in self._springs]}")
             torques = self._springs.compute_total_torques(self._arm)
             for spring in self._springs:
                 if spring._last_state is not None:
                     self.get_logger().info(
                         f"{spring.name} attachment: {spring._last_state.world_attachment_point}",
                         throttle_duration_sec=1.0
-            )
-            self.get_logger().info(f"Total torques: {torques}",
-                                   throttle_duration_sec=1.0
-                                   )
-            
+                )
+                    self.get_logger().info(
+                        f"{spring.name} displacement: {spring._last_state.displacement} "
+                        f"extension: {spring._last_state.extension:.4f}m",
+                        throttle_duration_sec=1.0
+                )
+            self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
         except Exception as e:
             self.get_logger().error(f"Spring computation failed: {e}")
             return
 
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()
-        out.name   = list(msg.name)
+        out.name   = self._arm.joint_names
         out.effort = torques.tolist()
         self._torque_pub.publish(out)
-    
+
+        T = self._arm.get_link_transform("ur3e_tool0")
+        self.get_logger().info(f"EE position: {T[:3, 3]}", throttle_duration_sec=1.0)
+
     def _target_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
         spring.move_target(np.array([p.x, p.y, p.z]))
@@ -343,8 +372,8 @@ class VirtualSpringNode(Node):
             f"{prefix}.stiffness":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
             f"{prefix}.damping":     (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
             f"{prefix}.rest_length": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
-            f"{prefix}.inner_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
-            f"{prefix}.outer_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.rest_length),
+            f"{prefix}.inner_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.inner_radius),
+            f"{prefix}.outer_radius": (rclpy.parameter.Parameter.Type.DOUBLE,       request.outer_radius),
             
 }
         for key, (ptype, value) in params.items():
@@ -457,6 +486,8 @@ class VirtualSpringNode(Node):
         msg = String()
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
+
+
 
 def main(args=None):
     rclpy.init(args=args)
