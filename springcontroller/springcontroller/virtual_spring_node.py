@@ -59,6 +59,9 @@ import yaml
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring
 from std_msgs.msg import String
 
+import collections
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 class VirtualSpringNode(Node):
 
@@ -69,7 +72,7 @@ class VirtualSpringNode(Node):
         self.declare_parameter("urdf_path", "")
         self.declare_parameter("config_path", "")
         self.declare_parameter("publish_rate_hz", 100.0)
-        
+        self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")        
 
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         if not urdf_path:
@@ -196,6 +199,12 @@ class VirtualSpringNode(Node):
 
         self.get_logger().info(f"nq={self._arm.n_q}, nv={self._arm.n_dof}")
         self.get_logger().info(f"Joint names: {self._arm.joint_names}")
+
+
+
+        # Storage: {spring_name: {'times': [], 'extensions': []}}
+        self.spring_data = collections.defaultdict(lambda: {'times': [], 'extensions': [], 'torques':[]})
+        self.start_time = None
         
     def _flatten_dict(self, d: dict, prefix: str = "") -> dict:
         """Flatten nested dict to dot-separated keys."""
@@ -272,6 +281,15 @@ class VirtualSpringNode(Node):
         qdot  = vel[self._joint_order]
         
         try:
+            # Initialize start time on first callback
+            if self.start_time is None:
+                self.start_time = self.get_clock().now()
+
+            # update the time
+            elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
+                
+            
+            # update the joint angles from the arm
             self._arm.update_from_angles(q_arm, qdot)
             torques = self._springs.compute_total_torques(self._arm)
             for spring in self._springs:
@@ -280,12 +298,20 @@ class VirtualSpringNode(Node):
                         f"{spring.name} attachment: {spring._last_state.world_attachment_point}",
                         throttle_duration_sec=1.0
                 )
+                    
                     self.get_logger().info(
                         f"{spring.name} displacement: {spring._last_state.displacement} "
                         f"extension: {spring._last_state.extension:.4f}m",
                         throttle_duration_sec=1.0
-                )
-            self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
+                    )
+
+
+                    # Append to time-series
+                    self.spring_data[spring.name]['times'].append(elapsed)
+                    self.spring_data[spring.name]['extensions'].append(spring._last_state.extension)
+                    self.spring_data[spring.name]['torques'].append(spring._last_state.torques)
+
+                    self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
         except Exception as e:
             self.get_logger().error(f"Spring computation failed: {e}")
             return
@@ -487,8 +513,37 @@ class VirtualSpringNode(Node):
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
 
+    def plot_spring_extensions(self):
+        num_springs = len(self.spring_data)
+        fig, axes = plt.subplots(num_springs, 2, figsize=(14, 4 * num_springs), squeeze=False)
 
+        for row, (name, data) in enumerate(self.spring_data.items()):
+            # --- Left column: extension ---
+            axes[row, 0].plot(data['times'], data['extensions'])
+            axes[row, 0].set_title(f"{name} — extension")
+            axes[row, 0].set_xlabel('Time (s)')
+            axes[row, 0].set_ylabel('Extension (m)')
+            axes[row, 0].grid(True)
 
+            # --- Right column: torques (one line per DOF) ---
+            torques_over_time = np.array(data['torques'])  # shape: (n_timesteps, n_dof)
+            for dof_idx in range(torques_over_time.shape[1]):
+                joint_name = self._arm.joint_names[dof_idx]
+                axes[row, 1].plot(data['times'], torques_over_time[:, dof_idx], label=joint_name)
+            axes[row, 1].set_title(f"{name} — torques")
+            axes[row, 1].set_xlabel('Time (s)')
+            axes[row, 1].set_ylabel('Torque (Nm)')
+            axes[row, 1].legend(fontsize='small')
+            axes[row, 1].grid(True)
+
+        plt.suptitle('Spring Data Over Time', fontsize=14)
+        plt.tight_layout()
+        self.get_logger().info(f"about to save")
+        plot_path = self.get_parameter("plot_output_path").get_parameter_value().string_value
+        fig.savefig(plot_path, dpi=150)
+        self.get_logger().info(f"Plot saved to {plot_path}")
+        plt.show()
+        
 def main(args=None):
     rclpy.init(args=args)
     node = VirtualSpringNode()
@@ -497,6 +552,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.plot_spring_extensions()
         node.destroy_node()
         rclpy.shutdown()
 
