@@ -180,8 +180,12 @@ class VirtualSpring:
     enabled : bool, optional
         If False the spring produces zero force. Useful for toggling without
         removing the object. Default True.
-    name : str, optional
+    name : str
         Human-readable label for logging / debugging.
+    inner_radius: float, optional
+        inside of the deadband (inside this radius the spring will be active, outside it will not exert force until it reaches outer_radius
+    outer_radius: float, optional
+        outside of the deadband (outside this radius the spring will be active)
     """
 
     def __init__(

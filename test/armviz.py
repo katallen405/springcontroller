@@ -41,6 +41,16 @@ latest_q    = pin.neutral(model)
 springs     = {}   # name -> {"target": np.array|None, "link_name": str}
 target_subs = {}   # name -> rclpy subscription (kept alive)
 
+show_frames = False  # toggled via 'f' keypress in the terminal
+
+def get_all_frames():
+    """Return list of (frame_name, frame_id) for every non-joint frame."""
+    return [
+        (model.frames[i].name, i)
+        for i in range(model.nframes)
+        if model.frames[i].type != pin.FrameType.JOINT
+    ]
+
 # ---------------------------------------------------------------------------
 # Parameter helpers
 # ---------------------------------------------------------------------------
@@ -157,13 +167,15 @@ def springs_updated_cb(msg):
 # MeshCat drawing
 # ---------------------------------------------------------------------------
 
+
+
 def draw_springs(q):
     pin.forwardKinematics(model, data, q)
     pin.updateFramePlacements(model, data)
 
     for name, spring in springs.items():
         target    = spring.get("target")
-        link_name = spring.get("link_name") or "ur3e_tool0"
+        link_name = spring.get("link_name")
 
         # Attachment point from FK
         frame_id = model.getFrameId(link_name)
@@ -206,6 +218,30 @@ def draw_springs(q):
                   f"geometry_msgs/msg/PointStamped "
                   f"'{{header: {{frame_id: world}}, point: {{x: 0.0, y: 0.0, z: 0.5}}}}'")
 
+def draw_frames(q):
+    """Draw all available attachment frames as black dots with name labels."""
+    if not show_frames:
+        viz.viewer["frames"].delete()
+        return
+
+    pin.forwardKinematics(model, data, q)
+    pin.updateFramePlacements(model, data)
+
+    for frame_name, frame_id in get_all_frames():
+        if frame_id >= len(data.oMf):
+            continue
+        pos = data.oMf[frame_id].translation.copy()
+
+        # Black dot at frame origin
+        T = np.eye(4)
+        T[:3, 3] = pos
+        viz.viewer[f"frames/{frame_name}/dot"].set_object(
+            g.Sphere(0.02),
+            g.MeshLambertMaterial(color=0x000000, transparent=False)
+        )
+        viz.viewer[f"frames/{frame_name}/dot"].set_transform(T)
+
+  
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -229,11 +265,41 @@ print(f"  Joint states:    {JOINT_STATES}")
 print(f"  Springs updates: {SPRINGS_TOPIC}")
 print("Waiting for springs from virtual_spring_node...")
 
+import threading, sys, tty, termios
+
+def _key_listener():
+    """Press 'f' to toggle frame display on/off."""
+    global show_frames
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == 'f':
+                show_frames = not show_frames
+                state = "ON" if show_frames else "OFF"
+                sys.stdout.write(f"\r\n[viz] frame display: {state}\r\n")
+                if show_frames:
+                    print("[viz] available frames:")
+                    for name, fid in get_all_frames():
+                        sys.stdout.write(f"  - {name}  (id={fid})\r\n")
+                    sys.stdout.flush()
+            elif ch in ('\x03', 'q'):   # Ctrl-C or q
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+_key_thread = threading.Thread(target=_key_listener, daemon=True)
+_key_thread.start()
+print("  Press 'f' to toggle available frame display.")
+
 try:
     while True:
         rclpy.spin_once(node, timeout_sec=0.01)
         viz.display(latest_q)
         draw_springs(latest_q)
+        draw_frames(latest_q)
         time.sleep(0.05)
 except KeyboardInterrupt:
     pass

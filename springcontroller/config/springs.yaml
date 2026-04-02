@@ -12,8 +12,8 @@
       tip_spring:
         link_name:    "ur3e_tool0" # must match a frame name in the URDF
         local_point:  [0.0, 0.0, 0.0] # attachment point in link-local frame (m)
-        target:     [-0.096, 0.107, 0.550] # target position in world frame (m)
-        stiffness:    55.2            # N/m
+        target:       [0.018, -0.67, 0.12] # target position in world frame (m)
+        stiffness:    100            # N/m
         damping:      0.0              # N·s/m
         rest_length:  0.0              # m  (0 = zero-length spring)
 
