@@ -7,7 +7,7 @@ producing joint torques via the Jacobian-transpose method.
 
 ## Dependencies
 
-- ROS 2 Humble (or later)
+- ROS 2 Humble (or later, also tested with Kilted)
 - `pinocchio` — `sudo apt install ros-humble-pinocchio` or `pip install pin`
 - `numpy`
 
