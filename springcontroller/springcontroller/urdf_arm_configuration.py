@@ -147,3 +147,11 @@ class URDFArmConfiguration:
                 f"Link '{link_name}' not found in URDF. "
                 f"Available frames: {sorted(available)}"
             )
+    def get_gravity_torques(self) -> np.ndarray:
+        """
+        Return gravity compensation torques τ_grav ∈ R^n_dof via pinocchio.
+        Note: uses self._q which is in pinocchio's nq encoding (cos/sin for
+        unbounded joints), matching what forwardKinematics already uses.
+        """
+        pin.computeGeneralizedGravity(self._model, self._data, self._q)
+        return self._data.g.copy()

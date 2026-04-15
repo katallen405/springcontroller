@@ -107,6 +107,17 @@ class ArmConfiguration(Protocol):
             Full geometric Jacobian.
         """
         ...
+    def get_gravity_torques(self) -> np.ndarray:
+        """
+        Return the gravity compensation torques τ_grav ∈ R^n_dof.
+
+        Implementations that delegate gravity comp to hardware (e.g. UR3)
+        should return np.zeros(self.n_dof).  Implementations that need
+        software gravity comp (e.g. Kinova Gen3) should compute it here,
+        e.g. via pinocchio.computeGeneralizedGravity().
+        urdf_arm_configuration.py will do this automatically.
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +412,7 @@ class SpringCollection:
                 return
         raise KeyError(f"No spring named {name!r}")
 
-    def compute_total_torques(self, arm: ArmConfiguration) -> np.ndarray:
+    def compute_total_torques(self, arm: ArmConfiguration, add_gravity_compensation) -> np.ndarray:
         """
         Compute and sum torques from all enabled springs.
 
@@ -412,6 +423,8 @@ class SpringCollection:
         total = np.zeros(arm.n_dof)
         for spring in self._springs:
             total += spring.compute_torques(arm)
+        if add_gravity_compensation:
+            total+= arm.get_gravity_torques()
         return total
 
     def get_spring(self, name: str) -> VirtualSpring:
