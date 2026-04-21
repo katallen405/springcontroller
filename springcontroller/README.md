@@ -4,11 +4,10 @@ A ROS 2 package implementing virtual spring impedance control for robot arms.
 Each spring pulls a point on a robot link toward a fixed target in world space,
 producing joint torques via the Jacobian-transpose method.
 
-##NOTE: the springcontroller_interfaces folder should be moved one level up to the src/ directory for colcon to find it properly, but is in this folder for repository cleanliness reasons
 
 ## Dependencies
 
-- ROS 2 Humble (or later)
+- ROS 2 Humble (or later, also tested with Kilted)
 - `pinocchio` — `sudo apt install ros-humble-pinocchio` or `pip install pin`
 - `numpy`
 
