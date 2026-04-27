@@ -8,11 +8,16 @@ producing joint torques via the Jacobian-transpose method.
 ## Dependencies
 
 - ROS 2 Humble (or later, also tested with Kilted)
-- `pinocchio` — `sudo apt install ros-humble-pinocchio` or `pip install pin`
-- `numpy`
+- `pinocchio` —
+# Create the venv (allow access to ROS system packages like rclpy)
+python3 -m venv --system-site-packages ~/ros_venv
+# Activate it
+source ~/ros_venv/bin/activate
+# get the right numpy
+pip install "numpy<2" --force-reinstall
+
 
 ## Build
-
 ```bash
 cd ~/ros2_ws/src
 git clone <this repo>
@@ -50,11 +55,11 @@ ros2 run springcontroller virtual_spring_node.py --ros-args \
 ```
 
 ## Launch
-
+Humble seemed to be OK with ROS1 parameters but Kilted needs this:
 ```bash
-ros2 launch springcontroller virtual_spring.launch.py \
-  urdf_path:=/path/to/robot.urdf \
-  config:=/path/to/springs.yaml
+ros2 run springcontroller virtual_spring_node --ros-args \
+  -p urdf_path:=/path_to_flat_urdf \
+  -p config_path:=/path_to_springs
 ```
 
 ## Topics

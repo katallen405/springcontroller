@@ -154,7 +154,7 @@ class VirtualSpringNode(Node):
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
         )
-        from std_msgs.msg import String
+
         self._springs_updated_pub = self.create_publisher(String,
                                             "~/springs_updated", 10)
 
@@ -210,7 +210,6 @@ class VirtualSpringNode(Node):
 
 
         # Expose a service to toggle at runtime without restarting
-        from std_srvs.srv import SetBool
         self._grav_comp_srv = self.create_service(
             SetBool, "~/set_gravity_compensation", self._set_grav_comp_cb
         )
