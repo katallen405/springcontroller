@@ -10,7 +10,7 @@
     springs:
 
       tip_spring:
-        link_name:    "ur3e_tool0" # must match a frame name in the URDF
+        link_name:    "tool0" # must match a frame name in the URDF
         local_point:  [0.0, 0.0, 0.0] # attachment point in link-local frame (m)
         target:       [0.018, -0.67, 0.12] # target position in world frame (m)
         stiffness:    300            # N/m

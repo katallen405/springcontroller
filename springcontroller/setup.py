@@ -10,6 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", ["launch/virtual_spring.launch.py"]),
+        ("share/" + package_name + "/launch", ["launch/torque_relay.launch.py"]),
         ("share/" + package_name + "/config", ["config/kinova_springs.yaml"]),
         ("share/" + package_name + "/config", ["config/2DoF_springs.yaml"]),
     ],

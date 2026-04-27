@@ -48,19 +48,15 @@ Edit `config/springs.yaml` to define your springs:
 `link_name` must match a frame name in your URDF. You can list all available
 frames with:
 
-```bash
-ros2 run springcontroller virtual_spring_node.py --ros-args \
-  -p urdf_path:=/path/to/robot.urdf
-# Then: ros2 param get /virtual_spring_node link_names
+## Launch
+```
+bash
+ros2 launch springcontroller virtual_spring.launch.py urdf_path:=/path_to_flat_urdf  config:=/path_to_springs.yaml
 ```
 
-## Launch
-Humble seemed to be OK with ROS1 parameters but Kilted needs this:
-```bash
-ros2 run springcontroller virtual_spring_node --ros-args \
-  -p urdf_path:=/path_to_flat_urdf \
-  -p config_path:=/path_to_springs
-```
+Separately:
+ros2 launch springcontroller torque_relay.launch.py joint_order:="[elbow_joint, shoulder_lift_joint, shoulder_pan_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]"
+
 
 ## Topics
 

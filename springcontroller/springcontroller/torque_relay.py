@@ -2,7 +2,7 @@
 """
 torque_relay.py
 
-Subscribes to /virtual_spring/joint_torques (sensor_msgs/JointState)
+Subscribes to /virtual_spring_node/joint_torques (sensor_msgs/JointState)
 and republishes the effort field as a Float64MultiArray to
 /forward_effort_controller/commands.
 """
@@ -18,6 +18,7 @@ class TorqueRelay(Node):
         super().__init__("torque_relay")
         self.declare_parameter("joint_order", [""])  # robot-specific order
         self.declare_parameter("command_topic", "/forward_effort_controller/commands") # where to publish torques, should be specified in the config file
+        self.declare_parameter("torque_topic", "/virtual_spring_node/joint_torques") #where to get them from
 
         self._joint_order = list(
             self.get_parameter("joint_order").get_parameter_value().string_array_value
@@ -26,16 +27,14 @@ class TorqueRelay(Node):
             self.get_logger().fatal("Parameter 'joint_order' must be set.")
             raise RuntimeError("joint_order not set")
 
-        self.declare_parameter("torque_topic", "/virtual_spring/joint_torques")
         torque_topic = self.get_parameter("torque_topic").get_parameter_value().string_value
-
         command_topic = self.get_parameter("command_topic").get_parameter_value().string_value # where to publish torques
 
         self.springtorques_sub = self.create_subscription(JointState, torque_topic, self.springtorques_cb, 10)
 
         self.get_logger().info(
-            f"Relaying /virtual_spring/joint_torques -> "
-            f"/forward_effort_controller/commands "
+            f"Relaying {torque_topic}"
+            f"to {command_topic} "
             f"({len(self._joint_order)} joints: {self._joint_order})"
         )
         
