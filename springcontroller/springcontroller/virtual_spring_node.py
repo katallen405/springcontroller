@@ -345,9 +345,9 @@ class VirtualSpringNode(Node):
         self._torque_pub.publish(out)
 
         # Jacobian Debugging
-        for name in self._arm.link_names:
-            T = self._arm.get_link_transform(name)
-            print(f"{name}: {T[:3, 3]}")
+        #for name in self._arm.link_names:
+        #    T = self._arm.get_link_transform(name)
+        #    print(f"{name}: {T[:3, 3]}")
 
     def _target_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
