@@ -539,7 +539,11 @@ class VirtualSpringNode(Node):
 
     def plot_spring_extensions(self):
         num_springs = len(self.spring_data)
-        fig, axes = plt.subplots(num_springs, 2, figsize=(14, 4 * num_springs), squeeze=False)
+        if num_springs > 0:
+            fig, axes = plt.subplots(num_springs, 2, figsize=(14, 4 * num_springs), squeeze=False)
+        else:
+            print("no springs")
+            return
 
         for row, (name, data) in enumerate(self.spring_data.items()):
             # --- Left column: extension ---
