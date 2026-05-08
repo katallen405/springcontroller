@@ -74,8 +74,14 @@ class VirtualSpringNode(Node):
         self.declare_parameter("publish_rate_hz", 100.0)
         self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")
         self.declare_parameter("add_gravity_compensation", False)
-        self._add_grav_comp = self.get_parameter("add_gravity_compensation")
+        self.declare_parameter("max_torque", -1.0)
 
+        self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
+        max_torque = self.get_parameter("max_torque").get_parameter_value().double_value
+        if max_torque < 0.0:
+            max_torque = 4.0 #default
+            self.get_logger().fatal(f"max_torque not passed, using default of {max_torque}")
+                                    
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         if not urdf_path:
             self.get_logger().fatal("Parameter 'urdf_path' must be set.")
@@ -147,7 +153,7 @@ class VirtualSpringNode(Node):
 
         
         # Spring collection
-        self._springs = SpringCollection()
+        self._springs = SpringCollection(max_torque=max_torque)
         self._load_springs_from_params()
 
         # Publishers
@@ -316,24 +322,25 @@ class VirtualSpringNode(Node):
             # logging to the terminal for debugging and to plot later
             for spring in self._springs:
                 if spring._last_state is not None:
+                    """
                     self.get_logger().info(
                         f"{spring.name} attachment: {spring._last_state.world_attachment_point}",
                         throttle_duration_sec=1.0
                 )
-                    
+
                     self.get_logger().info(
                         f"{spring.name} displacement: {spring._last_state.displacement} "
                         f"extension: {spring._last_state.extension:.4f}m",
                         throttle_duration_sec=1.0
                     )
 
-
+"""
                     # Append to time-series
                     self.spring_data[spring.name]['times'].append(elapsed)
                     self.spring_data[spring.name]['extensions'].append(spring._last_state.extension)
                     self.spring_data[spring.name]['torques'].append(spring._last_state.torques)
 
-                    self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
+                    #self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
         except Exception as e:
             self.get_logger().error(f"Spring computation failed: {e}")
             return

@@ -211,7 +211,7 @@ class VirtualSpring:
         outer_radius: float = 0.0,    
         enabled: bool = True,
         name: str = "",
-            ):
+    ):
         self.link_name = link_name
         self.local_attachment_point = np.asarray(local_attachment_point, dtype=float)
         self.target_world_point = np.asarray(target_world_point, dtype=float)
@@ -220,8 +220,11 @@ class VirtualSpring:
         self.rest_length = rest_length
         self.enabled = enabled
         self.name = name or f"spring_{link_name}"
+
         self.inner_radius = inner_radius
         self.outer_radius = outer_radius
+
+
         # Validate shapes
         if self.local_attachment_point.shape != (3,):
             raise ValueError(
@@ -397,9 +400,10 @@ class SpringCollection:
     >>> total_torques = springs.compute_total_torques(arm_config)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_torque: Optional[float] = None) -> None:
         self._springs: list[VirtualSpring] = []
-
+        self.max_torque = max_torque
+        
     def add(self, spring: VirtualSpring) -> None:
         """Add a spring to the collection."""
         self._springs.append(spring)
@@ -425,6 +429,9 @@ class SpringCollection:
             total += spring.compute_torques(arm)
         if add_gravity_compensation:
             total+= arm.get_gravity_torques()
+        # Safety cap on combined torques
+        if self.max_torque is not None:
+            total = np.clip(total, -self.max_torque, self.max_torque)
         return total
 
     def get_spring(self, name: str) -> VirtualSpring:
