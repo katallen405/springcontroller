@@ -400,10 +400,9 @@ class SpringCollection:
     >>> total_torques = springs.compute_total_torques(arm_config)
     """
 
-    def __init__(self, max_torque: Optional[float] = None) -> None:
+    def __init__(self) -> None:
         self._springs: list[VirtualSpring] = []
-        self.max_torque = max_torque
-        
+
     def add(self, spring: VirtualSpring) -> None:
         """Add a spring to the collection."""
         self._springs.append(spring)
@@ -428,10 +427,7 @@ class SpringCollection:
         for spring in self._springs:
             total += spring.compute_torques(arm)
         if add_gravity_compensation:
-            total+= arm.get_gravity_torques()
-        # Safety cap on combined torques
-        if self.max_torque is not None:
-            total = np.clip(total, -self.max_torque, self.max_torque)
+            total += arm.get_gravity_torques()
         return total
 
     def get_spring(self, name: str) -> VirtualSpring:

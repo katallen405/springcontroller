@@ -9,15 +9,25 @@ producing joint torques via the Jacobian-transpose method.
 - ROS 2 Humble (or later)
 - `pinocchio` 
 - `numpy`
+- venv with
+      - pip install ultralytics
+      - pip uninstall opencv-python
+      - pip install "numpy<2"
+      - pip install roslibpy
+      - pip install lap
+      - pip install meshcat (for the visualization)
 
+- setting an environment variable ROS_WS will
+  make a bunch of the config parameters work out
+  without manually specifying paths at launch
+  
 ## Build
 
 ```bash
 cd ~/ros2_ws/src
 git clone <this repo>
 cd ~/ros2_ws
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select virtual_spring_ros2
+rosdep install --from-paths src --ignore-src -r -ycolcon build --packages-select virtual_spring_ros2
 source install/setup.bash
 ```
 
