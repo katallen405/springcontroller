@@ -108,7 +108,8 @@ class VirtualSpringNode(Node):
         self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")
         self.declare_parameter("add_gravity_compensation", False)
         self.declare_parameter("recentering_threshold_rad", 0.3)
-
+        self.declare_parameter("srdf_path", "")
+        self.declare_parameter("danger_threshold", 0.05)
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
         self._recentering_in_progress = False
@@ -248,20 +249,24 @@ class VirtualSpringNode(Node):
         (published by robot_state_publisher; what RViz uses),
         otherwise fall back to the urdf_path parameter.
         """
+        srdf_path = self.get_parameter("srdf_path").get_parameter_value().string_value
+        danger_threshold = self.get_parameter("danger_threshold").get_parameter_value().double_value
+
         urdf_xml = fetch_robot_description(self)
         if urdf_xml is not None:
             self.get_logger().info("Loaded URDF from /robot_description topic.")
-            return URDFArmConfiguration.from_xml_string(urdf_xml)
+            return URDFArmConfiguration.from_xml_string(urdf_xml,danger_threshold=danger_threshold, srdf_path=srdf_path)
 
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         if not urdf_path:
             raise RuntimeError(
                 "No /robot_description topic found and urdf_path parameter not set."
             )
+        
         self.get_logger().warn(
             f"No /robot_description topic found; falling back to file: {urdf_path}"
         )
-        return URDFArmConfiguration.from_urdf(urdf_path)
+        return URDFArmConfiguration.from_urdf(urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path)
 
 
     def _set_grav_comp_cb(self, request, response):

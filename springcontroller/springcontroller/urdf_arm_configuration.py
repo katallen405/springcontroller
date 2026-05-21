@@ -9,7 +9,7 @@ import numpy as np
 import pinocchio as pin
 from dataclasses import dataclass
 from typing import Optional
-
+import os
 
 # ---------------------------------------------------------------------------
 # CollisionStatus — returned by get_collision_status()
@@ -50,6 +50,8 @@ class URDFArmConfiguration:
     ----------
     urdf_path : str
         Absolute path to the robot's URDF file.
+    srdf_path : str
+        Absolute path to the robot's SRDF for collision checking
     q : np.ndarray, shape (n_dof,)
         Current joint positions.
     qdot : np.ndarray, shape (n_dof,), optional
@@ -62,6 +64,7 @@ class URDFArmConfiguration:
     def __init__(
         self,
         urdf_path: str,
+        srdf_path: str,
         q: np.ndarray,
         qdot: np.ndarray | None = None,
         danger_threshold: float = 0.05,
@@ -74,15 +77,16 @@ class URDFArmConfiguration:
         # if the URDF has no collision geometry or hpp-fcl is unavailable.
         self._collision_model: Optional[pin.GeometryModel] = None
         self._collision_data: Optional[pin.GeometryData] = None
-        self._load_collision_model(urdf_path)
+        self._load_collision_model(urdf_path, srdf_path)
 
         self.update(q, qdot)
+
 
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
 
-    def _load_collision_model(self, urdf_path: str) -> None:
+    def _load_collision_model(self, urdf_path: str, srdf_path: str) -> None:
         """
         Attempt to load the collision geometry from the URDF.
         Silently skips if the URDF has no collision meshes or if hpp-fcl
@@ -98,10 +102,9 @@ class URDFArmConfiguration:
             # pinocchio will automatically skip pairs that are adjacent
             # (parent-child) since they are always in contact.
             collision_model.addAllCollisionPairs()
-            pin.removeCollisionPairs(
-                self._model, collision_model, srdf_filename=""
-            ) if False else None  # placeholder: pass your SRDF path here if
-                                  # you have one, to exclude known-safe pairs
+            if srdf_path and os.path.isfile(srdf_path):
+                pin.removeCollisionPairs(self._model, collision_model, srdf_path)
+                                  
 
             self._collision_model = collision_model
             self._collision_data = pin.GeometryData(collision_model)
@@ -119,12 +122,31 @@ class URDFArmConfiguration:
     def from_urdf(
         cls,
         urdf_path: str,
+        srdf_path: str="",
         danger_threshold: float = 0.05,
     ) -> "URDFArmConfiguration":
         """Construct with a zero joint configuration inferred from the model."""
         model = pin.buildModelFromUrdf(urdf_path)
-        return cls(urdf_path, np.zeros(model.nq), danger_threshold=danger_threshold)
-
+        return cls(urdf_path, srdf_path, np.zeros(model.nq), danger_threshold=danger_threshold)
+    @classmethod
+    def from_xml_string(
+        cls,
+        urdf_xml: str,
+        srdf_path: str = "",
+        danger_threshold: float = 0.05,
+    ) -> "URDFArmConfiguration":
+        """Construct from a URDF XML string (e.g. from /robot_description topic)."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".urdf", delete=False
+        ) as f:
+            f.write(urdf_xml)
+            tmp_path = f.name
+        try:
+            model = pin.buildModelFromUrdf(tmp_path)
+            return cls(tmp_path, srdf_path, np.zeros(model.nq), danger_threshold=danger_threshold)
+        finally:
+            os.unlink(tmp_path)
     # ------------------------------------------------------------------
     # ArmConfiguration protocol
     # ------------------------------------------------------------------
