@@ -1,0 +1,44 @@
+press_to_pin:
+  ros__parameters:
+    add_spring_service: "/virtual_spring_node/add_spring"
+    commanded_torque_topic: "/virtual_spring/joint_torques"
+    subtract_model_gravity: true
+
+    # Per-joint press thresholds, in the units of the /joint_states effort
+    # field. On the UR3e these are current-derived torque estimates, so
+    # tune empirically: run the node, plot /press_to_pin/residuals in
+    # PlotJuggler while pressing each link, and set each threshold just
+    # above the noise floor. Proximal joints carry more friction/inertia
+    # noise, hence the higher defaults.
+    thresholds:
+      default: 1.5
+      ur3e_shoulder_pan_joint: 2.5
+      ur3e_shoulder_lift_joint: 2.5
+      ur3e_elbow_joint: 1.5
+      ur3e_wrist_1_joint: 0.8
+      ur3e_wrist_2_joint: 0.6
+      ur3e_wrist_3_joint: 0.6
+
+    press:
+      hold_time: 0.25          # s the press must persist before pinning
+      release_fraction: 0.5    # hysteresis for re-arming
+      rearm_time: 0.5          # s of quiet before the next pin is allowed
+      velocity_gate: 1.0       # rad/s; detection suspended above this
+
+    baseline:
+      alpha: 0.005             # EMA rate for the friction/model-error baseline
+      freeze_fraction: 0.5     # stop adapting a joint above this * threshold
+      velocity_freeze: 0.05    # rad/s; stop adapting while moving
+
+    stiffness:
+      per_newton: 20.0         # N/m of spring stiffness per N of press force
+      min: 10.0
+      max: 300.0
+
+    spring:
+      damping: 5.0             # damping for created springs
+
+    # Optional overrides for which link frame a press on each joint attaches
+    # to. Defaults to the joint's child BODY frame from the URDF, e.g.:
+    # contact_links:
+    #   ur3e_elbow_joint: "ur3e_forearm_link"
