@@ -257,6 +257,19 @@ class URDFArmConfiguration:
         pin.computeGeneralizedGravity(self._model, self._data, self._q)
         return self._data.g.copy()
 
+    def get_joint_angle(self, joint_index: int) -> float:
+        """
+        Return the current angle (rad) of the joint at DOF index joint_index
+        (0-based, matching joint_names/n_dof ordering). Inverse of the
+        per-joint encoding in update_from_angles: unbounded/continuous
+        joints are stored as (cos, sin) and decoded via atan2; others are
+        stored directly.
+        """
+        joint = self._model.joints[joint_index + 1]
+        if joint.nq == 2:
+            return float(np.arctan2(self._q[joint.idx_q + 1], self._q[joint.idx_q]))
+        return float(self._q[joint.idx_q])
+
     # ------------------------------------------------------------------
     # Collision API
     # ------------------------------------------------------------------

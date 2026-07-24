@@ -563,8 +563,13 @@ class VirtualSpringNode(Node):
             )
             return
 
-        q_current = self._arm.joint_positions
         n_dof = self._arm.n_dof
+        # NOT self._arm.joint_positions -- that's pinocchio's raw internal q
+        # vector (nq-length), which for any robot with continuous joints
+        # (e.g. Gen3's 4) is longer than n_dof since each needs 2 slots
+        # (cos, sin). update_from_angles/residual below need one angle per
+        # joint (n_dof-length), which get_joint_angle decodes correctly.
+        q_current = np.array([self._arm.get_joint_angle(i) for i in range(n_dof)])
 
         from scipy.optimize import fsolve
 
