@@ -49,13 +49,44 @@ Edit `config/springs.yaml` to define your springs:
 frames with:
 
 ## Launch
+
+### Kinova Gen3 (via gen3_torque_control node)
+
+```bash
+# Terminal 1 — start the Kinova torque interface
+ros2 run gen3_torque_control gen3_torque_node
+
+# Terminal 2 — start the spring controller
+ros2 launch springcontroller gen3_spring.launch.py
+
+# Terminal 3 — enable torque mode
+ros2 service call /kinova/torque_control/enable std_srvs/srv/SetBool "{data: true}"
 ```
-bash
-ros2 launch springcontroller virtual_spring.launch.py urdf_path:=/path_to_flat_urdf  config:=/path_to_springs.yaml
+
+To use a custom springs config:
+```bash
+ros2 launch springcontroller gen3_spring.launch.py config:=/path/to/your_springs.yaml
+```
+
+Spring link names for the Gen3 7-DOF: `base_link`, `shoulder_link`, `half_arm_1_link`,
+`half_arm_2_link`, `forearm_link`, `spherical_wrist_1_link`, `spherical_wrist_2_link`,
+`bracelet_link`, `end_effector_link`. Edit `config/gen3_springs.yaml` to configure.
+
+Topic flow:
+```
+/kinova/joint_states_lowlevel → virtual_spring_node → torque_relay → /kinova/joint_torque_command
+```
+
+### Other robots (generic ros2_control effort controller)
+
+```bash
+ros2 launch springcontroller virtual_spring.launch.py urdf_path:=/path_to_flat_urdf config:=/path_to_springs.yaml
 ```
 
 Separately:
-ros2 launch springcontroller torque_relay.launch.py joint_order:="[elbow_joint, shoulder_lift_joint, shoulder_pan_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]"
+```bash
+ros2 launch springcontroller torque_relay.launch.py joint_order:="[joint1, joint2, ...]"
+```
 
 
 ## Topics
