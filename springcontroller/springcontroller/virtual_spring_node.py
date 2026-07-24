@@ -204,7 +204,7 @@ class VirtualSpringNode(Node):
         # Jacobian Debugging
         for name in self._arm.link_names:
             T = self._arm.get_link_transform(name)
-            print(f"{name}: {T[:3, 3]}")
+            self.get_logger().debug(f"{name}: {T[:3, 3]}")
 
         # Spring collection
         self._springs = SpringCollection()
@@ -1015,7 +1015,7 @@ class VirtualSpringNode(Node):
         if num_springs > 0:
             fig, axes = plt.subplots(num_springs, 2, figsize=(14, 4 * num_springs), squeeze=False)
         else:
-            print("no springs")
+            self.get_logger().info("No spring data recorded; nothing to plot.")
             return
 
         for row, (name, data) in enumerate(self.spring_data.items()):
