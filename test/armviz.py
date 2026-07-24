@@ -1,8 +1,10 @@
-#!/home/kat/ros_venv/bin/python3
+#!/home/katallen/.springcontroller_venv/bin/python3
+import argparse
 import math
 import re
 import json
 import subprocess
+import sys
 import time
 
 import numpy as np
@@ -11,6 +13,7 @@ from pinocchio.visualize import MeshcatVisualizer
 import meshcat.geometry as g
 
 import rclpy
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from std_msgs.msg import String
@@ -20,7 +23,24 @@ from std_msgs.msg import String
 # Config
 # ---------------------------------------------------------------------------
 
-URDF          = "/home/kat/workspace/src/ceeorobot_cell/ceeorobot_description/urdf/ceeorobot_flat.urdf"
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="MeshCat-based 3D visualizer for virtual_spring_node: "
+                     "shows the robot, spring attachment points, and targets."
+    )
+    parser.add_argument(
+        "--urdf", required=True,
+        help="Path to the robot URDF (flattened, no unresolved xacro) to visualize.",
+    )
+    # Strip ROS-specific args (--ros-args -r ... -p ... etc.) before parsing
+    # our own, so remapping (e.g. /joint_states -> /kinova/joint_states_lowlevel
+    # on Gen3) still works cleanly when launched via ros2 launch/run.
+    return parser.parse_args(remove_ros_args(args=sys.argv)[1:])
+
+
+_args = parse_args()
+
+URDF          = _args.urdf
 JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
@@ -32,8 +52,14 @@ SPRING_NODE   = "/virtual_spring_node"
 model, collision_model, visual_model = pin.buildModelsFromUrdf(URDF)
 data = model.createData()
 
-pinocchio_joint_index = {
-    model.names[i]: i - 1
+# Maps joint name -> the actual pinocchio Joint object, so we can write into
+# the right slot(s) of q via joint.idx_q. NOT the same as "joint number" --
+# continuous joints (e.g. Gen3's joint_1/3/5/7) consume 2 slots in q (cos,
+# sin), not 1, so a naive sequential index silently misaligns every joint
+# after the first continuous one. That was producing the wildly twisted/
+# self-intersecting poses seen in the visualizer.
+pinocchio_joints = {
+    model.names[i]: model.joints[i]
     for i in range(1, model.njoints)
 }
 
@@ -120,8 +146,13 @@ def joint_cb(msg):
     q = pin.neutral(model)
     for name, pos in zip(msg.name, msg.position):
         angle = math.remainder(pos, 2 * math.pi)
-        if name in pinocchio_joint_index:
-            q[pinocchio_joint_index[name]] = angle
+        joint = pinocchio_joints.get(name)
+        if joint is not None:
+            if joint.nq == 2:  # continuous joint: stored as (cos, sin)
+                q[joint.idx_q]     = math.cos(angle)
+                q[joint.idx_q + 1] = math.sin(angle)
+            else:
+                q[joint.idx_q] = angle
     latest_q = q
 
 def make_target_cb(spring_name):
@@ -246,7 +277,7 @@ def draw_frames(q):
 # Main
 # ---------------------------------------------------------------------------
 
-rclpy.init()
+rclpy.init(args=sys.argv)
 node = rclpy.create_node('spring_viz_node')
 
 node.create_subscription(JointState, JOINT_STATES,  joint_cb,           10)
@@ -271,7 +302,15 @@ def _key_listener():
     """Press 'f' to toggle frame display on/off."""
     global show_frames
     fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
+    try:
+        old = termios.tcgetattr(fd)
+    except termios.error:
+        # stdin isn't a real TTY -- e.g. launched via ros2 launch's
+        # ExecuteProcess rather than run interactively. The 'f' toggle just
+        # isn't available in that case; nothing else here depends on it.
+        print("[viz] stdin isn't a TTY -- 'f' frame-toggle unavailable "
+              "(this is normal when launched via ros2 launch).")
+        return
     try:
         tty.setraw(fd)
         while True:

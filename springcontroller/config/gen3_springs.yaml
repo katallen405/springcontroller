@@ -8,7 +8,7 @@
     springs:
 
       tip_spring:
-        link_name:    "bracelet_link"        # wrist/end-effector link on Gen3 7-DOF
+        link_name:    "end_effector_link"        # between gripper fingers
         local_point:  [0.0, 0.0, 0.1]       # attachment point in link-local frame (m)
         target:       [0.5, 0.0, 0.5]       # target position in world frame (m)
         stiffness:    50.0                   # N/m  (start low for safety)

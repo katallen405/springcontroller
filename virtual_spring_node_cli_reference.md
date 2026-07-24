@@ -1,20 +1,61 @@
 # virtual_spring_node — CLI quick reference
 
-## Launching
+Covers both supported arms. The **Launching**, **Monitoring**, and **manual
+torque test** sections are robot-specific (split into UR3e / Gen3
+subsections below) since the underlying topics and control stack differ.
+Everything from **Enable / disable all springs** onward operates on
+`virtual_spring_node`'s own topics/services (`/virtual_spring_node/...`),
+which are identical regardless of which arm is running underneath.
+
+**Don't confuse these two enable services** — they control different things:
+- `/virtual_spring_node/enable` — turns spring *forces* on/off. The arm stays
+  under torque control (still gravity-compensated on Gen3), springs just stop
+  pulling.
+- `/gen3_torque_control/enable` (Gen3 only) — turns torque control itself
+  on/off. Disabling this drops the arm back to Kortex position hold; it's
+  what `virtual_spring_node`'s fail-safe calls automatically if spring
+  computation starts failing repeatedly.
+
+---
+
+## Launching — UR3e
 
 ```bash
-ros2 launch springcontroller virtual_spring.launch.py \
+# ur3e_spring.launch.py starts both virtual_spring_node and torque_relay
+# (formerly named virtual_spring.launch.py, and formerly required running
+# torque_relay separately with ur3e_relay.yaml -- that's bundled in now).
+ros2 launch springcontroller ur3e_spring.launch.py \
     urdf_path:="/path/to/robot.urdf" \
     config:="/path/to/springs.yaml"
 
-# With torque relay
-ros2 run springcontroller torque_relay \
-    --ros-args --params-file /path/to/ur3e_relay.yaml
+# armviz:=true also launches the MeshCat visualizer (see below)
+ros2 launch springcontroller ur3e_spring.launch.py \
+    urdf_path:="/path/to/robot.urdf" armviz:=true
+```
+
+## Launching — Kinova Gen3
+
+```bash
+# Terminal 1 — Kortex low-level torque interface
+ros2 run gen3_torque_control gen3_torque_node
+
+# Terminal 2 — spring controller + torque_relay (gen3_spring.launch.py
+# starts both). enable_torque_control:=true auto-enables torque mode ~3s
+# after startup, once virtual_spring_node is confirmed publishing valid
+# gravity-compensated torques; defaults to false (enable manually instead,
+# see "Torque control enable / disable" below).
+ros2 launch springcontroller gen3_spring.launch.py enable_torque_control:=true
+
+# Optional overrides:
+ros2 launch springcontroller gen3_spring.launch.py \
+    urdf_path:=/path/to/flat_urdf.urdf \
+    config:=/path/to/gen3_springs.yaml \
+    srdf_path:=/path/to/gen3.srdf
 ```
 
 ---
 
-## Monitoring
+## Monitoring — UR3e
 
 ```bash
 # Watch torques being published
@@ -32,6 +73,68 @@ ros2 param list /virtual_spring_node
 # Check a specific parameter
 ros2 param get /virtual_spring_node springs.tip_spring.stiffness
 ```
+
+## Monitoring — Kinova Gen3
+
+```bash
+# Watch torques being published (note: no remap on Gen3, unlike UR3e above)
+ros2 topic echo /virtual_spring_node/joint_torques
+
+# Watch what the relay sends to gen3_torque_control
+ros2 topic echo /kinova/joint_torque_command
+
+# Watch raw feedback from the Kortex cyclic loop
+ros2 topic echo /kinova/joint_states_lowlevel
+
+# Watch torque-control enable state
+ros2 topic echo /gen3_torque_control/status
+
+# List all active parameters
+ros2 param list /virtual_spring_node
+
+# Check a specific parameter
+ros2 param get /virtual_spring_node springs.tip_spring.stiffness
+```
+
+---
+
+## Torque control enable / disable (Gen3 only)
+
+```bash
+# Enable torque control (arm starts responding to computed torques)
+ros2 service call /gen3_torque_control/enable std_srvs/srv/SetBool "{data: true}"
+
+# Disable torque control (arm drops back to Kortex position hold)
+ros2 service call /gen3_torque_control/enable std_srvs/srv/SetBool "{data: false}"
+
+# Clear arm faults
+ros2 service call /gen3_torque_control/clear_faults std_srvs/srv/Trigger
+```
+
+---
+
+## Visualization (armviz)
+
+`test/armviz.py` -- MeshCat-based 3D visualizer (browser, not RViz). Shows
+the robot, spring attachment points, targets, and the line between them.
+Needs `meshcat` installed in the venv (see the package README's "Python
+venv" section).
+
+```bash
+# via launch file (either robot)
+ros2 launch springcontroller gen3_spring.launch.py armviz:=true
+ros2 launch springcontroller ur3e_spring.launch.py armviz:=true
+
+# standalone
+python3 test/armviz.py --urdf /path/to/flat_urdf.urdf
+```
+
+`--urdf` is required. When launched via `ros2 launch`, it's set to the same
+`urdf_path` as `virtual_spring_node`, and remapped `/joint_states` on Gen3
+to match (its default of plain `/joint_states` is already right for UR3e).
+
+Press `f` in its terminal to toggle every available attachment frame as a
+labeled dot -- handy for picking a `link_name` for a new spring.
 
 ---
 
@@ -133,8 +236,15 @@ Publishes a JSON array of spring names whenever a spring is added or removed.
 
 ## Manually send a torque command (testing)
 
+These bypass `virtual_spring_node` entirely — no gravity comp, no
+collision checking, no fail-safe. Only use them with the arm in a
+supported/spotted position.
+
+### UR3e
+
 ```bash
-# Send zeros to all joints (safe stop)
+# Send zeros to all joints (safe stop -- UR3e's own controller still
+# provides gravity comp underneath, so zero here just means "no extra force")
 ros2 topic pub --once /forward_effort_controller/commands \
     std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 
@@ -143,9 +253,23 @@ ros2 topic pub --once /forward_effort_controller/commands \
     std_msgs/msg/Float64MultiArray "{data: [0.0, -2.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
+### Kinova Gen3
+
+```bash
+# gen3_torque_control must be ENABLED (see "Torque control enable /
+# disable" above) for this to have any effect.
+#
+# ⚠️ Zero here is NOT a safe stop like it is on the UR3e -- gen3_torque_control
+# has no hardware gravity comp, so zero torques let the arm fall. To actually
+# stop safely, disable torque control instead:
+#   ros2 service call /gen3_torque_control/enable std_srvs/srv/SetBool "{data: false}"
+ros2 topic pub --once /kinova/joint_torque_command \
+    std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
+```
+
 ---
 
-## springs.yaml structure
+## springs.yaml structure (UR3e example)
 
 ```yaml
 /**:
@@ -172,9 +296,50 @@ ros2 topic pub --once /forward_effort_controller/commands \
         outer_radius: 0.0
 ```
 
+## gen3_springs.yaml structure (Gen3 example)
+
+```yaml
+/**:
+  ros__parameters:
+    spring_names:
+      - tip_spring
+    springs:
+      tip_spring:
+        link_name:    "bracelet_link"   # wrist/end-effector link on Gen3 7-DOF
+        local_point:  [0.0, 0.0, 0.1]   # attachment point in link-local frame (m)
+        target:       [0.5, 0.0, 0.5]   # target position in world frame (m)
+        stiffness:    50.0              # N/m (start low for safety)
+        damping:      5.0               # N·s/m
+        rest_length:  0.0               # m (0 = zero-length spring)
+        inner_radius: 0.0
+        outer_radius: 0.0
+```
+
+Gen3 spring link names: `base_link`, `shoulder_link`, `half_arm_1_link`,
+`half_arm_2_link`, `forearm_link`, `spherical_wrist_1_link`,
+`spherical_wrist_2_link`, `bracelet_link`, `end_effector_link`.
+
+Gripper links (`robotiq_85_base_link`, `robotiq_85_left_finger_tip_link`,
+`robotiq_85_right_finger_tip_link`, etc.) also work — locking a joint keeps
+its frame, it just moves rigidly with the wrist. Use `end_effector_link` or
+`robotiq_85_base_link` for a general attachment point (exact, unaffected by
+finger position); a fingertip link is only as accurate as the gripper's
+real open/closed state matches the neutral pose the model was built with,
+since the locked joints aren't measured at runtime.
+
 ---
 
 ## ur3e_relay.yaml structure
+
+`ur3e_spring.launch.py` sets these same values inline (`UR3E_JOINT_ORDER`,
+`torque_topic`, `command_topic`), so you don't need this file for normal
+use. It's kept for running `torque_relay` standalone, outside the launch
+file:
+
+```bash
+ros2 run springcontroller torque_relay \
+    --ros-args --params-file /path/to/ur3e_relay.yaml
+```
 
 ```yaml
 torque_relay:
@@ -188,4 +353,19 @@ torque_relay:
       - ur3e_wrist_1_joint
       - ur3e_wrist_2_joint
       - ur3e_wrist_3_joint
+```
+
+## Gen3 torque_relay configuration
+
+Same story as the UR3e above: `gen3_spring.launch.py` sets `torque_relay`'s
+parameters inline (`GEN3_JOINT_ORDER`, `torque_topic`, `command_topic`), so
+there's nothing extra to pass on the command line for normal use. If you
+need to run `torque_relay` standalone for Gen3 instead of through the
+launch file:
+
+```bash
+ros2 run springcontroller torque_relay --ros-args \
+    -p joint_order:="[joint_1, joint_2, joint_3, joint_4, joint_5, joint_6, joint_7]" \
+    -p torque_topic:="/virtual_spring_node/joint_torques" \
+    -p command_topic:="/kinova/joint_torque_command"
 ```

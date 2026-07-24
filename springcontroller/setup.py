@@ -1,3 +1,5 @@
+import glob
+
 from setuptools import setup
 
 package_name = "springcontroller"
@@ -9,14 +11,13 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/launch", ["launch/virtual_spring.launch.py"]),
-        ("share/" + package_name + "/launch", ["launch/torque_relay.launch.py"]),
-        ("share/" + package_name + "/launch", ["launch/gen3_spring.launch.py"]),
-        ("share/" + package_name + "/config", ["config/kinova_springs.yaml"]),
-        ("share/" + package_name + "/config", ["config/2DoF_springs.yaml"]),
-        ("share/" + package_name + "/config", ["config/gen3_springs.yaml"]),
-        ("share/" + package_name + "/launch", ["launch/press_to_pin.launch.py"]),
-        ("share/" + package_name + "/config", ["config/gen2_kinova_springs.yaml"]),
+        # Globbed rather than listed by name: add a new launch/*.launch.py
+        # or config/*.yaml file and it's installed automatically, no
+        # setup.py edit needed. (A file that previously went missing here
+        # -- config/springs.yaml -- would install silently broken with the
+        # old explicit-list approach; see git history if curious.)
+        ("share/" + package_name + "/launch", glob.glob("launch/*.launch.py")),
+        ("share/" + package_name + "/config", glob.glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

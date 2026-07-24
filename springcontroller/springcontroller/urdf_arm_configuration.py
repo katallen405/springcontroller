@@ -12,6 +12,32 @@ from typing import Optional
 import os
 
 # ---------------------------------------------------------------------------
+# Locked-joint model reduction
+# ---------------------------------------------------------------------------
+
+def _build_pinocchio_model(
+    urdf_path: str, locked_joint_names: list[str] | None
+) -> pin.Model:
+    """
+    Build a pinocchio model from a URDF, optionally locking (fixing) named
+    joints via model reduction.
+
+    A locked joint's link mass/inertia stays folded into its parent link, so
+    it still contributes to gravity/dynamics, but it's removed from the
+    active DOF and from `q`. Use this for joints present in the URDF but not
+    reported on /joint_states (e.g. an unmeasured gripper) — dropping them
+    from the URDF entirely would silently exclude their weight from gravity
+    compensation.
+    """
+    full_model = pin.buildModelFromUrdf(urdf_path)
+    if not locked_joint_names:
+        return full_model
+    joint_ids = [full_model.getJointId(name) for name in locked_joint_names]
+    reference_configuration = pin.neutral(full_model)
+    return pin.buildReducedModel(full_model, joint_ids, reference_configuration)
+
+
+# ---------------------------------------------------------------------------
 # CollisionStatus — returned by get_collision_status()
 # ---------------------------------------------------------------------------
 
@@ -59,6 +85,10 @@ class URDFArmConfiguration:
     danger_threshold : float, optional
         Distance in metres at which scale_factor begins ramping toward 0.
         Default 0.05 (5 cm). Only used when collision model is loaded.
+    locked_joint_names : list[str], optional
+        Joint names to lock (see `_build_pinocchio_model`). Their mass still
+        counts toward gravity compensation; they're just removed from the
+        active DOF because they aren't reported on /joint_states.
     """
 
     def __init__(
@@ -68,8 +98,9 @@ class URDFArmConfiguration:
         q: np.ndarray,
         qdot: np.ndarray | None = None,
         danger_threshold: float = 0.05,
+        locked_joint_names: list[str] | None = None,
     ) -> None:
-        self._model = pin.buildModelFromUrdf(urdf_path)
+        self._model = _build_pinocchio_model(urdf_path, locked_joint_names)
         self._data = self._model.createData()
         self._danger_threshold = danger_threshold
 
@@ -77,7 +108,7 @@ class URDFArmConfiguration:
         # if the URDF has no collision geometry or hpp-fcl is unavailable.
         self._collision_model: Optional[pin.GeometryModel] = None
         self._collision_data: Optional[pin.GeometryData] = None
-        self._load_collision_model(urdf_path, srdf_path)
+        self._load_collision_model(urdf_path, srdf_path, locked_joint_names)
 
         self.update(q, qdot)
 
@@ -86,25 +117,39 @@ class URDFArmConfiguration:
     # Construction helpers
     # ------------------------------------------------------------------
 
-    def _load_collision_model(self, urdf_path: str, srdf_path: str) -> None:
+    def _load_collision_model(
+        self,
+        urdf_path: str,
+        srdf_path: str,
+        locked_joint_names: list[str] | None = None,
+    ) -> None:
         """
         Attempt to load the collision geometry from the URDF.
         Silently skips if the URDF has no collision meshes or if hpp-fcl
         support is not compiled into this pinocchio build.
         """
         try:
-            _, collision_model, _ = pin.buildModelsFromUrdf(urdf_path)
+            full_model, collision_model, _ = pin.buildModelsFromUrdf(urdf_path)
+
+            if locked_joint_names:
+                joint_ids = [full_model.getJointId(name) for name in locked_joint_names]
+                reference_configuration = pin.neutral(full_model)
+                _, collision_model = pin.buildReducedModel(
+                    full_model, collision_model, joint_ids, reference_configuration
+                )
 
             if len(collision_model.geometryObjects) == 0:
                 return  # URDF has no collision geometry — nothing to do
 
-            # Add all non-adjacent link pairs for distance checking.
-            # pinocchio will automatically skip pairs that are adjacent
-            # (parent-child) since they are always in contact.
+            # addAllCollisionPairs() only skips pairs on the *same* joint —
+            # it does NOT skip adjacent parent/child links, which are always
+            # touching at the joint and will otherwise register as permanent
+            # false-positive self-collisions. An SRDF with <disable_collisions>
+            # entries (e.g. MoveIt's Setup Assistant output) is required to
+            # exclude those; without srdf_path set, expect false positives.
             collision_model.addAllCollisionPairs()
             if srdf_path and os.path.isfile(srdf_path):
                 pin.removeCollisionPairs(self._model, collision_model, srdf_path)
-                                  
 
             self._collision_model = collision_model
             self._collision_data = pin.GeometryData(collision_model)
@@ -124,16 +169,21 @@ class URDFArmConfiguration:
         urdf_path: str,
         srdf_path: str="",
         danger_threshold: float = 0.05,
+        locked_joint_names: list[str] | None = None,
     ) -> "URDFArmConfiguration":
         """Construct with a zero joint configuration inferred from the model."""
-        model = pin.buildModelFromUrdf(urdf_path)
-        return cls(urdf_path, srdf_path, np.zeros(model.nq), danger_threshold=danger_threshold)
+        model = _build_pinocchio_model(urdf_path, locked_joint_names)
+        return cls(
+            urdf_path, srdf_path, np.zeros(model.nq),
+            danger_threshold=danger_threshold, locked_joint_names=locked_joint_names,
+        )
     @classmethod
     def from_xml_string(
         cls,
         urdf_xml: str,
         srdf_path: str = "",
         danger_threshold: float = 0.05,
+        locked_joint_names: list[str] | None = None,
     ) -> "URDFArmConfiguration":
         """Construct from a URDF XML string (e.g. from /robot_description topic)."""
         import tempfile
@@ -143,8 +193,11 @@ class URDFArmConfiguration:
             f.write(urdf_xml)
             tmp_path = f.name
         try:
-            model = pin.buildModelFromUrdf(tmp_path)
-            return cls(tmp_path, srdf_path, np.zeros(model.nq), danger_threshold=danger_threshold)
+            model = _build_pinocchio_model(tmp_path, locked_joint_names)
+            return cls(
+                tmp_path, srdf_path, np.zeros(model.nq),
+                danger_threshold=danger_threshold, locked_joint_names=locked_joint_names,
+            )
         finally:
             os.unlink(tmp_path)
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-#!/home/kat/ros_venv/bin/python3
+#!/home/katallen/.springcontroller_venv/bin/python3
 """
 virtual_spring_node.py
 
@@ -106,13 +106,31 @@ class VirtualSpringNode(Node):
         self.declare_parameter("config_path", "")
         self.declare_parameter("publish_rate_hz", 100.0)
         self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")
+        self.declare_parameter("plot_on_shutdown", False)
         self.declare_parameter("add_gravity_compensation", False)
         self.declare_parameter("recentering_threshold_rad", 0.3)
         self.declare_parameter("srdf_path", "")
         self.declare_parameter("danger_threshold", 0.05)
+        self.declare_parameter("locked_joint_names", [""])
+        self.declare_parameter("torque_disable_service", "")
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
         self._recentering_in_progress = False
+
+        # Fail-safe: on repeated spring-computation failure, switch the arm
+        # out of torque control entirely (e.g. back to Kortex position hold)
+        # rather than trust our own possibly-broken torque computation.
+        # Left unset (default "") for arms like the UR3e where torque mode
+        # is driven by ros2_control rather than a SetBool enable service.
+        torque_disable_service = (
+            self.get_parameter("torque_disable_service").get_parameter_value().string_value
+        )
+        self._torque_disable_client = None
+        if torque_disable_service:
+            self._torque_disable_client = self.create_client(
+                SetBool, torque_disable_service
+            )
+        self._failsafe_triggered = False
 
         # Check config file exists before doing anything else
         config_path = os.path.expanduser(
@@ -251,22 +269,35 @@ class VirtualSpringNode(Node):
         """
         srdf_path = self.get_parameter("srdf_path").get_parameter_value().string_value
         danger_threshold = self.get_parameter("danger_threshold").get_parameter_value().double_value
+        # declare_parameter needs a non-empty list to infer the array type;
+        # [""] is the "no locked joints" sentinel, so filter it back out.
+        locked_joint_names = [
+            name for name in
+            self.get_parameter("locked_joint_names").get_parameter_value().string_array_value
+            if name
+        ]
 
         urdf_xml = fetch_robot_description(self)
         if urdf_xml is not None:
             self.get_logger().info("Loaded URDF from /robot_description topic.")
-            return URDFArmConfiguration.from_xml_string(urdf_xml,danger_threshold=danger_threshold, srdf_path=srdf_path)
+            return URDFArmConfiguration.from_xml_string(
+                urdf_xml, danger_threshold=danger_threshold, srdf_path=srdf_path,
+                locked_joint_names=locked_joint_names,
+            )
 
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         if not urdf_path:
             raise RuntimeError(
                 "No /robot_description topic found and urdf_path parameter not set."
             )
-        
+
         self.get_logger().warn(
             f"No /robot_description topic found; falling back to file: {urdf_path}"
         )
-        return URDFArmConfiguration.from_urdf(urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path)
+        return URDFArmConfiguration.from_urdf(
+            urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path,
+            locked_joint_names=locked_joint_names,
+        )
 
 
     def _set_grav_comp_cb(self, request, response):
@@ -389,10 +420,6 @@ class VirtualSpringNode(Node):
                     )
                     torques *= collision.scale_factor
 
-            for spring in self._springs:
-                if spring._last_state is not None:
-                    self.spring_data[spring.name]['times'].append(elapsed)
-
             # logging to the terminal for debugging and to plot later
             for spring in self._springs:
                 if spring._last_state is not None:
@@ -416,8 +443,34 @@ class VirtualSpringNode(Node):
 
                     #self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
         except Exception as e:
+            # Fail safe rather than simply not publishing: if we just
+            # returned here, torque_relay/gen3_torque_control would keep
+            # applying the last torque command forever with no further
+            # correction as the arm's actual pose drifts away from whatever
+            # that command was valid for.
+            #
+            # Zero torque is only safe here if the hardware itself does
+            # gravity compensation (add_gravity_compensation=False, e.g.
+            # UR3e). On arms without that (add_gravity_compensation=True,
+            # e.g. Gen3 via gen3_torque_control) a bare zero command lets
+            # the arm fall, so fall back to gravity-only torques (drop the
+            # spring forces, keep holding against gravity) using the same
+            # policy the normal path already uses; only fall back further
+            # to a true zero if even that computation fails.
             self.get_logger().error(f"Spring computation failed: {e}")
-            return
+            try:
+                torques = (
+                    self._arm.get_gravity_torques()
+                    if self._add_grav_comp
+                    else np.zeros(self._arm.n_dof)
+                )
+            except Exception as grav_e:
+                self.get_logger().error(
+                    f"Gravity-only fallback also failed: {grav_e}. Publishing zero torques."
+                )
+                torques = np.zeros(self._arm.n_dof)
+
+            self._trigger_torque_disable_failsafe()
 
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()
@@ -429,6 +482,39 @@ class VirtualSpringNode(Node):
         #for name in self._arm.link_names:
         #    T = self._arm.get_link_transform(name)
         #    print(f"{name}: {T[:3, 3]}")
+
+    def _trigger_torque_disable_failsafe(self) -> None:
+        """
+        On repeated spring-computation failure, switch the arm out of
+        torque control entirely via torque_disable_service (if configured)
+        rather than keep trusting our own torque computation. Fires once;
+        requires a manual re-enable afterward rather than auto-recovering,
+        since a control loop that just proved unreliable shouldn't decide
+        on its own when it's safe to resume.
+        """
+        if self._torque_disable_client is None or self._failsafe_triggered:
+            return
+        self._failsafe_triggered = True
+        if not self._torque_disable_client.service_is_ready():
+            self.get_logger().error(
+                "Fail-safe: torque_disable_service not available -- "
+                "cannot switch out of torque control automatically!"
+            )
+            return
+        self.get_logger().error(
+            "Fail-safe: spring computation failing repeatedly -- "
+            "disabling torque control via "
+            f"{self._torque_disable_client.srv_name}."
+        )
+        future = self._torque_disable_client.call_async(SetBool.Request(data=False))
+        future.add_done_callback(self._torque_disable_failsafe_done_cb)
+
+    def _torque_disable_failsafe_done_cb(self, future) -> None:
+        try:
+            result = future.result()
+            self.get_logger().error(f"Fail-safe torque disable result: {result.message}")
+        except Exception as e:
+            self.get_logger().error(f"Fail-safe torque disable call failed: {e}")
 
     def _target_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
@@ -785,7 +871,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.plot_spring_extensions()
+        if node.get_parameter("plot_on_shutdown").get_parameter_value().bool_value:
+            node.plot_spring_extensions()
         node.destroy_node()
         rclpy.shutdown()
 
