@@ -263,6 +263,40 @@ Press `f` in its terminal to toggle display of every available attachment
 frame as a labeled dot -- useful for picking a `link_name` for a spring.
 
 
+## Known incomplete features
+
+**Re-centering** (`_check_equilibrium_shift`/`_recenter_thread` in
+`virtual_spring_node.py`, params `recentering_threshold_rad` /
+`recentering_enabled`). Intent: after any spring change, if the new
+equilibrium is far enough from the current pose, automatically switch to
+position control, run an `equilibrium_mover` to get there smoothly, then
+switch back to effort control and re-enable springs -- avoiding a sudden
+kick from springs snapping to a very different target.
+
+Never finished: the `ros2 run` call hardcodes a placeholder package name
+(`your_study_pkg`) that was never filled in, and the whole sequence depends
+on `ros2_control`'s `controller_manager` with specific controller names
+(`scaled_joint_trajectory_controller` / `forward_effort_controller`), which
+doesn't apply to Gen3 at all. It's gated off by default
+(`recentering_enabled: false`) so a large shift just gets logged instead of
+silently disabling your springs -- discovered the hard way when it fired
+on a live Gen3 session via a large joint-spring target change, disabled
+springs, then failed immediately since Gen3 has no `controller_manager`
+(now fixed to always re-enable springs regardless of outcome, but the
+underlying sequence still doesn't work for Gen3 and isn't finished for
+UR3e).
+
+To finish it: replace `your_study_pkg` with the real package, confirm the
+controller names match your `ros2_control` setup, and decide whether Gen3
+needs an equivalent (it has no `controller_manager`, so the sequence would
+need a different mechanism entirely -- possibly just skipping straight to
+gravity-comp-only torques during the transition instead). Or: if this
+turns out not to be needed, `recentering_threshold_rad`/
+`recentering_enabled`/`_check_equilibrium_shift`/`_recenter_thread` and the
+recentering call sites in `_add_spring_cb`/`_add_joint_spring_cb` can be
+deleted outright.
+
+
 ## Topics
 
 | Topic | Type | Description |

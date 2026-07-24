@@ -317,7 +317,8 @@ class VirtualSpring:
         #print(f"Computing torques for {self.name} (enabled={self.enabled})")  # debug
         if not self.enabled:
             self._last_state = None
-            print(f"{self.name} is disabled; returning zero torques.")
+            print(f"{self.name}: spring disabled, contributing zero torque "
+                  f"(gravity comp, if enabled, is unaffected).")
             return zero_torques
 
         # 1. World-space position of the attachment point
@@ -503,6 +504,8 @@ class JointSpring:
         n_dof = arm.n_dof
         if not self.enabled:
             self._last_state = None
+            print(f"{self.name}: joint spring disabled, contributing zero "
+                  f"torque (gravity comp, if enabled, is unaffected).")
             return np.zeros(n_dof)
 
         joint_index = arm.joint_names.index(self.joint_name)

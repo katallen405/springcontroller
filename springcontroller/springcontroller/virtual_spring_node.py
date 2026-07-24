@@ -110,12 +110,23 @@ class VirtualSpringNode(Node):
         self.declare_parameter("plot_on_shutdown", False)
         self.declare_parameter("add_gravity_compensation", False)
         self.declare_parameter("recentering_threshold_rad", 0.3)
+        # Off by default: the re-centering sequence (switch to position
+        # control, run equilibrium_mover, switch back) depends on
+        # ros2_control's controller_manager and a real equilibrium_mover
+        # package -- neither applies to Gen3, and even on UR3e it currently
+        # points at a placeholder package name ("your_study_pkg") that was
+        # never filled in. Until that's actually finished and verified,
+        # this stays opt-in so a large equilibrium shift never silently
+        # disables springs on a robot/setup that can't complete the
+        # sequence. When off, the shift is still computed and logged.
+        self.declare_parameter("recentering_enabled", False)
         self.declare_parameter("srdf_path", "")
         self.declare_parameter("danger_threshold", 0.05)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
+        self._recentering_enabled = self.get_parameter("recentering_enabled").get_parameter_value().bool_value
         self._recentering_in_progress = False
 
         # Fail-safe: on repeated spring-computation failure, switch the arm
@@ -609,11 +620,18 @@ class VirtualSpringNode(Node):
 
     def _check_equilibrium_shift(self) -> None:
         """
-        Called after any spring change. Solves for the new equilibrium and
-        if the shift from current position exceeds recentering_threshold_rad,
-        triggers a re-centering cycle:
+        Called after any spring change. Always solves for the new
+        equilibrium and logs the shift. If it exceeds
+        recentering_threshold_rad AND recentering_enabled is true, triggers
+        a re-centering cycle:
           disable springs → switch to position controller →
           run equilibrium_mover → switch back to effort → re-enable springs
+
+        recentering_enabled defaults to false (see its declare_parameter
+        call) since this cycle depends on ros2_control's controller_manager
+        and a real equilibrium_mover package -- neither applies to Gen3,
+        and it's not yet finished even for UR3e. With it off, a large shift
+        is logged but springs are left alone.
         """
         if self._recentering_in_progress:
             self.get_logger().warn(
@@ -658,6 +676,16 @@ class VirtualSpringNode(Node):
             self.get_logger().info("Shift within threshold — no re-centering needed.")
             return
 
+        if not self._recentering_enabled:
+            self.get_logger().warn(
+                f"Large equilibrium shift ({np.degrees(shift):.1f} deg) but "
+                "recentering_enabled is false -- not auto-disabling springs. "
+                "Set recentering_enabled:=true once the re-centering sequence "
+                "(controller_manager + equilibrium_mover) is actually set up "
+                "for this robot."
+            )
+            return
+
         self.get_logger().warn(
             f"Large equilibrium shift ({np.degrees(shift):.1f} deg). "
             "Initiating re-centering."
@@ -678,8 +706,13 @@ class VirtualSpringNode(Node):
         Background thread: switch to position controller, run equilibrium_mover,
         switch back to effort controller, re-enable springs.
 
-        Springs remain disabled and the node logs a fatal message if any step
-        fails — manual recovery required in that case.
+        Springs are always re-enabled on the way out, success or failure --
+        re-enabling itself is never unsafe (a spring computing torques that
+        don't reach the motors because the wrong controller is active is a
+        no-op, not a hazard), whereas leaving them silently disabled forever
+        is the real footgun. A failure is still logged fatally, since it
+        means the controller switch may need manual attention -- just not
+        left in a state where the operator has no idea springs are off.
         """
         import subprocess
 
@@ -713,18 +746,20 @@ class VirtualSpringNode(Node):
                 "strictness: 2}",
             ], check=True)
 
-            for spring in self._springs:
-                spring.enabled = True
-            self.get_logger().info("Re-centering complete. Springs re-enabled.")
+            self.get_logger().info("Re-centering complete.")
 
         except subprocess.CalledProcessError as e:
             self.get_logger().fatal(
-                f"Re-centering failed: {e}. "
-                "Springs remain DISABLED — manual intervention required."
+                f"Re-centering failed: {e}. The controller switch may be "
+                "left in a partial state -- check controller_manager "
+                "manually. Springs are being re-enabled regardless; "
+                "if the wrong controller is active they'll be no-ops "
+                "until you fix the controller state."
             )
-            # Do not re-enable springs; leave arm in position control
 
         finally:
+            for spring in self._springs:
+                spring.enabled = True
             self._recentering_in_progress = False
 
     # ------------------------------------------------------------------
