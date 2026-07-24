@@ -47,21 +47,54 @@ import os
 from geometry_msgs import msg
 import rclpy
 from rclpy.node import Node
-
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import numpy as np
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from std_srvs.srv import SetBool
+from std_msgs.msg import String
+import os
+import threading
 
 from springcontroller.virtual_spring import VirtualSpring, SpringCollection
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring
-from std_msgs.msg import String
+
 
 import collections
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+
+
+def fetch_robot_description(node, timeout_sec: float = 3.0) -> str | None:
+    """
+    Try to get the URDF from /robot_description (published by robot_state_publisher,
+    used by RViz). Returns the XML string, or None if nothing arrives in time.
+
+    Uses TRANSIENT_LOCAL durability so we receive the message even if we
+    subscribe after it was published.
+    """
+    description = None
+
+    qos = QoSProfile(
+        depth=1,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        reliability=ReliabilityPolicy.RELIABLE,
+    )
+
+    def cb(msg: String) -> None:
+        nonlocal description
+        description = msg.data
+
+    sub = node.create_subscription(String, "/robot_description", cb, qos)
+    deadline = node.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
+    while description is None and node.get_clock().now() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    node.destroy_subscription(sub)
+    return description
+
 
 class VirtualSpringNode(Node):
 
@@ -74,23 +107,19 @@ class VirtualSpringNode(Node):
         self.declare_parameter("publish_rate_hz", 100.0)
         self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")
         self.declare_parameter("add_gravity_compensation", False)
-        self.declare_parameter("max_torque", -1.0)
-
+        self.declare_parameter("recentering_threshold_rad", 0.3)
+        self.declare_parameter("srdf_path", "")
+        self.declare_parameter("danger_threshold", 0.05)
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
-        max_torque = self.get_parameter("max_torque").get_parameter_value().double_value
-        if max_torque < 0.0:
-            max_torque = 4.0 #default
-            self.get_logger().fatal(f"max_torque not passed, using default of {max_torque}")
-                                    
-        urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
-        if not urdf_path:
-            self.get_logger().fatal("Parameter 'urdf_path' must be set.")
-            raise RuntimeError("urdf_path not set")
+        self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
+        self._recentering_in_progress = False
 
         # Check config file exists before doing anything else
         config_path = os.path.expanduser(
             self.get_parameter("config_path").get_parameter_value().string_value
         )
+        self._config_path = config_path
+
         if config_path:
             if not os.path.isfile(config_path):
                 self.get_logger().fatal(
@@ -99,9 +128,7 @@ class VirtualSpringNode(Node):
                 )
                 raise RuntimeError(f"Config file not found: {config_path}")
             self.get_logger().info(f"Config file found: {config_path}")
-        
-            self.get_logger().info(f"Config file found: {config_path}")
-    
+
             # Actually load the YAML and set parameters
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f)
@@ -125,14 +152,12 @@ class VirtualSpringNode(Node):
                 "provided via ROS parameters directly."
             )
 
-        self._urdf_path = urdf_path
-
-        # Eagerly load URDF so link names can be validated at startup
-        self.get_logger().info(f"Loading URDF from: {urdf_path}")
+        # Load URDF — prefer /robot_description topic, fall back to urdf_path param
+        self.get_logger().info("Loading URDF...")
         try:
-            self._arm = URDFArmConfiguration.from_urdf(self._urdf_path)
+            self._arm = self._load_arm()
         except Exception as e:
-            self.get_logger().fatal(f"Failed to load URDF '{urdf_path}': {e}")
+            self.get_logger().fatal(f"Failed to load URDF: {e}")
             raise RuntimeError(f"Failed to load URDF: {e}") from e
 
         self._joint_order = None
@@ -151,9 +176,8 @@ class VirtualSpringNode(Node):
             T = self._arm.get_link_transform(name)
             print(f"{name}: {T[:3, 3]}")
 
-        
         # Spring collection
-        self._springs = SpringCollection(max_torque=max_torque)
+        self._springs = SpringCollection()
         self._load_springs_from_params()
 
         # Publishers
@@ -219,6 +243,31 @@ class VirtualSpringNode(Node):
         self._grav_comp_srv = self.create_service(
             SetBool, "~/set_gravity_compensation", self._set_grav_comp_cb
         )
+    def _load_arm(self) -> URDFArmConfiguration:
+        """
+        Load URDF from /robot_description topic if available
+        (published by robot_state_publisher; what RViz uses),
+        otherwise fall back to the urdf_path parameter.
+        """
+        srdf_path = self.get_parameter("srdf_path").get_parameter_value().string_value
+        danger_threshold = self.get_parameter("danger_threshold").get_parameter_value().double_value
+
+        urdf_xml = fetch_robot_description(self)
+        if urdf_xml is not None:
+            self.get_logger().info("Loaded URDF from /robot_description topic.")
+            return URDFArmConfiguration.from_xml_string(urdf_xml,danger_threshold=danger_threshold, srdf_path=srdf_path)
+
+        urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
+        if not urdf_path:
+            raise RuntimeError(
+                "No /robot_description topic found and urdf_path parameter not set."
+            )
+        
+        self.get_logger().warn(
+            f"No /robot_description topic found; falling back to file: {urdf_path}"
+        )
+        return URDFArmConfiguration.from_urdf(urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path)
+
 
     def _set_grav_comp_cb(self, request, response):
         self._add_grav_comp = request.data
@@ -319,6 +368,31 @@ class VirtualSpringNode(Node):
             # if self._add_grav_comp is true, include calculations for gravity compensation
             torques = self._springs.compute_total_torques(self._arm, self._add_grav_comp)
 
+            # Self-collision safety scaling
+            collision = self._arm.get_collision_status()
+            if collision is not None:
+                if collision.in_collision:
+                    self.get_logger().error(
+                        f"SELF-COLLISION detected between "
+                        f"{collision.closest_pair[0]} and {collision.closest_pair[1]}! "
+                        f"Zeroing torques.",
+                        throttle_duration_sec=1.0,
+                    )
+                    torques = np.zeros_like(torques)
+                elif collision.in_danger:
+                    self.get_logger().warn(
+                        f"Near self-collision: {collision.closest_pair[0]} / "
+                        f"{collision.closest_pair[1]}, "
+                        f"dist={collision.min_distance:.3f}m, "
+                        f"scale={collision.scale_factor:.2f}",
+                        throttle_duration_sec=0.5,
+                    )
+                    torques *= collision.scale_factor
+
+            for spring in self._springs:
+                if spring._last_state is not None:
+                    self.spring_data[spring.name]['times'].append(elapsed)
+
             # logging to the terminal for debugging and to plot later
             for spring in self._springs:
                 if spring._last_state is not None:
@@ -384,6 +458,129 @@ class VirtualSpringNode(Node):
         response.message = f"All springs {state}."
         self.get_logger().info(response.message)
         return response
+
+    # ------------------------------------------------------------------
+    # Runtime re-centering
+    # ------------------------------------------------------------------
+
+    def _check_equilibrium_shift(self) -> None:
+        """
+        Called after any spring change. Solves for the new equilibrium and
+        if the shift from current position exceeds recentering_threshold_rad,
+        triggers a re-centering cycle:
+          disable springs → switch to position controller →
+          run equilibrium_mover → switch back to effort → re-enable springs
+        """
+        if self._recentering_in_progress:
+            self.get_logger().warn(
+                "Re-centering already in progress; ignoring equilibrium check."
+            )
+            return
+
+        q_current = self._arm.joint_positions
+        n_dof = self._arm.n_dof
+
+        from scipy.optimize import fsolve
+
+        def residual(angles):
+            self._arm.update_from_angles(angles, np.zeros(n_dof))
+            return (self._springs.compute_total_torques(self._arm, False)
+                    + self._arm.get_gravity_torques())
+
+        q_star, info, ier, _ = fsolve(residual, q_current, full_output=True)
+
+        # Restore current state after solve
+        self._arm.update_from_angles(q_current, np.zeros(n_dof))
+
+        if ier != 1:
+            self.get_logger().error(
+                "Equilibrium solve did not converge after spring change. "
+                "Leaving arm in current configuration."
+            )
+            return
+
+        shift = np.max(np.abs(q_star - q_current))
+        self.get_logger().info(
+            f"New equilibrium shift: {np.degrees(shift):.1f} deg "
+            f"(threshold: {np.degrees(self._recentering_threshold):.1f} deg)"
+        )
+
+        if shift < self._recentering_threshold:
+            self.get_logger().info("Shift within threshold — no re-centering needed.")
+            return
+
+        self.get_logger().warn(
+            f"Large equilibrium shift ({np.degrees(shift):.1f} deg). "
+            "Initiating re-centering."
+        )
+        self._recentering_in_progress = True
+
+        for spring in self._springs:
+            spring.enabled = False
+
+        threading.Thread(
+            target=self._recenter_thread,
+            args=(q_star,),
+            daemon=True,
+        ).start()
+
+    def _recenter_thread(self, q_star: np.ndarray) -> None:
+        """
+        Background thread: switch to position controller, run equilibrium_mover,
+        switch back to effort controller, re-enable springs.
+
+        Springs remain disabled and the node logs a fatal message if any step
+        fails — manual recovery required in that case.
+        """
+        import subprocess
+
+        try:
+            self.get_logger().info("Re-centering: switching to position controller.")
+            subprocess.run([
+                "ros2", "service", "call",
+                "/controller_manager/switch_controller",
+                "controller_manager_msgs/srv/SwitchController",
+                "{activate_controllers: [scaled_joint_trajectory_controller], "
+                "deactivate_controllers: [forward_effort_controller], "
+                "strictness: 2}",
+            ], check=True)
+
+            self.get_logger().info("Re-centering: running equilibrium_mover.")
+            subprocess.run([
+                "ros2", "run", "your_study_pkg", "equilibrium_mover",
+                "--ros-args",
+                "-p", f"config_path:={self._config_path}",
+                "-p", "velocity_scaling:=0.1",
+                "-p", "accel_scaling:=0.1",
+            ], check=True)
+
+            self.get_logger().info("Re-centering: switching back to effort controller.")
+            subprocess.run([
+                "ros2", "service", "call",
+                "/controller_manager/switch_controller",
+                "controller_manager_msgs/srv/SwitchController",
+                "{activate_controllers: [forward_effort_controller], "
+                "deactivate_controllers: [scaled_joint_trajectory_controller], "
+                "strictness: 2}",
+            ], check=True)
+
+            for spring in self._springs:
+                spring.enabled = True
+            self.get_logger().info("Re-centering complete. Springs re-enabled.")
+
+        except subprocess.CalledProcessError as e:
+            self.get_logger().fatal(
+                f"Re-centering failed: {e}. "
+                "Springs remain DISABLED — manual intervention required."
+            )
+            # Do not re-enable springs; leave arm in position control
+
+        finally:
+            self._recentering_in_progress = False
+
+    # ------------------------------------------------------------------
+    # add_spring callback — unchanged except for _check_equilibrium_shift call
+    # ------------------------------------------------------------------
 
     def _add_spring_cb(
         self, request: AddSpring.Request, response: AddSpring.Response
@@ -470,6 +667,7 @@ class VirtualSpringNode(Node):
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
+        self._check_equilibrium_shift()
         return response
 
     def _load_springs_from_params(self) -> None:

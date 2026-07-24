@@ -1,0 +1,29 @@
+/**:
+  ros__parameters:
+
+    # List of spring names to load.
+    spring_names:
+      - tip_spring
+
+    springs:
+
+      tip_spring:
+        link_name:    "bracelet_link"        # wrist/end-effector link on Gen3 7-DOF
+        local_point:  [0.0, 0.0, 0.1]       # attachment point in link-local frame (m)
+        target:       [0.5, 0.0, 0.5]       # target position in world frame (m)
+        stiffness:    50.0                   # N/m  (start low for safety)
+        damping:      5.0                    # N·s/m
+        rest_length:  0.0                    # m  (0 = zero-length spring)
+        inner_radius: 0.0
+        outer_radius: 0.0
+
+      # Uncomment to add a second spring at the forearm
+      # elbow_spring:
+      #   link_name:    "forearm_link"
+      #   local_point:  [0.0, 0.0, 0.1]
+      #   target:       [0.3, 0.0, 0.4]
+      #   stiffness:    30.0
+      #   damping:      3.0
+      #   rest_length:  0.0
+      #   inner_radius: 0.0
+      #   outer_radius: 0.0

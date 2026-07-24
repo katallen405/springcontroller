@@ -15,6 +15,8 @@ setup(
         ("share/" + package_name + "/config", ["config/kinova_springs.yaml"]),
         ("share/" + package_name + "/config", ["config/2DoF_springs.yaml"]),
         ("share/" + package_name + "/config", ["config/gen3_springs.yaml"]),
+        ("share/" + package_name + "/launch", ["launch/press_to_pin.launch.py"]),
+        ("share/" + package_name + "/config", ["config/gen2_kinova_springs.yaml"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -26,7 +28,9 @@ setup(
     entry_points={
         "console_scripts": [
             "virtual_spring_node = springcontroller.virtual_spring_node:main",
-        "torque_relay = springcontroller.torque_relay:main",
+            "torque_relay = springcontroller.torque_relay:main",
+            "equilibrium_mover = springcontroller.equilibrium_mover:main",
+            "press_to_pin = springcontroller.press_to_pin:main",
         ],
 
     },
