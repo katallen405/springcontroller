@@ -169,7 +169,30 @@ ros2 service call /virtual_spring_node/add_spring \
 
 ---
 
+## Add a joint spring
+
+Pulls a single joint toward a target angle directly -- no Jacobian, so it
+supplies restoring torque on rotational axes a Cartesian spring can be
+structurally blind to (e.g. a wrist joint coaxial with the spring's
+attachment point). See the README's "Joint springs" section for the full
+explanation.
+
+```bash
+ros2 service call /virtual_spring_node/add_joint_spring \
+    springcontroller_interfaces/srv/AddJointSpring "{
+        name: 'wrist_center',
+        joint_name: 'joint_7',
+        target_angle: 0.0,
+        stiffness: 2.0,
+        damping: 0.3
+    }"
+```
+
+---
+
 ## Remove a spring
+
+Works for either spring type -- it's name-based, not type-specific.
 
 ```bash
 ros2 service call /virtual_spring_node/remove_spring \
@@ -186,6 +209,13 @@ ros2 topic pub --once /virtual_spring_node/target/tip_spring \
         header: {frame_id: 'world'},
         point: {x: -0.3, y: 0.2, z: 0.5}
     }"
+```
+
+## Move a joint spring target at runtime
+
+```bash
+ros2 topic pub --once /virtual_spring_node/joint_target/wrist_center \
+    std_msgs/msg/Float64 "{data: 0.5}"
 ```
 
 ---
@@ -326,6 +356,29 @@ its frame, it just moves rigidly with the wrist. Use `end_effector_link` or
 finger position); a fingertip link is only as accurate as the gripper's
 real open/closed state matches the neutral pose the model was built with,
 since the locked joints aren't measured at runtime.
+
+### Adding a joint spring (e.g. Gen3 wrist)
+
+`joint_7`'s axis runs through `end_effector_link`, so a Cartesian spring
+attached there supplies exactly zero restoring torque for that joint's own
+rotation -- add a `joint_springs` block to the same config file to give it
+one:
+
+```yaml
+/**:
+  ros__parameters:
+    spring_names: [tip_spring]
+    springs:
+      tip_spring:
+        # ... as above ...
+    joint_spring_names: [wrist_center]
+    joint_springs:
+      wrist_center:
+        joint_name: "joint_7"
+        stiffness:  2.0   # N*m/rad -- start low
+        damping:    0.3   # N*m*s/rad
+        # target_angle omitted -> defaults to joint_7's current angle at load
+```
 
 ---
 

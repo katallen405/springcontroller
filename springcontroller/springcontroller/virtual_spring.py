@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Protocol, Optional
@@ -63,6 +64,22 @@ class ArmConfiguration(Protocol):
 
     @property
     def n_dof(self) -> int: ...
+
+    @property
+    def joint_names(self) -> list[str]:
+        """Joint names in n_dof/joint_velocities order (used by JointSpring
+        to resolve a configured joint_name to a DOF index)."""
+        ...
+
+    def get_joint_angle(self, joint_index: int) -> float:
+        """
+        Return the current angle (rad) of the joint at DOF index
+        joint_index. Backends decode their own position representation
+        here (e.g. pinocchio's cos/sin encoding for continuous joints) so
+        callers like JointSpring don't need to know backend-specific
+        details.
+        """
+        ...
 
     def get_link_transform(self, link_name: str) -> np.ndarray:
         """
@@ -148,6 +165,34 @@ class SpringState:
     displacement: np.ndarray
     extension: float
     force_world: np.ndarray
+    torques: np.ndarray
+
+
+@dataclass
+class JointSpringState:
+    """
+    Snapshot of a :class:`JointSpring`'s state after the most recent call to
+    :meth:`JointSpring.compute_torques`.
+
+    Attributes
+    ----------
+    current_angle : float
+        Current angle (rad) of the joint.
+    extension : float
+        Signed angular error (rad) between current_angle and target_angle
+        (shortest-path, wrap-aware). Named `extension` -- not `angle_error`
+        -- so a JointSpring duck-types against SpringState for the shared
+        plotting/bookkeeping code in virtual_spring_node.py that reads
+        spring._last_state.extension regardless of spring type. It's an
+        angle here, not a distance.
+    torque : float
+        Scalar torque (N·m) commanded on this joint.
+    torques : np.ndarray, shape (n_dof,)
+        Full generalized torque vector (zero everywhere except this joint).
+    """
+    current_angle: float
+    extension: float
+    torque: float
     torques: np.ndarray
 
 
@@ -379,6 +424,127 @@ class VirtualSpring:
             f"k={self.stiffness} N/m, "
             f"b={self.damping} N·s/m, "
             f"rest_length={self.rest_length} m, "
+            f"enabled={self.enabled})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# JointSpring
+# ---------------------------------------------------------------------------
+
+class JointSpring:
+    """
+    A virtual torsional spring that pulls a single joint toward a target
+    angle, independent of any link's Cartesian pose.
+
+    Unlike :class:`VirtualSpring`, this acts directly on one joint's own
+    DOF -- no Jacobian involved -- so it can supply restoring torque on
+    rotational axes a Cartesian spring is structurally blind to (e.g. a
+    wrist joint whose axis passes through the spring's attachment point,
+    where rotating that joint doesn't move the attachment point in world
+    space at all, so a VirtualSpring there produces exactly zero torque
+    regardless of stiffness).
+
+        τ_j = -k · Δθ - b · θ̇
+
+    where Δθ is the shortest-path signed angular error (current - target,
+    wrapped into (-π, π]) and θ̇ is the joint's own velocity.
+
+    Parameters
+    ----------
+    joint_name : str
+        Name of the joint (must appear in arm.joint_names).
+    target_angle : float
+        Target angle (rad) the spring pulls the joint toward.
+    stiffness : float
+        Spring stiffness k (N·m/rad). Must be ≥ 0.
+    damping : float, optional
+        Viscous damping coefficient b (N·m·s/rad). Default 0. Must be ≥ 0.
+    enabled : bool, optional
+        If False the spring produces zero torque. Default True.
+    name : str
+        Human-readable label for logging / debugging.
+    """
+
+    def __init__(
+        self,
+        joint_name: str,
+        target_angle: float,
+        stiffness: float,
+        damping: float = 0.0,
+        enabled: bool = True,
+        name: str = "",
+    ):
+        self.joint_name = joint_name
+        self.target_angle = float(target_angle)
+        self.stiffness = stiffness
+        self.damping = damping
+        self.enabled = enabled
+        self.name = name or f"joint_spring_{joint_name}"
+
+        if stiffness < 0:
+            raise ValueError(f"stiffness must be ≥ 0, got {stiffness}")
+        if damping < 0:
+            raise ValueError(f"damping must be ≥ 0, got {damping}")
+
+        self._last_state: Optional[JointSpringState] = None
+
+    def compute_torques(self, arm: ArmConfiguration) -> np.ndarray:
+        """
+        Compute the generalized joint torques produced by this spring given
+        the current arm configuration.
+
+        Returns
+        -------
+        np.ndarray, shape (n_dof,)
+            Zero everywhere except this spring's joint. Returns an all-zero
+            vector if ``self.enabled`` is False.
+        """
+        n_dof = arm.n_dof
+        if not self.enabled:
+            self._last_state = None
+            return np.zeros(n_dof)
+
+        joint_index = arm.joint_names.index(self.joint_name)
+        current_angle = arm.get_joint_angle(joint_index)
+
+        # Shortest signed path from target to current -- avoids yanking a
+        # continuous joint the long way around near the wrap point.
+        angle_error = math.remainder(current_angle - self.target_angle, 2 * math.pi)
+        velocity = arm.joint_velocities[joint_index]
+
+        torque = -self.stiffness * angle_error - self.damping * velocity
+
+        torques = np.zeros(n_dof)
+        torques[joint_index] = torque
+
+        self._last_state = JointSpringState(
+            current_angle=current_angle,
+            extension=float(angle_error),
+            torque=float(torque),
+            torques=torques,
+        )
+        return torques
+
+    @property
+    def last_state(self) -> Optional[JointSpringState]:
+        """
+        The :class:`JointSpringState` snapshot from the most recent
+        :meth:`compute_torques` call, or ``None`` if it has never been
+        called or the spring is disabled.
+        """
+        return self._last_state
+
+    def move_target(self, new_target_angle: float) -> None:
+        """Update the target angle (rad)."""
+        self.target_angle = float(new_target_angle)
+
+    def __repr__(self) -> str:
+        return (
+            f"JointSpring(name={self.name!r}, "
+            f"joint={self.joint_name!r}, "
+            f"k={self.stiffness} N·m/rad, "
+            f"b={self.damping} N·m·s/rad, "
             f"enabled={self.enabled})"
         )
 

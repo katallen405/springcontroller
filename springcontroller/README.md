@@ -106,6 +106,38 @@ Edit `config/springs.yaml` to define your springs:
 `link_name` must match a frame name in your URDF. You can list all available
 frames with:
 
+### Joint springs
+
+A `VirtualSpring` pulls a Cartesian point toward a Cartesian target via the
+Jacobian transpose -- which means it can be structurally blind to certain
+joint rotations. A joint whose axis passes through the spring's attachment
+point (e.g. a wrist joint under a coaxial tool flange) can rotate freely
+without moving that point at all, so the spring supplies exactly zero
+restoring torque there no matter how far it drifts. `JointSpring` fills
+that gap: it pulls one joint directly toward a target angle, independent
+of any link's Cartesian pose.
+
+```yaml
+/**:
+  ros__parameters:
+    joint_spring_names: [wrist_center]
+    joint_springs:
+      wrist_center:
+        joint_name: "joint_7"
+        stiffness:  2.0   # N*m/rad
+        damping:    0.3   # N*m*s/rad
+        # target_angle omitted -> defaults to the joint's current angle at
+        # load time (a soft "hold here" spring). Set it explicitly for a
+        # fixed target instead.
+```
+
+Add both `springs` and `joint_springs` blocks to the same config file to
+use them together -- they're summed into the same total torque. Runtime
+target updates: `~/joint_target/<name>` (`std_msgs/Float64`, radians),
+mirroring `~/target/<name>` for Cartesian springs. Add/remove at runtime via
+`~/add_joint_spring` (`springcontroller_interfaces/AddJointSpring`) and the
+existing `~/remove_spring` (name-based, works for either spring type).
+
 ## Launch
 
 ### Kinova Gen3 (via gen3_torque_control node)
@@ -237,13 +269,17 @@ frame as a labeled dot -- useful for picking a `link_name` for a spring.
 |---|---|---|
 | `~/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities |
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
-| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a spring's target at runtime |
+| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
+| `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 
 ## Services
 
 | Service | Type | Description |
 |---|---|---|
 | `~/enable` | `std_srvs/SetBool` | Enable / disable all springs |
+| `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
+| `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
+| `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (either type) |
 
 
 ## Using the library directly

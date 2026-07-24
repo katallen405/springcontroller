@@ -396,3 +396,10 @@ class URDFArmConfiguration:
                 f"Link '{link_name}' not found in URDF. "
                 f"Available frames: {sorted(available)}"
             )
+
+    def validate_joint_name(self, joint_name: str) -> None:
+        if joint_name not in self.joint_names:
+            raise ValueError(
+                f"Joint '{joint_name}' not found in URDF. "
+                f"Available joints: {sorted(self.joint_names)}"
+            )

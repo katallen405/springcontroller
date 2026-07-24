@@ -40,6 +40,7 @@ config_path : str  -- path to the springs YAML file (checked at startup)
 springs.<n>.*     -- per-spring config (see config/springs.yaml)
 """
 
+import math
 import os
 
 #from typeguard import value
@@ -52,14 +53,14 @@ import numpy as np
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from std_srvs.srv import SetBool
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 import os
 import threading
 
-from springcontroller.virtual_spring import VirtualSpring, SpringCollection
+from springcontroller.virtual_spring import VirtualSpring, JointSpring, SpringCollection
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
-from springcontroller_interfaces.srv import AddSpring, RemoveSpring
+from springcontroller_interfaces.srv import AddSpring, RemoveSpring, AddJointSpring
 
 
 import collections
@@ -218,26 +219,41 @@ class VirtualSpringNode(Node):
         self._remove_spring_srv = self.create_service(
             RemoveSpring, "~/remove_spring", self._remove_spring_cb
 )
+        # Removal is shared: RemoveSpring is name-based and doesn't care
+        # about spring type, so it works for joint springs too.
+        self._add_joint_spring_srv = self.create_service(
+            AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
+        )
         # Per-spring target update subscriptions
         for spring in self._springs:
-            topic = f"~/target/{spring.name}"
-            self.create_subscription(
-                PointStamped,
-                topic,
-                lambda msg, s=spring: self._target_cb(msg, s),
-                10,
-            )
-            self.get_logger().info(f"Listening for target updates on {topic}")
+            if isinstance(spring, VirtualSpring):
+                topic = f"~/target/{spring.name}"
+                self.create_subscription(
+                    PointStamped,
+                    topic,
+                    lambda msg, s=spring: self._target_cb(msg, s),
+                    10,
+                )
+                self.get_logger().info(f"Listening for target updates on {topic}")
 
-            # and for the attachment points
-            topic = f"~/attachment/{spring.name}"
-            self.create_subscription(
-                PointStamped,
-                topic,
-                lambda msg, s=spring: self._attachment_cb(msg, s),
-                10,
-            )
-            
+                # and for the attachment points
+                topic = f"~/attachment/{spring.name}"
+                self.create_subscription(
+                    PointStamped,
+                    topic,
+                    lambda msg, s=spring: self._attachment_cb(msg, s),
+                    10,
+                )
+            elif isinstance(spring, JointSpring):
+                topic = f"~/joint_target/{spring.name}"
+                self.create_subscription(
+                    Float64,
+                    topic,
+                    lambda msg, s=spring: self._joint_target_cb(msg, s),
+                    10,
+                )
+                self.get_logger().info(f"Listening for target updates on {topic}")
+
         # Services
         self._enable_srv = self.create_service(
             SetBool, "~/enable", self._enable_cb
@@ -351,6 +367,42 @@ class VirtualSpringNode(Node):
             inner_radius=float(_get("inner_radius",0.0)),
             outer_radius=float(_get("outer_radius",0.0)),
     )
+        return spring
+
+    def _load_one_joint_spring(self, name: str) -> JointSpring:
+        """Load a single joint spring by name from current parameters. Raises on error."""
+        prefix = f"joint_springs.{name}"
+        self._declare_or_ignore(f"{prefix}.joint_name",   "")
+        # NaN is a sentinel for "not set in config" -- defaults to the
+        # joint's current angle at load time (a soft hold-here spring)
+        # rather than requiring every joint spring to specify a target.
+        self._declare_or_ignore(f"{prefix}.target_angle", float("nan"))
+        self._declare_or_ignore(f"{prefix}.stiffness",    0.0)
+        self._declare_or_ignore(f"{prefix}.damping",      0.0)
+
+        def _get(key, default=None, _prefix=prefix):
+            val = self.get_parameter(f"{_prefix}.{key}").value
+            return default if val is None else val
+
+        joint_name = _get("joint_name")
+        self._arm.validate_joint_name(joint_name)  # raises ValueError if bad
+
+        target_angle = float(_get("target_angle", float("nan")))
+        if math.isnan(target_angle):
+            joint_index = self._arm.joint_names.index(joint_name)
+            target_angle = self._arm.get_joint_angle(joint_index)
+            self.get_logger().info(
+                f"Joint spring '{name}': no target_angle configured, "
+                f"defaulting to current angle ({target_angle:.4f} rad)."
+            )
+
+        spring = JointSpring(
+            joint_name=joint_name,
+            target_angle=target_angle,
+            stiffness=float(_get("stiffness", 0.0)),
+            damping=float(_get("damping", 0.0)),
+            name=name,
+        )
         return spring
     def _joint_state_cb(self, msg: JointState) -> None:
     # Build joint reordering maps on first message
@@ -526,7 +578,13 @@ class VirtualSpringNode(Node):
 
     def _attachment_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
-        spring.local_attachment_point = np.array([p.x, p.y, p.z])    
+        spring.local_attachment_point = np.array([p.x, p.y, p.z])
+
+    def _joint_target_cb(self, msg: Float64, spring: JointSpring) -> None:
+        spring.move_target(msg.data)
+        self.get_logger().debug(
+            f"Updated target for '{spring.name}': {msg.data:.4f} rad"
+        )
 
     def _declare_or_ignore(self, name, default):
         try:
@@ -761,6 +819,72 @@ class VirtualSpringNode(Node):
         self._check_equilibrium_shift()
         return response
 
+    def _add_joint_spring_cb(
+        self, request: AddJointSpring.Request, response: AddJointSpring.Response
+    ) -> AddJointSpring.Response:
+        name = request.name.strip()
+        if not name:
+            response.success = False
+            response.message = "Joint spring name must not be empty."
+            return response
+
+        if any(s.name == name for s in self._springs):
+            response.success = False
+            response.message = f"Spring '{name}' already exists."
+            return response
+
+        try:
+            self._arm.validate_joint_name(request.joint_name)
+            spring = JointSpring(
+                name=name,
+                joint_name=request.joint_name,
+                target_angle=request.target_angle,
+                stiffness=request.stiffness,
+                damping=request.damping,
+            )
+        except ValueError as e:
+            response.success = False
+            response.message = str(e)
+            return response
+
+        # Mirror the parameter namespace so external tools (e.g. visualisation)
+        # can see this spring the same way as one loaded from YAML
+        prefix = f"joint_springs.{name}"
+        params = {
+            f"{prefix}.joint_name":   (rclpy.parameter.Parameter.Type.STRING, request.joint_name),
+            f"{prefix}.target_angle": (rclpy.parameter.Parameter.Type.DOUBLE, request.target_angle),
+            f"{prefix}.stiffness":    (rclpy.parameter.Parameter.Type.DOUBLE, request.stiffness),
+            f"{prefix}.damping":      (rclpy.parameter.Parameter.Type.DOUBLE, request.damping),
+        }
+        for key, (ptype, value) in params.items():
+            self._declare_or_ignore(key, value)
+            self.set_parameters([rclpy.parameter.Parameter(key, ptype, value)])
+
+        # Also add the name to joint_spring_names so it shows up if someone lists params
+        current_names = list(
+            self.get_parameter("joint_spring_names").get_parameter_value().string_array_value
+        )
+        if name not in current_names:
+            self.set_parameters([
+                rclpy.parameter.Parameter("joint_spring_names",
+                                          rclpy.Parameter.Type.STRING_ARRAY,
+                                          current_names + [name])
+            ])
+
+        self._springs.add(spring)
+        topic = f"~/joint_target/{name}"
+        self.create_subscription(
+            Float64, topic, lambda msg, s=spring: self._joint_target_cb(msg, s), 10
+        )
+
+        response.success = True
+        response.message = f"Joint spring '{name}' added."
+        response.id = len(self._springs) - 1
+        self.get_logger().info(response.message)
+        self._publish_springs_updated()
+        self._check_equilibrium_shift()
+        return response
+
     def _load_springs_from_params(self) -> None:
         self._declare_or_ignore("spring_names", [""])
         spring_names = (
@@ -779,6 +903,24 @@ class VirtualSpringNode(Node):
                 raise
             self._springs.add(spring)
             self.get_logger().info(f"Loaded spring: {spring}")
+
+        self._declare_or_ignore("joint_spring_names", [""])
+        joint_spring_names = (
+            self.get_parameter("joint_spring_names")
+            .get_parameter_value()
+            .string_array_value
+        )
+        self.get_logger().info(f"Joint spring names from params: {list(joint_spring_names)}")
+        for name in joint_spring_names:
+            if not name:
+                continue
+            try:
+                joint_spring = self._load_one_joint_spring(name)
+            except (ValueError, RuntimeError) as e:
+                self.get_logger().fatal(f"Joint spring '{name}' failed to load: {e}")
+                raise
+            self._springs.add(joint_spring)
+            self.get_logger().info(f"Loaded joint spring: {joint_spring}")
 
     def _remove_spring_cb(
         self, request: RemoveSpring.Request, response: RemoveSpring.Response

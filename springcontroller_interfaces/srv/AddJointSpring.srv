@@ -1,0 +1,9 @@
+string name
+string joint_name
+float64 target_angle
+float64 stiffness
+float64 damping
+---
+bool success
+string message
+int32 id

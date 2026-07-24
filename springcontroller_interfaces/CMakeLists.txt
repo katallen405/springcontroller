@@ -7,6 +7,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddSpring.srv"
   "srv/RemoveSpring.srv"
+  "srv/AddJointSpring.srv"
 )
 
 ament_package()
