@@ -84,7 +84,7 @@ ros2 topic echo /virtual_spring_node/joint_torques
 ros2 topic echo /kinova/joint_torque_command
 
 # Watch raw feedback from the Kortex cyclic loop
-ros2 topic echo /kinova/joint_states_lowlevel
+ros2 topic echo /joint_states
 
 # Watch torque-control enable state
 ros2 topic echo /gen3_torque_control/status

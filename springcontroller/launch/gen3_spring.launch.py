@@ -6,7 +6,7 @@ gen3_torque_control node (not ros2_control).
 
 Topic wiring
 ------------
-  /kinova/joint_states_lowlevel  →  virtual_spring_node  (joint positions/velocities)
+  /joint_states  →  virtual_spring_node  (joint positions/velocities)
   virtual_spring_node/joint_torques  →  torque_relay
   torque_relay  →  /kinova/joint_torque_command  (Float64MultiArray, 7 values)
 
@@ -143,10 +143,6 @@ def generate_launch_description():
             },
             LaunchConfiguration("config"),
         ],
-        remappings=[
-            # gen3_torque_node publishes here instead of /joint_states
-            ("/joint_states", "/kinova/joint_states_lowlevel"),
-        ],
     )
 
     torque_relay_node = Node(
@@ -189,8 +185,6 @@ def generate_launch_description():
             SPRINGCONTROLLER_VENV_PYTHON,
             "/home/katallen/sandbox/src/springcontroller/test/armviz.py",
             "--urdf", LaunchConfiguration("urdf_path"),
-            "--ros-args",
-            "-r", "/joint_states:=/kinova/joint_states_lowlevel",
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("armviz")),

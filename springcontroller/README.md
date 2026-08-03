@@ -197,7 +197,7 @@ auto-recover on its own.
 
 Topic flow:
 ```
-/kinova/joint_states_lowlevel → virtual_spring_node → torque_relay → /kinova/joint_torque_command
+/joint_states → virtual_spring_node → torque_relay → /kinova/joint_torque_command
 ```
 
 ### UR3e (via forward_effort_controller)

@@ -33,8 +33,7 @@ def parse_args():
         help="Path to the robot URDF (flattened, no unresolved xacro) to visualize.",
     )
     # Strip ROS-specific args (--ros-args -r ... -p ... etc.) before parsing
-    # our own, so remapping (e.g. /joint_states -> /kinova/joint_states_lowlevel
-    # on Gen3) still works cleanly when launched via ros2 launch/run.
+    # our own, so this still works cleanly when launched via ros2 launch/run.
     return parser.parse_args(remove_ros_args(args=sys.argv)[1:])
 
 
