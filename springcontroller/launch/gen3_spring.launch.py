@@ -114,6 +114,29 @@ def generate_launch_description():
         ),
     )
 
+    collision_scene_arg = DeclareLaunchArgument(
+        "collision_scene",
+        default_value="/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen3_collision_scene.yaml",
+        description=(
+            "Path to the scene collision-objects YAML (tables, fixtures, "
+            "etc.) loaded via the load_collision_scene service -- see "
+            "load_collision_scene:= to actually trigger the load."
+        ),
+    )
+
+    load_collision_scene_arg = DeclareLaunchArgument(
+        "load_collision_scene",
+        default_value="false",
+        description=(
+            "If true, call ~/load_collision_scene with the collision_scene "
+            "YAML a few seconds after startup so the self/scene-collision "
+            "hard clamp has scene objects loaded from the start. Defaults "
+            "to false so a stale or placeholder scene file never silently "
+            "clamps torques -- opt in once the scene YAML matches the "
+            "actual room."
+        ),
+    )
+
     armviz_arg = DeclareLaunchArgument(
         "armviz",
         default_value="false",
@@ -180,6 +203,24 @@ def generate_launch_description():
         ],
     )
 
+    # Fires 3s after launch, same reasoning as enable_torque_control: give
+    # virtual_spring_node time to come up before calling its service.
+    load_collision_scene = TimerAction(
+        period=3.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "service", "call",
+                    "/virtual_spring_node/load_collision_scene",
+                    "springcontroller_interfaces/srv/LoadCollisionScene",
+                    ["{yaml_path: '", LaunchConfiguration("collision_scene"), "'}"],
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("load_collision_scene")),
+            )
+        ],
+    )
+
     armviz_process = ExecuteProcess(
         cmd=[
             SPRINGCONTROLLER_VENV_PYTHON,
@@ -197,9 +238,12 @@ def generate_launch_description():
         add_gravity_compensation_arg,
         torque_control_service_arg,
         enable_torque_control_arg,
+        collision_scene_arg,
+        load_collision_scene_arg,
         armviz_arg,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
+        load_collision_scene,
         armviz_process,
     ])

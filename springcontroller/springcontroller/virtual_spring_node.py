@@ -50,8 +50,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import numpy as np
+import pinocchio as pin
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Pose, PointStamped
+from moveit_msgs.msg import CollisionObject
+from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
 from std_msgs.msg import String, Float64
 import os
@@ -60,12 +63,24 @@ import threading
 from springcontroller.virtual_spring import VirtualSpring, JointSpring, SpringCollection
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
-from springcontroller_interfaces.srv import AddSpring, RemoveSpring, AddJointSpring
+from springcontroller_interfaces.srv import (
+    AddSpring, RemoveSpring, AddJointSpring, LoadCollisionScene,
+)
 
 
 import collections
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+
+
+def _pose_to_se3(pose: Pose) -> pin.SE3:
+    """geometry_msgs/Pose -> pin.SE3. Note the field-order swap: ROS
+    quaternions are (x, y, z, w) but pin.Quaternion takes (w, x, y, z)."""
+    q = pin.Quaternion(
+        pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z
+    )
+    t = np.array([pose.position.x, pose.position.y, pose.position.z])
+    return pin.SE3(q, t)
 
 
 def fetch_robot_description(node, timeout_sec: float = 3.0) -> str | None:
@@ -124,6 +139,7 @@ class VirtualSpringNode(Node):
         self.declare_parameter("danger_threshold", 0.05)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
+        self.declare_parameter("collision_object_topic", "~/collision_object")
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
         self._recentering_enabled = self.get_parameter("recentering_enabled").get_parameter_value().bool_value
@@ -210,6 +226,15 @@ class VirtualSpringNode(Node):
         self._springs = SpringCollection()
         self._load_springs_from_params()
 
+        # Maps a CollisionObject.id to [(internal_object_id, relative_pose), ...]
+        # -- one entry per primitive -- so REMOVE/MOVE messages, which only
+        # carry the top-level id and (for MOVE) a new base pose, can be
+        # fanned out to the right environment objects. relative_pose is each
+        # primitive's pose relative to the CollisionObject's own pose, kept
+        # around so MOVE can recompute world poses without needing the
+        # primitives resent (its contract leaves them empty).
+        self._collision_object_frames: dict[str, list[tuple[str, "pin.SE3"]]] = {}
+
         # Publishers
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
@@ -234,6 +259,24 @@ class VirtualSpringNode(Node):
         # about spring type, so it works for joint springs too.
         self._add_joint_spring_srv = self.create_service(
             AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
+        )
+
+        # Scene collision objects (safety hard-clamp): same wire format
+        # MoveIt's own planning scene uses, so an existing perception/MoveIt
+        # publisher interoperates without any extra glue. ADD/APPEND/REMOVE/
+        # MOVE are handled the same way MoveIt itself interprets them.
+        collision_object_topic = (
+            self.get_parameter("collision_object_topic").get_parameter_value().string_value
+        )
+        self._collision_object_sub = self.create_subscription(
+            CollisionObject, collision_object_topic, self._collision_object_cb, 10
+        )
+        self.get_logger().info(
+            f"Listening for scene collision objects on {collision_object_topic}"
+        )
+
+        self._load_collision_scene_srv = self.create_service(
+            LoadCollisionScene, "~/load_collision_scene", self._load_collision_scene_cb
         )
         # Per-spring target update subscriptions
         for spring in self._springs:
@@ -465,18 +508,22 @@ class VirtualSpringNode(Node):
             # Self-collision safety scaling
             collision = self._arm.get_collision_status()
             if collision is not None:
+                a, b = collision.closest_pair
+                involves_scene_object = (
+                    self._arm.is_environment_object(a)
+                    or self._arm.is_environment_object(b)
+                )
+                kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 if collision.in_collision:
                     self.get_logger().error(
-                        f"SELF-COLLISION detected between "
-                        f"{collision.closest_pair[0]} and {collision.closest_pair[1]}! "
-                        f"Zeroing torques.",
+                        f"{kind} detected between {a} and {b}! Zeroing torques.",
                         throttle_duration_sec=1.0,
                     )
                     torques = np.zeros_like(torques)
                 elif collision.in_danger:
+                    label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
                     self.get_logger().warn(
-                        f"Near self-collision: {collision.closest_pair[0]} / "
-                        f"{collision.closest_pair[1]}, "
+                        f"{label}: {a} / {b}, "
                         f"dist={collision.min_distance:.3f}m, "
                         f"scale={collision.scale_factor:.2f}",
                         throttle_duration_sec=0.5,
@@ -596,6 +643,146 @@ class VirtualSpringNode(Node):
         self.get_logger().debug(
             f"Updated target for '{spring.name}': {msg.data:.4f} rad"
         )
+
+    # ------------------------------------------------------------------
+    # Scene collision objects
+    # ------------------------------------------------------------------
+
+    def _apply_collision_object(self, msg: CollisionObject) -> int:
+        """
+        Register (or replace) every primitive of a CollisionObject as an
+        environment collision object on the arm. Shared by the live
+        ~/collision_object topic and the YAML scene loader -- one code path
+        for ADD/APPEND. Only BOX/CYLINDER primitives are supported (meshes
+        and planes are silently skipped with a warning).
+
+        Returns the number of primitives registered.
+        """
+        object_pose = _pose_to_se3(msg.pose)
+        n_primitives = len(msg.primitives)
+        frames: list[tuple[str, pin.SE3]] = []
+
+        for i, primitive in enumerate(msg.primitives):
+            relative_pose = (
+                _pose_to_se3(msg.primitive_poses[i])
+                if i < len(msg.primitive_poses)
+                else pin.SE3.Identity()
+            )
+
+            if primitive.type == SolidPrimitive.BOX:
+                shape = "box"
+                dims = list(primitive.dimensions[:3])
+            elif primitive.type == SolidPrimitive.CYLINDER:
+                shape = "cylinder"
+                height, radius = primitive.dimensions[:2]
+                dims = [radius, height]
+            else:
+                self.get_logger().warn(
+                    f"CollisionObject '{msg.id}': unsupported primitive "
+                    f"type {primitive.type} (only BOX/CYLINDER are "
+                    "supported), skipping."
+                )
+                continue
+
+            sub_id = msg.id if n_primitives == 1 else f"{msg.id}::{i}"
+            self._arm.add_environment_object(
+                sub_id, shape, dims, object_pose * relative_pose
+            )
+            frames.append((sub_id, relative_pose))
+
+        self._collision_object_frames[msg.id] = frames
+        return len(frames)
+
+    def _collision_object_cb(self, msg: CollisionObject) -> None:
+        if msg.operation in (CollisionObject.ADD, CollisionObject.APPEND):
+            count = self._apply_collision_object(msg)
+            self.get_logger().info(
+                f"Collision object '{msg.id}': {count} shape(s) registered."
+            )
+        elif msg.operation == CollisionObject.REMOVE:
+            for sub_id, _ in self._collision_object_frames.pop(msg.id, []):
+                self._arm.remove_environment_object(sub_id)
+            self.get_logger().info(f"Collision object '{msg.id}' removed.")
+        elif msg.operation == CollisionObject.MOVE:
+            frames = self._collision_object_frames.get(msg.id)
+            if not frames:
+                self.get_logger().warn(
+                    f"Collision object '{msg.id}': MOVE received but the "
+                    "object isn't currently registered; ignoring."
+                )
+                return
+            object_pose = _pose_to_se3(msg.pose)
+            for sub_id, relative_pose in frames:
+                self._arm.move_environment_object(sub_id, object_pose * relative_pose)
+        else:
+            self.get_logger().warn(
+                f"Collision object '{msg.id}': unknown operation "
+                f"{msg.operation}, ignoring."
+            )
+
+    def _load_collision_scene_cb(
+        self, request: LoadCollisionScene.Request, response: LoadCollisionScene.Response
+    ) -> LoadCollisionScene.Response:
+        """
+        Load a static collision scene from YAML (see config/*_collision_scene.yaml
+        for the schema) -- meant to be called once from a launch file so a
+        scene can be pre-defined, but callable at any time to swap it.
+        Builds one CollisionObject per entry and feeds it through the same
+        _apply_collision_object path the live topic uses.
+        """
+        yaml_path = os.path.expanduser(request.yaml_path)
+        try:
+            with open(yaml_path, "r") as f:
+                scene = yaml.safe_load(f) or {}
+        except OSError as e:
+            response.success = False
+            response.message = f"Could not read '{yaml_path}': {e}"
+            response.count = 0
+            return response
+        except yaml.YAMLError as e:
+            response.success = False
+            response.message = f"Malformed YAML in '{yaml_path}': {e}"
+            response.count = 0
+            return response
+
+        total = 0
+        try:
+            for object_id, entry in (scene.get("objects") or {}).items():
+                obj = CollisionObject()
+                obj.id = object_id
+                obj.operation = CollisionObject.ADD
+                obj.header.frame_id = entry.get("frame_id", "")
+
+                primitive = SolidPrimitive()
+                shape = entry["shape"]
+                if shape == "box":
+                    primitive.type = SolidPrimitive.BOX
+                elif shape == "cylinder":
+                    primitive.type = SolidPrimitive.CYLINDER
+                else:
+                    raise ValueError(f"unknown shape '{shape}' for object '{object_id}'")
+                primitive.dimensions = [float(d) for d in entry["dimensions"]]
+                obj.primitives = [primitive]
+
+                pose_entry = entry.get("pose", {})
+                position = pose_entry.get("position", [0.0, 0.0, 0.0])
+                orientation = pose_entry.get("orientation", [0.0, 0.0, 0.0, 1.0])
+                obj.pose.position.x, obj.pose.position.y, obj.pose.position.z = position
+                (obj.pose.orientation.x, obj.pose.orientation.y,
+                 obj.pose.orientation.z, obj.pose.orientation.w) = orientation
+
+                total += self._apply_collision_object(obj)
+        except (KeyError, ValueError, TypeError) as e:
+            response.success = False
+            response.message = f"Error parsing '{yaml_path}': {e}"
+            response.count = total
+            return response
+
+        response.success = True
+        response.message = f"Loaded {total} collision shape(s) from '{yaml_path}'."
+        response.count = total
+        self.get_logger().info(response.message)
+        return response
 
     def _declare_or_ignore(self, name, default):
         try:

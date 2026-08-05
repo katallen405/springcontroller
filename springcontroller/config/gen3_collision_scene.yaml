@@ -1,0 +1,38 @@
+# Scene collision objects for the safety hard-clamp (see urdf_arm_configuration.py's
+# add_environment_object / virtual_spring_node.py's ~/load_collision_scene service).
+#
+# This is a plain data file, not a ROS parameters file -- it's read directly by
+# ~/load_collision_scene, not through declare_parameter. Dimension ordering
+# deliberately mirrors shape_msgs/SolidPrimitive so the mapping is a direct
+# pass-through:
+#   box:      dimensions: [x, y, z]       full side lengths (m)
+#   cylinder: dimensions: [height, radius]  (m)
+#
+# Poses are world-frame (frame_id is currently informational only -- see the
+# "No TF lookup" note in the safety-clamp plan). orientation is [x, y, z, w].
+#
+# Load with:
+#   ros2 service call /virtual_spring_node/load_collision_scene \
+#     springcontroller_interfaces/srv/LoadCollisionScene \
+#     "{yaml_path: '/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen3_collision_scene.yaml'}"
+
+objects:
+
+  table:
+    shape: box
+    dimensions: [1.2, 0.8, 0.05]
+    frame_id: "world"
+    pose:
+      position: [0.6, 0.0, 0.0]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+
+  # Example of a live-tracked obstacle's *initial* placement -- a perception
+  # node can keep this moving afterward with MOVE messages on
+  # ~/collision_object using the same id ("person_1"), no scene reload needed.
+  person_1:
+    shape: cylinder
+    dimensions: [1.8, 0.3]
+    frame_id: "world"
+    pose:
+      position: [1.0, 1.0, 0.0]
+      orientation: [0.0, 0.0, 0.0, 1.0]
