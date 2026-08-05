@@ -255,6 +255,7 @@ class PressToPin(Node):
         self._baseline = np.zeros(n)
         self._baseline_initialized = False
         self._commanded = np.zeros(n)
+        self._commanded_received = False
         self._state = ARMED
         self._candidate_joint: int | None = None
         self._candidate_since: rclpy.time.Time | None = None
@@ -364,6 +365,7 @@ class PressToPin(Node):
         self._commanded = np.array(
             [name_to_effort.get(n, 0.0) for n in self._joint_names]
         )
+        self._commanded_received = True
 
     def _joint_state_cb(self, msg: JointState) -> None:
         if not msg.effort:
@@ -371,6 +373,20 @@ class PressToPin(Node):
                 "JointState has no effort field — press detection needs "
                 "joint efforts.",
                 throttle_duration_sec=10.0,
+            )
+            return
+
+        # Don't seed the baseline (or run detection) until we've seen a
+        # real commanded-torque sample. Without this, the baseline can
+        # latch in with self._commanded still at its zero default if the
+        # first /joint_states callback beats the first commanded-torque
+        # callback, so the whole gravity-comp torque shows up as a
+        # "residual" the moment the real commanded value arrives.
+        if not self._commanded_received:
+            self.get_logger().info(
+                "Waiting for a commanded-torque sample before arming "
+                "press detection...",
+                throttle_duration_sec=2.0,
             )
             return
 
