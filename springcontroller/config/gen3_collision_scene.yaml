@@ -25,6 +25,14 @@ objects:
     pose:
       position: [0.6, 0.0, 0.0]
       orientation: [0.0, 0.0, 0.0, 1.0]
+    # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
+    # URDF link names to exclude from collision pairs against this object,
+    # the environment-object equivalent of an SRDF <disable_collisions>
+    # entry. Needed here because base_link legitimately sits right at the
+    # table surface -- without this it registers a permanent few-cm
+    # near-miss against the table and blanket-scales torques for no real
+    # reason. See add_environment_object()'s docstring.
+    exclude_links: ["base_link"]
 
   # Example of a live-tracked obstacle's *initial* placement -- a perception
   # node can keep this moving afterward with MOVE messages on

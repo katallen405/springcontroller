@@ -648,13 +648,20 @@ class VirtualSpringNode(Node):
     # Scene collision objects
     # ------------------------------------------------------------------
 
-    def _apply_collision_object(self, msg: CollisionObject) -> int:
+    def _apply_collision_object(
+        self, msg: CollisionObject, exclude_links: list[str] | None = None
+    ) -> int:
         """
         Register (or replace) every primitive of a CollisionObject as an
         environment collision object on the arm. Shared by the live
         ~/collision_object topic and the YAML scene loader -- one code path
         for ADD/APPEND. Only BOX/CYLINDER primitives are supported (meshes
         and planes are silently skipped with a warning).
+
+        exclude_links (YAML-only -- moveit_msgs/CollisionObject has no field
+        for it) skips creating collision pairs against those URDF links for
+        every primitive of this object, e.g. the base link against the
+        table it's bolted to. See add_environment_object's docstring.
 
         Returns the number of primitives registered.
         """
@@ -686,7 +693,8 @@ class VirtualSpringNode(Node):
 
             sub_id = msg.id if n_primitives == 1 else f"{msg.id}::{i}"
             self._arm.add_environment_object(
-                sub_id, shape, dims, object_pose * relative_pose
+                sub_id, shape, dims, object_pose * relative_pose,
+                exclude_links=exclude_links,
             )
             frames.append((sub_id, relative_pose))
 
@@ -771,7 +779,8 @@ class VirtualSpringNode(Node):
                 (obj.pose.orientation.x, obj.pose.orientation.y,
                  obj.pose.orientation.z, obj.pose.orientation.w) = orientation
 
-                total += self._apply_collision_object(obj)
+                exclude_links = entry.get("exclude_links") or None
+                total += self._apply_collision_object(obj, exclude_links=exclude_links)
         except (KeyError, ValueError, TypeError) as e:
             response.success = False
             response.message = f"Error parsing '{yaml_path}': {e}"

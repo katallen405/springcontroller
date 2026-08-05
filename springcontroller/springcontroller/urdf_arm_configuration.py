@@ -371,6 +371,7 @@ class URDFArmConfiguration:
         shape: str,
         dimensions: list[float],
         pose: pin.SE3,
+        exclude_links: list[str] | None = None,
     ) -> None:
         """
         Add (or replace) a static collision object in the scene.
@@ -389,6 +390,15 @@ class URDFArmConfiguration:
             hppfcl's own constructor convention.
         pose : pin.SE3
             World-frame placement of the object.
+        exclude_links : list[str], optional
+            URDF link names to skip when creating collision pairs against
+            this object -- the environment-object equivalent of an SRDF
+            <disable_collisions> entry. Use this for permanent, expected
+            "contact" like the base link sitting on the table it's mounted
+            to: without it, that link would register a small permanent
+            near-miss (or worse, an overlap) against every object placed at
+            the mounting surface's height, which is a modeling artifact, not
+            a real hazard, and would blanket-scale torques for no reason.
         """
         if self._collision_model is None or self._collision_data is None:
             raise RuntimeError(
@@ -419,7 +429,14 @@ class URDFArmConfiguration:
 
         geometry_object = pin.GeometryObject(object_id, 0, pose, geom)
         gid = self._collision_model.addGeometryObject(geometry_object)
+        excluded = set(exclude_links or [])
         for i in range(self._n_robot_geoms):
+            if excluded:
+                link_name = self._model.frames[
+                    self._collision_model.geometryObjects[i].parentFrame
+                ].name
+                if link_name in excluded:
+                    continue
             self._collision_model.addCollisionPair(pin.CollisionPair(i, gid))
 
         # Pair topology changed -- GeometryData must be rebuilt to match.
