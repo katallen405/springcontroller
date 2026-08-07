@@ -15,6 +15,8 @@ Prerequisites
   ros2 run gen3_torque_control gen3_torque_node   # must be running first
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition
@@ -27,6 +29,15 @@ from launch_ros.actions import Node
 # shell). See the top-level README.md's "Python venv" section if you're
 # using a differently-named venv.
 SPRINGCONTROLLER_VENV_PYTHON = "/home/katallen/.springcontroller_venv/bin/python3"
+
+# ros2 bag record needs its output directory to exist before the process
+# starts (a bad cwd is an immediate hard failure, not a graceful retry).
+# Created eagerly here, at launch-description-generation time, rather than
+# via a separate ExecuteProcess -- avoids an ordering race against the
+# recorder actually starting. Only covers the *default* rosbag_dir; a
+# CLI-overridden path needs to exist on its own.
+DEFAULT_ROSBAG_DIR = os.path.expanduser("~/gen3_bags")
+os.makedirs(DEFAULT_ROSBAG_DIR, exist_ok=True)
 
 GEN3_JOINT_ORDER = [
     "joint_1", "joint_2", "joint_3", "joint_4",
@@ -170,6 +181,32 @@ def generate_launch_description():
         ),
     )
 
+    record_rosbag_arg = DeclareLaunchArgument(
+        "record_rosbag",
+        default_value="true",
+        description=(
+            "If true (default), record the key torque/state/status topics "
+            "plus /rosout to a rosbag under rosbag_dir for the duration of "
+            "this launch. Replaces ad-hoc 'ros2 topic echo >> file' capture "
+            "(imprecise, single-topic, hard to parse) used through "
+            "2026-08-07 -- a real bag gives properly-timestamped multi-topic "
+            "data, replayable/plottable directly in PlotJuggler. Purely "
+            "additive (a subscriber, not in the control path); default true "
+            "since unlike enabling torque control there's no downside "
+            "beyond disk space."
+        ),
+    )
+
+    rosbag_dir_arg = DeclareLaunchArgument(
+        "rosbag_dir",
+        default_value=DEFAULT_ROSBAG_DIR,
+        description=(
+            "Directory bag files are written under (ros2 bag auto-names "
+            "each run within it). A non-default override must already "
+            "exist -- only the default is created automatically."
+        ),
+    )
+
     virtual_spring_node = Node(
         package="springcontroller",
         executable="virtual_spring_node",
@@ -254,6 +291,26 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("armviz")),
     )
 
+    # Real rosbag of the key torque/state/status topics plus /rosout
+    # (folds in every WARN/ERROR log line too, so recorded data and log
+    # messages line up in one place) -- see record_rosbag_arg. Topics are
+    # captured wherever they're published in the ROS graph, so this picks
+    # up gen3_torque_control's /joint_states and /gen3_torque_control/status
+    # too even though that node isn't started by this launch file.
+    record_rosbag = ExecuteProcess(
+        cmd=[
+            "ros2", "bag", "record",
+            "/joint_states",
+            "/virtual_spring_node/joint_torques",
+            "/kinova/joint_torque_command",
+            "/gen3_torque_control/status",
+            "/rosout",
+        ],
+        cwd=LaunchConfiguration("rosbag_dir"),
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("record_rosbag")),
+    )
+
     return LaunchDescription([
         urdf_path_arg,
         config_arg,
@@ -266,9 +323,12 @@ def generate_launch_description():
         collision_scene_arg,
         load_collision_scene_arg,
         armviz_arg,
+        record_rosbag_arg,
+        rosbag_dir_arg,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
         load_collision_scene,
         armviz_process,
+        record_rosbag,
     ])
