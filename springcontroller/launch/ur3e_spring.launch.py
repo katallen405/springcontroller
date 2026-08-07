@@ -22,7 +22,7 @@ from launch_ros.substitutions import FindPackageShare
 # armviz.py needs meshcat/pinocchio, so it's run with this venv's python
 # explicitly rather than relying on "python3" from PATH (which won't have
 # those unless the venv happens to already be activated in the launching
-# shell). See springcontroller/README.md's "Python venv" section if you're
+# shell). See the top-level README.md's "Python venv" section if you're
 # using a differently-named venv.
 SPRINGCONTROLLER_VENV_PYTHON = "/home/katallen/.springcontroller_venv/bin/python3"
 
