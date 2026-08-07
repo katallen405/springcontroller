@@ -977,7 +977,15 @@ class VirtualSpringNode(Node):
             )
             return
 
-        shift = np.max(np.abs(q_star - q_current))
+        # Wrap to (-pi, pi] before measuring the shift: for continuous
+        # joints, angles feed into a cos/sin encoding (see update_from_angles)
+        # that's exactly 2*pi-periodic, so fsolve is free to converge on an
+        # equilibrium many whole revolutions away from q_current -- an
+        # equally valid root of the periodic residual, but a meaningless
+        # "shift" if measured on the raw unwrapped difference.
+        delta = q_star - q_current
+        delta = np.arctan2(np.sin(delta), np.cos(delta))
+        shift = np.max(np.abs(delta))
         self.get_logger().info(
             f"New equilibrium shift: {np.degrees(shift):.1f} deg "
             f"(threshold: {np.degrees(self._recentering_threshold):.1f} deg)"
