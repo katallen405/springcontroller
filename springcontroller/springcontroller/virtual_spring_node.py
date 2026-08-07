@@ -185,6 +185,7 @@ class VirtualSpringNode(Node):
         )
         self._collision_log_file = None
         self._collision_log_writer = None
+        self._collision_log_last_flush = -1.0
         if collision_log_path:
             try:
                 write_header = not os.path.isfile(collision_log_path)
@@ -390,6 +391,16 @@ class VirtualSpringNode(Node):
         self.spring_data = collections.defaultdict(lambda: {'times': [], 'extensions': [], 'torques':[]})
         self.start_time = None
 
+        # Diagnostic: /joint_states is meant to arrive ~every 10ms
+        # (feedback_rate_hz=100 on the gen3_torque_control side). Matches
+        # kinova_torque_control_node's cmd_stale_warn_sec instrumentation
+        # (2026-08-07) -- lets us tell whether a command-staleness episode
+        # traces back to /joint_states itself arriving late, vs. this
+        # node's own processing/publish being slow, instead of guessing.
+        self._last_js_recv_time = None
+        self._js_gap_warned = False
+        self._js_gap_warn_sec = 0.02
+
 
         # Expose a service to toggle at runtime without restarting
         self._grav_comp_srv = self.create_service(
@@ -567,6 +578,20 @@ class VirtualSpringNode(Node):
         self._last_torque_status = msg.data
 
     def _joint_state_cb(self, msg: JointState) -> None:
+        now = self.get_clock().now()
+        if self._last_js_recv_time is not None:
+            gap = (now - self._last_js_recv_time).nanoseconds / 1e9
+            if gap > self._js_gap_warn_sec and not self._js_gap_warned:
+                self.get_logger().warn(
+                    f"/joint_states gap {gap * 1000:.1f}ms exceeds "
+                    f"{self._js_gap_warn_sec * 1000:.0f}ms warn threshold "
+                    f"(expected ~10ms at 100Hz)."
+                )
+                self._js_gap_warned = True
+            elif gap <= self._js_gap_warn_sec:
+                self._js_gap_warned = False
+        self._last_js_recv_time = now
+
     # Build joint reordering maps on first message
         if self._joint_order is None:
             
@@ -691,7 +716,16 @@ class VirtualSpringNode(Node):
                         a, b, f"{collision.min_distance:.4f}", f"{collision.scale_factor:.4f}",
                         log_call_failed,
                     ])
-                    self._collision_log_file.flush()
+                    # Flushing every cycle (was: every single row, up to
+                    # 100Hz) is a plausible direct cause of the periodic
+                    # ~50-90ms torque-command latency seen live 2026-08-07
+                    # -- throttled to 2x/sec instead. Crash-safety cost is
+                    # capped at <0.5s of data loss, an acceptable tradeoff
+                    # against not stalling the control loop on disk I/O
+                    # every cycle.
+                    if elapsed - self._collision_log_last_flush >= 0.5:
+                        self._collision_log_file.flush()
+                        self._collision_log_last_flush = elapsed
 
             # logging to the terminal for debugging and to plot later
             for spring in self._springs:
