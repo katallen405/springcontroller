@@ -151,6 +151,23 @@ class VirtualSpringNode(Node):
         # such status topic).
         self.declare_parameter("torque_status_topic", "")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
+        # get_collision_status() offline-profiled at ~126ms/call
+        # (2026-08-07) -- called every _joint_state_cb, it was blocking the
+        # control loop down to ~8-21Hz instead of the intended ~100Hz,
+        # the likely dominant cause of the day's command-staleness/fault
+        # incidents (far more than the network-flakiness theory chased
+        # earlier). Self-collision doesn't need 100Hz freshness to still
+        # catch a developing collision well before contact, so it's
+        # throttled to collision_check_interval_sec instead of running
+        # every cycle; the torque-scaling decision still applies on every
+        # cycle, just using the most recent check (up to that interval
+        # stale) rather than skipping the safety logic between checks.
+        self.declare_parameter("collision_check_interval_sec", 0.05)
+        self._collision_check_interval = (
+            self.get_parameter("collision_check_interval_sec").get_parameter_value().double_value
+        )
+        self._last_collision_check_time = None
+        self._last_collision_status = None
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
         self._recentering_enabled = self.get_parameter("recentering_enabled").get_parameter_value().bool_value
@@ -664,8 +681,14 @@ class VirtualSpringNode(Node):
                 self._arm, self._add_grav_comp, spring_scale
             )
 
-            # Self-collision safety scaling
-            collision = self._arm.get_collision_status()
+            # Self-collision safety scaling (throttled -- see
+            # collision_check_interval_sec)
+            if (self._last_collision_check_time is None or
+                    (now - self._last_collision_check_time).nanoseconds / 1e9
+                    >= self._collision_check_interval):
+                self._last_collision_status = self._arm.get_collision_status()
+                self._last_collision_check_time = now
+            collision = self._last_collision_status
             if collision is not None:
                 a, b = collision.closest_pair
                 involves_scene_object = (
