@@ -336,7 +336,15 @@ class VirtualSpring:
         #print(f"{self.name} displacement: {displacement}, extension: {extension}")  # debug
 
         # 3. Spring force (Hooke's law with optional rest length)
-        direction = displacement / extension
+        # Zero-extension (target == current position, e.g. a freshly
+        # resolved auto-target) divides 0/0 -> NaN; only happens to be
+        # harmless today because inner_radius defaults to 0.0, so the
+        # extension <= inner_radius branch below hard-codes f_spring to
+        # zero without ever using `direction`. Guard explicitly instead of
+        # relying on that -- any nonzero inner_radius, or floating-point
+        # noise landing extension just above zero, would let a NaN
+        # direction reach f_spring and then the published torque.
+        direction = displacement / extension if extension > 1e-9 else np.zeros(3)
         if extension <= self.inner_radius:
             # Attachment point is inside allowable target range
             f_spring = np.zeros(3)
