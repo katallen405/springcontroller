@@ -40,6 +40,7 @@ config_path : str  -- path to the springs YAML file (checked at startup)
 springs.<n>.*     -- per-spring config (see config/springs.yaml)
 """
 
+import csv
 import math
 import os
 
@@ -159,6 +160,37 @@ class VirtualSpringNode(Node):
                 SetBool, torque_disable_service
             )
         self._failsafe_triggered = False
+
+        # Collision-event log: written incrementally (flushed every row, not
+        # just on clean shutdown) so the real closest_pair/in_collision/
+        # in_danger sequence survives even a hard crash or e-stop power
+        # loss -- needed to root-cause the rclpy throttled-logger ValueError
+        # seen live 2026-08-05 (couldn't be reproduced from a guessed
+        # sequence; need the real one). Empty string disables it.
+        self.declare_parameter(
+            "collision_log_path", os.path.expanduser("~/springcontroller_collision_log.csv")
+        )
+        collision_log_path = os.path.expanduser(
+            self.get_parameter("collision_log_path").get_parameter_value().string_value
+        )
+        self._collision_log_file = None
+        self._collision_log_writer = None
+        if collision_log_path:
+            try:
+                write_header = not os.path.isfile(collision_log_path)
+                self._collision_log_file = open(collision_log_path, "a", newline="")
+                self._collision_log_writer = csv.writer(self._collision_log_file)
+                if write_header:
+                    self._collision_log_writer.writerow([
+                        "elapsed_s", "kind", "in_collision", "in_danger",
+                        "link_a", "link_b", "min_distance", "scale_factor",
+                        "log_call_failed",
+                    ])
+                    self._collision_log_file.flush()
+            except OSError as e:
+                self.get_logger().error(f"Could not open collision log at {collision_log_path}: {e}")
+                self._collision_log_file = None
+                self._collision_log_writer = None
 
         # Check config file exists before doing anything else
         config_path = os.path.expanduser(
@@ -514,21 +546,50 @@ class VirtualSpringNode(Node):
                     or self._arm.is_environment_object(b)
                 )
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
+                log_call_failed = False
                 if collision.in_collision:
-                    self.get_logger().error(
-                        f"{kind} detected between {a} and {b}! Zeroing torques.",
-                        throttle_duration_sec=1.0,
-                    )
+                    try:
+                        self.get_logger().error(
+                            f"{kind} detected between {a} and {b}! Zeroing torques.",
+                            throttle_duration_sec=1.0,
+                        )
+                    except ValueError as log_e:
+                        # rclpy's per-call-site logging filter cache has
+                        # thrown here before (2026-08-05 live test); the
+                        # collision clamp itself is unaffected -- fall back
+                        # to an unthrottled, kwarg-free log call (fixed call
+                        # site, can't hit the same filter-mismatch) so the
+                        # session keeps running instead of hitting the outer
+                        # fail-safe on every occurrence.
+                        log_call_failed = True
+                        self.get_logger().error(
+                            f"(throttled log failed: {log_e}) {kind} between {a} and {b}! Zeroing torques."
+                        )
                     torques = np.zeros_like(torques)
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
-                    self.get_logger().warn(
-                        f"{label}: {a} / {b}, "
-                        f"dist={collision.min_distance:.3f}m, "
-                        f"scale={collision.scale_factor:.2f}",
-                        throttle_duration_sec=0.5,
-                    )
+                    try:
+                        self.get_logger().warn(
+                            f"{label}: {a} / {b}, "
+                            f"dist={collision.min_distance:.3f}m, "
+                            f"scale={collision.scale_factor:.2f}",
+                            throttle_duration_sec=0.5,
+                        )
+                    except ValueError as log_e:
+                        log_call_failed = True
+                        self.get_logger().error(
+                            f"(throttled log failed: {log_e}) {label}: {a} / {b}, "
+                            f"dist={collision.min_distance:.3f}m, scale={collision.scale_factor:.2f}"
+                        )
                     torques *= collision.scale_factor
+
+                if self._collision_log_writer is not None:
+                    self._collision_log_writer.writerow([
+                        f"{elapsed:.4f}", kind, collision.in_collision, collision.in_danger,
+                        a, b, f"{collision.min_distance:.4f}", f"{collision.scale_factor:.4f}",
+                        log_call_failed,
+                    ])
+                    self._collision_log_file.flush()
 
             # logging to the terminal for debugging and to plot later
             for spring in self._springs:
@@ -1205,6 +1266,11 @@ class VirtualSpringNode(Node):
         msg = String()
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
+
+    def destroy_node(self) -> None:
+        if self._collision_log_file is not None:
+            self._collision_log_file.close()
+        super().destroy_node()
 
     def plot_spring_extensions(self):
         num_springs = len(self.spring_data)
