@@ -101,6 +101,27 @@ def generate_launch_description():
         ),
     )
 
+    torque_status_topic_arg = DeclareLaunchArgument(
+        "torque_status_topic",
+        default_value="/gen3_torque_control/status",
+        description=(
+            "gen3_torque_control's ENABLED/DISABLED status topic. "
+            "virtual_spring_node watches this to ramp spring-force torque "
+            "in over spring_ramp_duration_sec each time torque control is "
+            "actually enabled on the arm (gravity comp is never ramped -- "
+            "see torque_ramp_gravity_comp_lesson). Empty disables ramping."
+        ),
+    )
+
+    spring_ramp_duration_arg = DeclareLaunchArgument(
+        "spring_ramp_duration_sec",
+        default_value="1.5",
+        description=(
+            "Duration over which spring-force torque ramps from 0 to full "
+            "after each torque-enable event on torque_status_topic."
+        ),
+    )
+
     enable_torque_control_arg = DeclareLaunchArgument(
         "enable_torque_control",
         default_value="false",
@@ -163,6 +184,8 @@ def generate_launch_description():
                 "locked_joint_names": GRIPPER_LOCKED_JOINTS,
                 "srdf_path": LaunchConfiguration("srdf_path"),
                 "torque_disable_service": LaunchConfiguration("torque_control_service"),
+                "torque_status_topic": LaunchConfiguration("torque_status_topic"),
+                "spring_ramp_duration_sec": LaunchConfiguration("spring_ramp_duration_sec"),
             },
             LaunchConfiguration("config"),
         ],
@@ -237,6 +260,8 @@ def generate_launch_description():
         srdf_path_arg,
         add_gravity_compensation_arg,
         torque_control_service_arg,
+        torque_status_topic_arg,
+        spring_ramp_duration_arg,
         enable_torque_control_arg,
         collision_scene_arg,
         load_collision_scene_arg,

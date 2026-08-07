@@ -589,9 +589,18 @@ class SpringCollection:
                 return
         raise KeyError(f"No spring named {name!r}")
 
-    def compute_total_torques(self, arm: ArmConfiguration, add_gravity_compensation) -> np.ndarray:
+    def compute_total_torques(
+        self, arm: ArmConfiguration, add_gravity_compensation, spring_scale: float = 1.0
+    ) -> np.ndarray:
         """
         Compute and sum torques from all enabled springs.
+
+        spring_scale scales only the summed spring torque, not gravity
+        compensation -- gravity comp must stay at full magnitude on every
+        cycle it's enabled, since it's what's holding the arm up against
+        gravity; scaling it down (e.g. as part of a torque-mode-enable
+        ramp) lets the arm sag/drop. Only ever ramp spring_scale, never
+        gravity comp itself. See torque_ramp_gravity_comp_lesson.
 
         Returns
         -------
@@ -600,6 +609,7 @@ class SpringCollection:
         total = np.zeros(arm.n_dof)
         for spring in self._springs:
             total += spring.compute_torques(arm)
+        total *= spring_scale
         if add_gravity_compensation:
             total += arm.get_gravity_torques()
         return total
