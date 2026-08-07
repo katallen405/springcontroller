@@ -459,14 +459,18 @@ class VirtualSpringNode(Node):
         prefix = f"springs.{name}"
         self._declare_or_ignore(f"{prefix}.link_name",   "")
         self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
-        self._declare_or_ignore(f"{prefix}.target",      [0.0, 0.0, 0.0])
+        # NaN sentinel, not [0,0,0]: lets us tell "target left unconfigured"
+        # apart from "target deliberately set to the origin".
+        self._declare_or_ignore(
+            f"{prefix}.target", [float("nan"), float("nan"), float("nan")]
+        )
         self._declare_or_ignore(f"{prefix}.stiffness",   0.0)
         self._declare_or_ignore(f"{prefix}.damping",     0.0)
         self._declare_or_ignore(f"{prefix}.rest_length", 0.0)
         self._declare_or_ignore(f"{prefix}.inner_radius", 0.0)
         self._declare_or_ignore(f"{prefix}.outer_radius", 0.0)
-        
-  
+
+
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
             return default if val is None else val
@@ -474,10 +478,30 @@ class VirtualSpringNode(Node):
         link_name = _get("link_name")
         self._arm.validate_link_name(link_name)  # raises ValueError if bad
 
+        local_point = np.array(_get("local_point", [0, 0, 0]), dtype=float)
+        target = np.array(_get("target", [0, 0, 0]), dtype=float)
+        if np.any(np.isnan(target)):
+            # No target configured: default to the attachment point's
+            # current world position (mirrors how JointSpring already
+            # defaults target_angle to the joint's current angle) so the
+            # spring starts at zero extension/force instead of pulling
+            # toward a stale fixed point that may be far from wherever the
+            # arm actually is this session. A fixed [0.5, 0, 0.5] target
+            # sitting 29cm from the real starting pose contributed to a
+            # live incident 2026-08-07.
+            T = self._arm.get_link_transform(link_name)
+            p_local_h = np.append(local_point, 1.0)
+            target = (T @ p_local_h)[:3]
+            self.get_logger().info(
+                f"Spring '{name}': no target configured, defaulting to "
+                f"current attachment position "
+                f"({target[0]:.3f}, {target[1]:.3f}, {target[2]:.3f})."
+            )
+
         spring = VirtualSpring(
             link_name=link_name,
-            local_attachment_point=np.array(_get("local_point", [0, 0, 0])),
-            target_world_point=np.array(_get("target", [0, 0, 0])),
+            local_attachment_point=local_point,
+            target_world_point=target,
             stiffness=float(_get("stiffness", 0.0)),
             damping=float(_get("damping", 0.0)),
             rest_length=float(_get("rest_length", 0.0)),
