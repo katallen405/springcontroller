@@ -206,24 +206,24 @@ def generate_launch_description():
         ],
     )
 
-    # Fires 3s after launch to give virtual_spring_node time to come up and
-    # start publishing valid gravity-compensated torques before torque
-    # control turns on for real -- enabling any earlier would apply
-    # whatever stale/zero command exists on /kinova/joint_torque_command
-    # in the meantime.
-    enable_torque_control = TimerAction(
-        period=3.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    "ros2", "service", "call",
-                    LaunchConfiguration("torque_control_service"),
-                    "std_srvs/srv/SetBool", "{data: true}",
-                ],
-                output="screen",
-                condition=IfCondition(LaunchConfiguration("enable_torque_control")),
-            )
+    # Waits for virtual_spring_node to actually be alive and publishing
+    # valid torques (up to 10s) before enabling torque control, instead of
+    # blindly firing after a fixed delay. Confirmed live 2026-08-07: a
+    # crashed virtual_spring_node (bad springs config) still got torque
+    # control enabled under the old fixed-delay approach -- the arm briefly
+    # entered torque mode with nobody actually commanding it before
+    # gen3_torque_control's own watchdog caught the missing stream and
+    # disabled again ~200ms later. See wait_and_enable_torque.py.
+    enable_torque_control = ExecuteProcess(
+        cmd=[
+            SPRINGCONTROLLER_VENV_PYTHON,
+            "/home/katallen/sandbox/src/springcontroller/test/wait_and_enable_torque.py",
+            LaunchConfiguration("torque_control_service"),
+            "/virtual_spring_node/joint_torques",
+            "10.0",
         ],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("enable_torque_control")),
     )
 
     # Fires 3s after launch, same reasoning as enable_torque_control: give
