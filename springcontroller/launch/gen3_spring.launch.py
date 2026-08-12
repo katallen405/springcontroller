@@ -295,8 +295,12 @@ def generate_launch_description():
     # (folds in every WARN/ERROR log line too, so recorded data and log
     # messages line up in one place) -- see record_rosbag_arg. Topics are
     # captured wherever they're published in the ROS graph, so this picks
-    # up gen3_torque_control's /joint_states and /gen3_torque_control/status
-    # too even though that node isn't started by this launch file.
+    # up gen3_torque_control's /joint_states and /gen3_torque_control/status,
+    # and press_to_pin's /residuals and /press_events, even though neither
+    # node is started by this launch file -- covers a press_to_pin
+    # threshold-calibration pass (run press_to_pin.launch.py alongside this)
+    # with real recorded per-joint residual data, not just a live PlotJuggler
+    # view with nothing kept afterward.
     record_rosbag = ExecuteProcess(
         cmd=[
             "ros2", "bag", "record",
@@ -304,6 +308,8 @@ def generate_launch_description():
             "/virtual_spring_node/joint_torques",
             "/kinova/joint_torque_command",
             "/gen3_torque_control/status",
+            "/press_to_pin/residuals",
+            "/press_to_pin/press_events",
             "/rosout",
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
