@@ -153,6 +153,8 @@ class URDFArmConfiguration:
             if len(collision_model.geometryObjects) == 0:
                 return  # URDF has no collision geometry — nothing to do
 
+            self._simplify_collision_geometry(collision_model)
+
             # addAllCollisionPairs() only skips pairs on the *same* joint —
             # it does NOT skip adjacent parent/child links, which are always
             # touching at the joint and will otherwise register as permanent
@@ -174,6 +176,45 @@ class URDFArmConfiguration:
                 "Self-collision checking will be unavailable.",
                 stacklevel=2,
             )
+
+    def _simplify_collision_geometry(self, collision_model: "pin.GeometryModel") -> None:
+        """
+        Replace each loaded triangle mesh (BVHModelOBBRSS -- often several
+        thousand triangles per link) with a conservative axis-aligned
+        bounding box in the mesh's own local frame, in place.
+
+        Offline-profiled 2026-08-07/08-12: mesh-mesh distance queries via
+        pin.computeDistances cost ~126ms/call for this arm's ~91 collision
+        pairs -- capping get_collision_status() (called every control
+        cycle) to ~8Hz instead of the intended ~100Hz, later confirmed to
+        be the dominant cause of a full day's worth of live command-
+        staleness/fault incidents. Bounding boxes over the same pairs cost
+        ~0.01ms/call, a ~10,000x speedup -- negligible against a 10ms
+        cycle budget.
+
+        The box always encloses the true mesh (it's exactly the mesh's own
+        AABB), so reported distances are conservative: equal to or smaller
+        than the true mesh-to-mesh distance, never larger. That's the safe
+        direction for a collision clamp -- it can trigger early on an
+        elongated/diagonal link's loose bounding box, but it can never
+        report "clear" when the real mesh isn't.
+
+        Skips anything that isn't a BVH mesh (e.g. environment objects
+        added later via add_environment_object, already simple
+        primitives) -- nothing to simplify there.
+        """
+        import coal
+
+        for go in collision_model.geometryObjects:
+            mesh = go.geometry
+            if mesh.getObjectType() != coal.OT_BVH:
+                continue
+            mesh.computeLocalAABB()
+            aabb = mesh.aabb_local
+            box = coal.Box(aabb.width(), aabb.height(), aabb.depth())
+            center = np.asarray(aabb.center(), dtype=float).reshape(3)
+            go.geometry = box
+            go.placement = go.placement * pin.SE3(np.eye(3), center)
 
     @classmethod
     def from_urdf(
