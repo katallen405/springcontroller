@@ -65,7 +65,8 @@ Publications
 Services
 --------
 ~/enable   (std_srvs/SetBool)
-    Enable or disable press detection (enabled by default).
+    Enable or disable press detection (enabled by default; see the
+    start_enabled parameter to start disabled).
 
 Service clients
 ---------------
@@ -85,6 +86,10 @@ subtract_model_gravity : bool
     Subtract pinocchio gravity torques from measured efforts (default
     true). On arms whose reported efforts already exclude gravity, set
     false — the baseline will absorb small leftovers either way.
+start_enabled : bool
+    Whether press detection (and therefore pin creation) is active at
+    startup (default true). When false, the node still comes up and
+    ~/enable can be called to turn it on later.
 thresholds.<joint_name> : double
     Per-joint press threshold in the units of the effort field. Any joint
     without an explicit threshold uses thresholds.default.
@@ -186,6 +191,7 @@ class PressToPin(Node):
         self.declare_parameter("commanded_torque_topic",
                                "/virtual_spring/joint_torques")
         self.declare_parameter("subtract_model_gravity", True)
+        self.declare_parameter("start_enabled", True)
 
         self.declare_parameter("thresholds.default", 1.5)
 
@@ -250,7 +256,7 @@ class PressToPin(Node):
         )
 
         # ---------------- detection state ----------------
-        self._enabled = True
+        self._enabled = bool(p("start_enabled"))
         self._joint_order: list[int] | None = None
         self._baseline = np.zeros(n)
         self._baseline_initialized = False
