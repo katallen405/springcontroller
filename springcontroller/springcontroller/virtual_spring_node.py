@@ -50,6 +50,13 @@ Publications
     add_spring/add_joint_spring/remove_spring (supports spring_viz, maybe
     later UI).
 
+~/safety_status (std_msgs/String)
+    Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
+    "COLLISION" -- published every /joint_states callback, same cadence as
+    the collision check itself. Lets a consumer (e.g.
+    wait_and_enable_torque.py) check the resting pose before torque-enable
+    without duplicating the collision model.
+
 Services
 --------
 ~/enable   (std_srvs/SetBool)
@@ -405,6 +412,13 @@ class VirtualSpringNode(Node):
 
         self._springs_updated_pub = self.create_publisher(String,
                                             "~/springs_updated", 10)
+
+        # Lets external tools (e.g. wait_and_enable_torque.py's pre-flight
+        # check) see the current self/scene-collision state without
+        # duplicating the URDF/pinocchio collision model themselves --
+        # published every _joint_state_cb regardless of torque-enable
+        # state, same as the collision check itself.
+        self._safety_status_pub = self.create_publisher(String, "~/safety_status", 10)
 
         # Per-spring ~/target/<name> publishers (broadcast side -- see the
         # subscription of the same name below for the input/override side).
@@ -844,6 +858,7 @@ class VirtualSpringNode(Node):
                 self._last_collision_status = self._arm.get_collision_status()
                 self._last_collision_check_time = now
             collision = self._last_collision_status
+            self._publish_safety_status(collision)
             if collision is not None:
                 a, b = collision.closest_pair
                 involves_scene_object = (
@@ -1589,6 +1604,30 @@ class VirtualSpringNode(Node):
         msg = String()
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
+
+    def _publish_safety_status(self, collision) -> None:
+        """
+        Broadcast the current self/scene-collision state on
+        ~/safety_status, prefixed "SAFE"/"DANGER"/"COLLISION" so a plain
+        prefix check is enough for a consumer (e.g.
+        wait_and_enable_torque.py's pre-flight check) to act on it without
+        parsing distances or link names.
+        """
+        msg = String()
+        if collision is None:
+            msg.data = "SAFE (no collision pairs reported)"
+        else:
+            a, b = collision.closest_pair
+            if collision.in_collision:
+                msg.data = f"COLLISION: {a}/{b} dist={collision.min_distance:.4f}m"
+            elif collision.in_danger:
+                msg.data = (
+                    f"DANGER: {a}/{b} dist={collision.min_distance:.4f}m "
+                    f"scale={collision.scale_factor:.2f}"
+                )
+            else:
+                msg.data = f"SAFE (closest: {a}/{b} dist={collision.min_distance:.4f}m)"
+        self._safety_status_pub.publish(msg)
 
     def destroy_node(self) -> None:
         if self._collision_log_file is not None:

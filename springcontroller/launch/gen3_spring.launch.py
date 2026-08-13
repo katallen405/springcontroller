@@ -146,6 +146,19 @@ def generate_launch_description():
         ),
     )
 
+    enable_torque_control_allow_danger_arg = DeclareLaunchArgument(
+        "enable_torque_control_allow_danger",
+        default_value="false",
+        description=(
+            "If false (default), enable_torque_control:=true refuses to "
+            "enable when virtual_spring_node's ~/safety_status reports the "
+            "resting pose is already inside danger_threshold or in "
+            "collision -- that's what's been tripping the Kinova's own "
+            "actuator fault protection (2026-08-07, 2026-08-13). Set true "
+            "only when deliberately testing from a near-collision pose."
+        ),
+    )
+
     collision_scene_arg = DeclareLaunchArgument(
         "collision_scene",
         default_value="/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen3_collision_scene.yaml",
@@ -250,14 +263,18 @@ def generate_launch_description():
     # control enabled under the old fixed-delay approach -- the arm briefly
     # entered torque mode with nobody actually commanding it before
     # gen3_torque_control's own watchdog caught the missing stream and
-    # disabled again ~200ms later. See wait_and_enable_torque.py.
+    # disabled again ~200ms later. Also refuses to enable from an already-
+    # unsafe resting pose unless enable_torque_control_allow_danger:=true
+    # -- see wait_and_enable_torque.py.
     enable_torque_control = ExecuteProcess(
         cmd=[
             SPRINGCONTROLLER_VENV_PYTHON,
             "/home/katallen/sandbox/src/springcontroller/test/wait_and_enable_torque.py",
             LaunchConfiguration("torque_control_service"),
             "/virtual_spring_node/joint_torques",
-            "10.0",
+            "/virtual_spring_node/safety_status",
+            "--timeout-sec", "10.0",
+            "--allow-danger-enable", LaunchConfiguration("enable_torque_control_allow_danger"),
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("enable_torque_control")),
@@ -334,6 +351,7 @@ def generate_launch_description():
         torque_status_topic_arg,
         spring_ramp_duration_arg,
         enable_torque_control_arg,
+        enable_torque_control_allow_danger_arg,
         collision_scene_arg,
         load_collision_scene_arg,
         armviz_arg,

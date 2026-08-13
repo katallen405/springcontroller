@@ -14,60 +14,137 @@ what's shown to be fault-prone (see kinova_torque_control_node.py's
 _enter_torque_mode fix), that's a real gap worth closing at the source
 rather than relying on the watchdog to clean up after it.
 
-Usage: wait_and_enable_torque.py <torque_control_service> <torque_topic> [timeout_sec]
-Exits nonzero and does NOT call the enable service if torque_topic never
-publishes within timeout_sec.
+Also refuses to enable (unless --allow-danger-enable) if
+virtual_spring_node's ~/safety_status reports the resting pose is already
+inside danger_threshold or in outright collision. Added 2026-08-13 after a
+live test that deliberately started near-collision: the self-collision
+scale_factor oscillating right at the danger boundary produces jerky
+commanded torque, which is what's been tripping the Kinova's own
+actuator-level current/following-error protection (Joint 2 on 2026-08-07,
+Joint 4 on 2026-08-13) -- not a bug in the clamp logic, the clamp reacting
+correctly to an already-marginal starting pose. Enabling from that pose was
+previously silent; now it's a deliberate, loud, opt-in choice instead of
+something that just happens to work most of the time.
+
+Usage:
+  wait_and_enable_torque.py TORQUE_CONTROL_SERVICE TORQUE_TOPIC SAFETY_STATUS_TOPIC
+      [--timeout-sec SEC] [--allow-danger-enable]
+
+Exits nonzero and does NOT call the enable service if TORQUE_TOPIC never
+publishes within the timeout, or if the resting pose is unsafe and
+--allow-danger-enable wasn't passed.
 """
+import argparse
 import sys
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
 
+def _wait_for_message(node: Node, topic: str, msg_type, timeout_sec: float):
+    """Spin until one message arrives on topic, or return None on timeout."""
+    received = []
+
+    def _cb(msg) -> None:
+        received.append(msg)
+
+    sub = node.create_subscription(msg_type, topic, _cb, 10)
+    deadline = node.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
+    while not received and node.get_clock().now() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    node.destroy_subscription(sub)
+    return received[0] if received else None
+
+
 def main() -> None:
-    torque_control_service = sys.argv[1]
-    torque_topic = sys.argv[2]
-    timeout_sec = float(sys.argv[3]) if len(sys.argv) > 3 else 10.0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("torque_control_service")
+    parser.add_argument("torque_topic")
+    parser.add_argument("safety_status_topic")
+    parser.add_argument("--timeout-sec", type=float, default=10.0)
+    parser.add_argument(
+        "--allow-danger-enable",
+        default="false",
+        help=(
+            "'true'/'false' (default false). If true, enable even if "
+            "~/safety_status reports DANGER/COLLISION for the resting pose "
+            "(logs a loud warning instead of refusing). Takes a string "
+            "value, not a bare flag, so it can be wired straight from a "
+            "ROS 2 launch LaunchConfiguration."
+        ),
+    )
+    args = parser.parse_args()
+    args.allow_danger_enable = args.allow_danger_enable.strip().lower() in (
+        "true", "1", "yes",
+    )
 
     rclpy.init()
     node = Node("torque_enable_gate")
     logger = node.get_logger()
 
-    received = False
-
-    def _cb(_msg: JointState) -> None:
-        nonlocal received
-        received = True
-
-    node.create_subscription(JointState, torque_topic, _cb, 10)
-
-    deadline = node.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
-    while not received and node.get_clock().now() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.1)
-
-    if not received:
+    torques_msg = _wait_for_message(node, args.torque_topic, JointState, args.timeout_sec)
+    if torques_msg is None:
         logger.error(
-            f"No message received on {torque_topic} within {timeout_sec:.1f}s -- "
-            f"virtual_spring_node isn't alive/publishing valid torques. "
-            f"NOT enabling torque control."
+            f"No message received on {args.torque_topic} within "
+            f"{args.timeout_sec:.1f}s -- virtual_spring_node isn't "
+            f"alive/publishing valid torques. NOT enabling torque control."
+        )
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(1)
+    logger.info(f"{args.torque_topic} is publishing.")
+
+    safety_msg = _wait_for_message(
+        node, args.safety_status_topic, String, args.timeout_sec
+    )
+    if safety_msg is None:
+        logger.error(
+            f"No message received on {args.safety_status_topic} within "
+            f"{args.timeout_sec:.1f}s -- can't confirm the resting pose is "
+            f"safe. NOT enabling torque control."
         )
         node.destroy_node()
         rclpy.shutdown()
         sys.exit(1)
 
-    logger.info(f"{torque_topic} is publishing -- proceeding to enable torque control.")
+    is_unsafe = not safety_msg.data.startswith("SAFE")
+    if is_unsafe:
+        if args.allow_danger_enable:
+            logger.warn(
+                f"{args.safety_status_topic} reports '{safety_msg.data}' -- "
+                f"enabling anyway (--allow-danger-enable). Expect the "
+                f"self-collision clamp to fight the pose from the start."
+            )
+        else:
+            logger.error(
+                f"{args.safety_status_topic} reports '{safety_msg.data}' -- "
+                f"resting pose is already inside danger_threshold or in "
+                f"collision. NOT enabling torque control. Move the arm to "
+                f"a clear pose first, or pass --allow-danger-enable "
+                f"(enable_torque_control_allow_danger:=true in the launch "
+                f"file) if this is deliberate."
+            )
+            node.destroy_node()
+            rclpy.shutdown()
+            sys.exit(1)
+    else:
+        logger.info(f"{args.safety_status_topic} reports '{safety_msg.data}'.")
 
-    client = node.create_client(SetBool, torque_control_service)
-    if not client.wait_for_service(timeout_sec=timeout_sec):
-        logger.error(f"{torque_control_service} not available -- NOT enabling torque control.")
+    client = node.create_client(SetBool, args.torque_control_service)
+    if not client.wait_for_service(timeout_sec=args.timeout_sec):
+        logger.error(
+            f"{args.torque_control_service} not available -- NOT enabling "
+            f"torque control."
+        )
         node.destroy_node()
         rclpy.shutdown()
         sys.exit(1)
 
     future = client.call_async(SetBool.Request(data=True))
-    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_sec)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=args.timeout_sec)
     result = future.result()
     if result is None or not result.success:
         logger.error(f"Enable call failed: {result}")
