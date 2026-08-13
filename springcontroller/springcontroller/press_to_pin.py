@@ -23,9 +23,18 @@ How it works
    absorbed into it.
 
 2. Contact localization.  A force applied to link i produces torque only
-   on joints 1..i; joints distal to the contact see nothing. The contact
-   link is therefore the child link of the *most distal* joint whose
-   residual exceeds its threshold.
+   on joints 1..i; joints distal to the contact see nothing, and the
+   torque grows toward the base via the longer lever arm. Because of that
+   amplification, picking "the most distal joint whose own residual
+   exceeds threshold" is unreliable in practice: a real press near a
+   distal link can clear threshold on a more proximal joint while the
+   distal joint's own, smaller-but-real share never clears the same
+   threshold, producing a confidently wrong (too-proximal) localization.
+   Instead, every link is scored by how well a single point force at that
+   link's origin, fit by least squares, reconstructs the *whole* observed
+   residual vector (see _localize_contact); the best-fitting link wins,
+   and a near-tie between two non-adjacent links suppresses the press
+   rather than guessing.
 
 3. Force estimate and stiffness.  The applied force is estimated from the
    residual via the contact link's translational Jacobian:
@@ -106,6 +115,12 @@ press.rearm_time : double
 press.velocity_gate : double
     Max |qdot| (rad/s) above which detection is suspended entirely —
     fast motion makes the quasi-static residual meaningless (default 1.0).
+ambiguity.margin : double
+    Minimum gap (as a fraction of ||residual||) the best-fitting link's
+    reconstruction error must have over the second-best before a press is
+    latched, when the two best candidates are different, non-adjacent
+    links. Below this margin the press is treated as ambiguous and
+    suppressed rather than guessed at (default 0.15).
 baseline.alpha : double
     EMA coefficient per update for the residual baseline (default 0.005).
 baseline.freeze_fraction : double
@@ -200,6 +215,8 @@ class PressToPin(Node):
         self.declare_parameter("press.rearm_time", 0.5)
         self.declare_parameter("press.velocity_gate", 1.0)
 
+        self.declare_parameter("ambiguity.margin", 0.15)
+
         self.declare_parameter("baseline.alpha", 0.005)
         self.declare_parameter("baseline.freeze_fraction", 0.5)
         self.declare_parameter("baseline.velocity_freeze", 0.05)
@@ -215,6 +232,7 @@ class PressToPin(Node):
         self._release_fraction = float(p("press.release_fraction"))
         self._rearm_time = float(p("press.rearm_time"))
         self._velocity_gate = float(p("press.velocity_gate"))
+        self._ambiguity_margin = float(p("ambiguity.margin"))
         self._baseline_alpha = float(p("baseline.alpha"))
         self._baseline_freeze_fraction = float(p("baseline.freeze_fraction"))
         self._baseline_velocity_freeze = float(p("baseline.velocity_freeze"))
@@ -263,7 +281,7 @@ class PressToPin(Node):
         self._commanded = np.zeros(n)
         self._commanded_received = False
         self._state = ARMED
-        self._candidate_joint: int | None = None
+        self._candidate_link: str | None = None
         self._candidate_since: rclpy.time.Time | None = None
         self._quiet_since: rclpy.time.Time | None = None
         self._pin_counter = 0
@@ -293,7 +311,7 @@ class PressToPin(Node):
             f"PressToPin ready. Waiting for {service_name}..."
         )
         if not self._add_spring_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"{service_name} not available yet — will keep trying when "
                 "a press is detected."
             )
@@ -313,7 +331,7 @@ class PressToPin(Node):
             raise RuntimeError(
                 "No /robot_description topic found and urdf_path not set."
             )
-        self.get_logger().warn(
+        self.get_logger().warning(
             f"No /robot_description topic; falling back to file: {urdf_path}"
         )
         return URDFArmConfiguration.from_urdf(urdf_path)
@@ -355,7 +373,7 @@ class PressToPin(Node):
         self._enabled = request.data
         # Reset transient state so a stale candidate can't fire on re-enable
         self._state = ARMED
-        self._candidate_joint = None
+        self._candidate_link = None
         self._candidate_since = None
         self._quiet_since = None
         response.success = True
@@ -375,7 +393,7 @@ class PressToPin(Node):
 
     def _joint_state_cb(self, msg: JointState) -> None:
         if not msg.effort:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 "JointState has no effort field — press detection needs "
                 "joint efforts.",
                 throttle_duration_sec=10.0,
@@ -444,7 +462,7 @@ class PressToPin(Node):
 
         # Suspend detection entirely during fast motion (recentering, etc.)
         if np.max(np.abs(vel)) > self._velocity_gate:
-            self._candidate_joint = None
+            self._candidate_link = None
             self._candidate_since = None
             return
 
@@ -474,30 +492,108 @@ class PressToPin(Node):
 
         # ARMED
         if not over.any():
-            self._candidate_joint = None
+            self._candidate_link = None
             self._candidate_since = None
             return
 
-        # Most distal joint over threshold localizes the contact
-        contact_joint = int(np.flatnonzero(over)[-1])
+        localized = self._localize_contact(residual)
+        if localized is None:
+            # Ambiguous this cycle -- don't let a stale candidate keep
+            # counting toward hold_time; a later, confident cycle has to
+            # hold for the full duration on its own.
+            self._candidate_link = None
+            self._candidate_since = None
+            return
 
-        if contact_joint != self._candidate_joint:
-            self._candidate_joint = contact_joint
+        joint_idx, link, point, _force = localized
+
+        if link != self._candidate_link:
+            self._candidate_link = link
             self._candidate_since = now
             return
 
         held = (now - self._candidate_since).nanoseconds / 1e9
         if held >= self._hold_time:
-            self._latch(contact_joint, residual)
+            self._latch(joint_idx, link, point, residual)
 
-    def _latch(self, joint_idx: int, residual: np.ndarray) -> None:
-        link = self._contact_links[joint_idx]
+    def _localize_contact(
+        self, residual: np.ndarray
+    ) -> tuple[int, str, np.ndarray, np.ndarray] | None:
+        """
+        Pick which link's contact-point candidate best explains the FULL
+        observed residual vector, replacing the old "most distal joint over
+        threshold" heuristic (see the module docstring for why that broke
+        down: measured live, 9 of 11 labeled test presses near distal
+        joints/links were misattributed to more proximal ones).
 
-        # Force estimate: translational Jacobian at the link origin.
-        # Columns for joints distal to the contact are irrelevant (their
-        # residuals are ~0), so the pseudoinverse over the full Jacobian
-        # is fine.
-        J = self._arm.get_jacobian(link, np.zeros(3))
+        For every link, evaluate the translational Jacobian at that link's
+        origin (the same point _latch already used for its force estimate),
+        fit a 3D force there by least squares against the *whole* residual
+        vector, and score the link by the leftover reconstruction error
+        `||residual - Jv^T @ force||`. A link that isn't the true contact
+        can only ever explain the residual components its own Jacobian
+        columns reach (columns for joints distal to that link are
+        structurally zero at the link's own origin), so the true contact
+        link's fit is generally the best one -- it's the only candidate
+        whose columns cover the joints actually carrying torque.
+
+        Returns (joint_idx, link_name, local_point, force) for the winning
+        candidate. Returns None when the two best-fitting candidates are
+        different, non-adjacent links and neither clearly beats the other
+        (gap smaller than ambiguity.margin * ||residual||) -- in that case
+        the caller should keep waiting rather than guess. Adjacent-link
+        near-ties are not treated as ambiguous: a press near a link
+        boundary legitimately fits both of its neighbors similarly well,
+        and either is a reasonable pin location.
+
+        Exact ties are common at one specific joint, not just noise: a
+        candidate link whose frame origin sits exactly on its own joint's
+        axis (true of every contact link in this model, by construction --
+        see _build_contact_link_map) has a translational Jacobian that's
+        identically zero in that joint's own column, so a residual with
+        nothing on more proximal joints reconstructs equally well (both
+        exactly, via the zero-force solution) from that link or from any
+        more proximal one whose Jacobian is *also* all-zero there (e.g.
+        joint_1's own link, which is always fully degenerate). Ties are
+        broken toward the more distal candidate, matching the old
+        heuristic's bias and avoiding a same-fit link that's structurally
+        blind to real presses.
+        """
+        scored = []
+        for j, link in enumerate(self._contact_links):
+            point = np.zeros(3)
+            J = self._arm.get_jacobian(link, point)
+            Jv = J[:3, :]
+            force = np.linalg.pinv(Jv.T, rcond=1e-3) @ residual
+            predicted = Jv.T @ force
+            err = float(np.linalg.norm(residual - predicted))
+            scored.append((err, j, link, point, force))
+
+        scored.sort(key=lambda t: (t[0], -t[1]))
+        best_err, best_j, best_link, best_point, best_force = scored[0]
+
+        if len(scored) > 1:
+            second_err, second_j, second_link, _, _ = scored[1]
+            if second_link != best_link and abs(second_j - best_j) > 1:
+                norm = float(np.linalg.norm(residual)) or 1e-9
+                if (second_err - best_err) < self._ambiguity_margin * norm:
+                    self.get_logger().warning(
+                        f"Ambiguous press: '{best_link}' (err={best_err:.3f}) "
+                        f"vs '{second_link}' (err={second_err:.3f}) too "
+                        "close -- suppressing pin.",
+                        throttle_duration_sec=1.0,
+                    )
+                    return None
+
+        return best_j, best_link, best_point, best_force
+
+    def _latch(self, joint_idx: int, link: str, point: np.ndarray,
+               residual: np.ndarray) -> None:
+        # Force estimate: translational Jacobian at the winning candidate
+        # point (link origin, currently -- see _localize_contact). Columns
+        # for joints distal to the contact are irrelevant (their residuals
+        # are ~0), so the pseudoinverse over the full Jacobian is fine.
+        J = self._arm.get_jacobian(link, point)
         Jv = J[:3, :]
         force = np.linalg.pinv(Jv.T, rcond=1e-3) @ residual
         force_mag = float(np.linalg.norm(force))
@@ -523,7 +619,7 @@ class PressToPin(Node):
         req.stiffness = stiffness
         req.damping = self._spring_damping
         req.rest_length = 0.0
-        req.local_point = [0.0, 0.0, 0.0]
+        req.local_point = point.tolist()
         req.target = target.tolist()
         req.inner_radius = 0.0
         req.outer_radius = 0.0
@@ -536,7 +632,7 @@ class PressToPin(Node):
         )
 
         self._state = REFRACTORY
-        self._candidate_joint = None
+        self._candidate_link = None
         self._candidate_since = None
         self._quiet_since = None
 
