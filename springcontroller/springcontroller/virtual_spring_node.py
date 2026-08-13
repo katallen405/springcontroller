@@ -1241,7 +1241,7 @@ class VirtualSpringNode(Node):
             self._recentering_in_progress = False
 
     # ------------------------------------------------------------------
-    # add_spring callback — unchanged except for _check_equilibrium_shift call
+    # add_spring callback
     # ------------------------------------------------------------------
 
     def _add_spring_cb(
