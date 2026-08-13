@@ -301,6 +301,13 @@ def generate_launch_description():
     # threshold-calibration pass (run press_to_pin.launch.py alongside this)
     # with real recorded per-joint residual data, not just a live PlotJuggler
     # view with nothing kept afterward.
+    #
+    # /press_to_pin/test_marker has no publisher in this graph -- it's for
+    # `ros2 topic pub --once /press_to_pin/test_marker std_msgs/msg/String
+    # "{data: 'j2_link2_bottom_toward_base'}"` run by hand right before each
+    # calibration press, so the bag has a precise, labeled timestamp for
+    # what was pressed/where/which direction instead of relying on a
+    # stopwatch or memory to line presses up with residual peaks afterward.
     record_rosbag = ExecuteProcess(
         cmd=[
             "ros2", "bag", "record",
@@ -310,6 +317,7 @@ def generate_launch_description():
             "/gen3_torque_control/status",
             "/press_to_pin/residuals",
             "/press_to_pin/press_events",
+            "/press_to_pin/test_marker",
             "/rosout",
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
