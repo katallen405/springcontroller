@@ -203,6 +203,17 @@ class VirtualSpringNode(Node):
         self._collision_log_file = None
         self._collision_log_writer = None
         self._collision_log_last_flush = -1.0
+        # Manual time-gates for the collision/danger log lines below, in
+        # place of rclpy's throttle_duration_sec= kwarg -- that mechanism's
+        # per-call-site filter cache has been observed live (2026-08-05,
+        # 2026-08-13) to raise "Requested logging filters cannot be changed
+        # between calls" on effectively every call at this control-loop
+        # rate, defeating the throttle entirely and logging at full ~100Hz
+        # instead of the intended rate. A simple elapsed-time comparison
+        # (same pattern as _collision_log_last_flush above) sidesteps that
+        # cache altogether.
+        self._collision_error_log_last = -1.0
+        self._collision_warn_log_last = -1.0
         if collision_log_path:
             try:
                 write_header = not os.path.isfile(collision_log_path)
@@ -681,6 +692,19 @@ class VirtualSpringNode(Node):
                 self._arm, self._add_grav_comp, spring_scale
             )
 
+            # Gravity comp must never be scaled by anything except the
+            # add_gravity_compensation on/off switch itself -- see
+            # torque_ramp_gravity_comp_lesson (a real arm drop toward the
+            # table, 2026-08-05). compute_total_torques() already keeps it
+            # out of spring_scale for that reason; split it out here too so
+            # the collision clamp below can't reintroduce the same bug by
+            # scaling/zeroing it along with the spring torque.
+            gravity_torques = (
+                self._arm.get_gravity_torques() if self._add_grav_comp
+                else np.zeros_like(torques)
+            )
+            spring_only_torques = torques - gravity_torques
+
             # Self-collision safety scaling (throttled -- see
             # collision_check_interval_sec)
             if (self._last_collision_check_time is None or
@@ -698,40 +722,34 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    try:
+                    if elapsed - self._collision_error_log_last >= 1.0:
                         self.get_logger().error(
-                            f"{kind} detected between {a} and {b}! Zeroing torques.",
-                            throttle_duration_sec=1.0,
+                            f"{kind} detected between {a} and {b}! Zeroing spring torque "
+                            f"(gravity comp held)."
                         )
-                    except ValueError as log_e:
-                        # rclpy's per-call-site logging filter cache has
-                        # thrown here before (2026-08-05 live test); the
-                        # collision clamp itself is unaffected -- fall back
-                        # to an unthrottled, kwarg-free log call (fixed call
-                        # site, can't hit the same filter-mismatch) so the
-                        # session keeps running instead of hitting the outer
-                        # fail-safe on every occurrence.
-                        log_call_failed = True
-                        self.get_logger().error(
-                            f"(throttled log failed: {log_e}) {kind} between {a} and {b}! Zeroing torques."
-                        )
-                    torques = np.zeros_like(torques)
+                        self._collision_error_log_last = elapsed
+                    # Zero spring torque only -- never gravity comp, even at
+                    # the hard clamp. Dropping gravity comp right when two
+                    # links are closest would let the arm sag/fall at the
+                    # worst possible moment instead of holding position.
+                    torques = gravity_torques
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
-                    try:
+                    if elapsed - self._collision_warn_log_last >= 0.5:
                         self.get_logger().warn(
                             f"{label}: {a} / {b}, "
                             f"dist={collision.min_distance:.3f}m, "
-                            f"scale={collision.scale_factor:.2f}",
-                            throttle_duration_sec=0.5,
+                            f"scale={collision.scale_factor:.2f}"
                         )
-                    except ValueError as log_e:
-                        log_call_failed = True
-                        self.get_logger().error(
-                            f"(throttled log failed: {log_e}) {label}: {a} / {b}, "
-                            f"dist={collision.min_distance:.3f}m, scale={collision.scale_factor:.2f}"
-                        )
-                    torques *= collision.scale_factor
+                        self._collision_warn_log_last = elapsed
+                    # Scale spring torque only -- gravity comp stays at full
+                    # magnitude (same reasoning as the in_collision branch
+                    # above). Scaling it down here was the likely cause of a
+                    # sag/recover physical limit cycle: reduced gravity comp
+                    # near the boundary lets the arm sag, sag changes the
+                    # geometry, which can pull it back out of danger and
+                    # restore full gravity comp, arm lifts back in, repeat.
+                    torques = gravity_torques + collision.scale_factor * spring_only_torques
 
                 if self._collision_log_writer is not None:
                     self._collision_log_writer.writerow([
