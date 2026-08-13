@@ -11,7 +11,28 @@ Subscriptions
     Current joint positions and velocities from the arm.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Update a spring's target at runtime.
+    Update a VirtualSpring's target at runtime.
+
+~/attachment/<spring_name>  (geometry_msgs/PointStamped)
+    Update a VirtualSpring's local attachment point at runtime.
+
+~/joint_target/<joint_spring_name>  (std_msgs/Float64)
+    Update a JointSpring's target angle (rad) at runtime.
+
+<collision_object_topic>  (moveit_msgs/CollisionObject)
+    Default ~/collision_object. ADD/APPEND/REMOVE/MOVE scene collision
+    objects for the self-collision hard clamp -- same wire format MoveIt's
+    own planning scene uses.
+
+<torque_status_topic>  (std_msgs/String)
+    Only subscribed if the parameter is non-empty. "ENABLED"/"DISABLED",
+    e.g. from gen3_torque_control -- drives the spring-force ramp-in on
+    each torque-enable.
+
+/robot_description  (std_msgs/String, TRANSIENT_LOCAL)
+    Startup only: preferred URDF source (falls back to the urdf_path
+    parameter if nothing arrives within a few seconds); subscription is
+    torn down immediately after.
 
 Publications
 ------------
@@ -19,31 +40,96 @@ Publications
     Effort field carries the summed virtual-spring torques.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Broadcasts the spring's current target -- once at load (or, for a
+    Broadcasts a VirtualSpring's current target -- once at load (or, for a
     target left unconfigured in YAML, once it's resolved against the arm's
     real pose on the first /joint_states callback) and again on every
     runtime update via the subscription above.
 
-~/springs_updated (String)
-    Publishes when the list of springs is changed with add_spring or remove_spring (supports spring_viz, maybe later UI)
+~/springs_updated (std_msgs/String)
+    Publishes the current spring name list (JSON) whenever it changes via
+    add_spring/add_joint_spring/remove_spring (supports spring_viz, maybe
+    later UI).
 
 Services
 --------
 ~/enable   (std_srvs/SetBool)
     Enable or disable all springs at once.
 
-~/add_spring
-    Add a spring (springcontroller_interfaces/AddSpring)
+~/set_gravity_compensation  (std_srvs/SetBool)
+    Toggle add_gravity_compensation at runtime.
+
+~/add_spring  (springcontroller_interfaces/AddSpring)
+    Add a VirtualSpring.
+
+~/add_joint_spring  (springcontroller_interfaces/AddJointSpring)
+    Add a JointSpring.
 
 ~/remove_spring (springcontroller_interfaces/RemoveSpring)
-    Remove a spring from the torque calculations
+    Remove a spring (either type, name-based) from the torque calculations.
+
+~/load_collision_scene  (springcontroller_interfaces/LoadCollisionScene)
+    Load a static scene-collision YAML (see config/*_collision_scene.yaml)
+    through the same path <collision_object_topic> uses.
 
 
 Parameters
 ----------
-urdf_path   : str  -- path to the robot URDF or XACRO file
-config_path : str  -- path to the springs YAML file (checked at startup)
-springs.<n>.*     -- per-spring config (see config/springs.yaml)
+urdf_path : str
+    Fallback URDF/XACRO path, used only if /robot_description doesn't
+    arrive within a few seconds of startup.
+config_path : str
+    Path to the springs YAML file (checked at startup; populates the
+    springs.<n>.* / joint_springs.<n>.* parameters below).
+publish_rate_hz : double
+    Declared but currently unused -- torques publish once per
+    /joint_states callback, not on a timer.
+plot_output_path : str
+    Where plot_spring_extensions() saves its figure on shutdown.
+plot_on_shutdown : bool
+    If true, plot spring extensions/torques when the node shuts down.
+add_gravity_compensation : bool
+    Add pinocchio gravity torques to the published command -- true for
+    arms whose own controller doesn't already do it (e.g. Gen3 via
+    gen3_torque_control), false where it does (e.g. UR3e).
+recentering_threshold_rad : double
+    Equilibrium-shift threshold (see _check_equilibrium_shift) above which
+    re-centering triggers, if recentering_enabled.
+recentering_enabled : bool
+    Off by default -- the re-centering sequence needs ros2_control's
+    controller_manager and a real equilibrium_mover package, neither of
+    which apply to Gen3 (and it's unfinished even for UR3e). When off, a
+    large shift is only logged, springs are left alone.
+srdf_path : str
+    Optional SRDF path excluding known-adjacent-link pairs from the
+    self-collision model (pin.removeCollisionPairs); without it, adjacent
+    links will false-positive as self-collisions.
+danger_threshold : double
+    Self-collision distance (m) below which torques start scaling down.
+locked_joint_names : string[]
+    Joints excluded from the arm model's active DOF.
+torque_disable_service : str
+    SetBool service called to take the arm out of torque control if
+    spring computation fails repeatedly. Empty (default) disables this
+    fail-safe.
+collision_object_topic : str
+    Topic for live scene collision objects (default ~/collision_object).
+torque_status_topic : str
+    "ENABLED"/"DISABLED" status topic driving the spring-force ramp-in.
+    Empty (default) disables ramping entirely -- spring_scale stays 1.0.
+spring_ramp_duration_sec : double
+    Ramp duration for spring-force torque after torque-enable. Gravity
+    comp is never ramped (see compute_total_torques).
+collision_check_interval_sec : double
+    Throttle interval for the self-collision check; the torque-scaling
+    decision still runs every cycle, against the most recent result.
+collision_log_path : str
+    CSV log of collision-check events, flushed incrementally. Empty
+    disables logging.
+spring_names, springs.<n>.* : per-VirtualSpring config (see
+    config/springs.yaml) -- link_name, local_point, target, stiffness,
+    damping, rest_length, inner_radius, outer_radius.
+joint_spring_names, joint_springs.<n>.* : per-JointSpring config --
+    joint_name, target_angle, stiffness, damping.
 """
 
 import csv
@@ -535,8 +621,9 @@ class VirtualSpringNode(Node):
         target_pending = bool(np.any(np.isnan(target)))
         if target_pending:
             # No target configured: resolve to the attachment point's
-            # current world position (mirrors how JointSpring already
-            # defaults target_angle to the joint's current angle) so the
+            # current world position (mirrors how JointSpring, below,
+            # defaults target_angle to the joint's current angle -- via the
+            # same deferred-resolve mechanism, for the same reason) so the
             # spring starts at zero extension/force instead of pulling
             # toward a stale fixed point that may be far from wherever the
             # arm actually is this session. A fixed [0.5, 0, 0.5] target
@@ -573,9 +660,17 @@ class VirtualSpringNode(Node):
         """Load a single joint spring by name from current parameters. Raises on error."""
         prefix = f"joint_springs.{name}"
         self._declare_or_ignore(f"{prefix}.joint_name",   "")
-        # NaN is a sentinel for "not set in config" -- defaults to the
-        # joint's current angle at load time (a soft hold-here spring)
-        # rather than requiring every joint spring to specify a target.
+        # NaN is a sentinel for "not set in config": defaults to the
+        # joint's actual current angle (a soft hold-here spring) rather
+        # than requiring every joint spring to specify a target. Can't
+        # resolve that here, though -- same reason as VirtualSpring's
+        # target below (see _load_one_spring): this method runs during
+        # __init__, before any real /joint_states message has arrived, so
+        # self._arm is still at the URDF's zero/neutral configuration, not
+        # the arm's actual pose. Use a zero placeholder and resolve for
+        # real on the first _joint_state_cb, once self._arm reflects
+        # reality -- resolving against the stale zero pose here is what
+        # caused a live incident for VirtualSpring, 2026-08-07.
         self._declare_or_ignore(f"{prefix}.target_angle", float("nan"))
         self._declare_or_ignore(f"{prefix}.stiffness",    0.0)
         self._declare_or_ignore(f"{prefix}.damping",      0.0)
@@ -588,13 +683,9 @@ class VirtualSpringNode(Node):
         self._arm.validate_joint_name(joint_name)  # raises ValueError if bad
 
         target_angle = float(_get("target_angle", float("nan")))
-        if math.isnan(target_angle):
-            joint_index = self._arm.joint_names.index(joint_name)
-            target_angle = self._arm.get_joint_angle(joint_index)
-            self.get_logger().info(
-                f"Joint spring '{name}': no target_angle configured, "
-                f"defaulting to current angle ({target_angle:.4f} rad)."
-            )
+        target_pending = math.isnan(target_angle)
+        if target_pending:
+            target_angle = 0.0
 
         spring = JointSpring(
             joint_name=joint_name,
@@ -603,6 +694,7 @@ class VirtualSpringNode(Node):
             damping=float(_get("damping", 0.0)),
             name=name,
         )
+        spring._target_pending = target_pending
         return spring
 
     def _torque_status_cb(self, msg: String) -> None:
@@ -678,9 +770,10 @@ class VirtualSpringNode(Node):
             # Resolve any springs whose target was left unconfigured: now
             # that self._arm reflects a real measured pose (not the URDF's
             # zero/neutral configuration it started at -- see
-            # _load_one_spring), set target = current attachment position
-            # so the spring starts at zero extension/force instead of
-            # pulling toward wherever the zero pose happens to put it.
+            # _load_one_spring / _load_one_joint_spring), set target =
+            # current position/angle so the spring starts at zero
+            # extension/force instead of pulling toward wherever the zero
+            # pose happens to put it.
             for spring in self._springs:
                 if isinstance(spring, VirtualSpring) and getattr(spring, "_target_pending", False):
                     T = self._arm.get_link_transform(spring.link_name)
@@ -698,6 +791,14 @@ class VirtualSpringNode(Node):
                     # a pending one has no explicit config to have already
                     # broadcast at load time.
                     self._publish_target(spring)
+                elif isinstance(spring, JointSpring) and getattr(spring, "_target_pending", False):
+                    joint_index = self._arm.joint_names.index(spring.joint_name)
+                    spring.target_angle = self._arm.get_joint_angle(joint_index)
+                    spring._target_pending = False
+                    self.get_logger().info(
+                        f"Joint spring '{spring.name}': target_angle resolved "
+                        f"to current angle ({spring.target_angle:.4f} rad)."
+                    )
 
             # compute the actual torques generated by the full set of springs
             # if self._add_grav_comp is true, include calculations for gravity compensation
@@ -780,28 +881,12 @@ class VirtualSpringNode(Node):
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
 
-            # logging to the terminal for debugging and to plot later
+            # Record spring state for plot_spring_extensions() (on-shutdown plot)
             for spring in self._springs:
                 if spring._last_state is not None:
-                    """
-                    self.get_logger().info(
-                        f"{spring.name} attachment: {spring._last_state.world_attachment_point}",
-                        throttle_duration_sec=1.0
-                )
-
-                    self.get_logger().info(
-                        f"{spring.name} displacement: {spring._last_state.displacement} "
-                        f"extension: {spring._last_state.extension:.4f}m",
-                        throttle_duration_sec=1.0
-                    )
-
-"""
-                    # Append to time-series
                     self.spring_data[spring.name]['times'].append(elapsed)
                     self.spring_data[spring.name]['extensions'].append(spring._last_state.extension)
                     self.spring_data[spring.name]['torques'].append(spring._last_state.torques)
-
-                    #self.get_logger().info(f"Total torques: {torques}", throttle_duration_sec=1.0)
         except Exception as e:
             # Fail safe rather than simply not publishing: if we just
             # returned here, torque_relay/gen3_torque_control would keep
@@ -837,11 +922,6 @@ class VirtualSpringNode(Node):
         out.name   = self._arm.joint_names
         out.effort = torques.tolist()
         self._torque_pub.publish(out)
-
-        # Jacobian Debugging
-        #for name in self._arm.link_names:
-        #    T = self._arm.get_link_transform(name)
-        #    print(f"{name}: {T[:3, 3]}")
 
     def _trigger_torque_disable_failsafe(self) -> None:
         """
