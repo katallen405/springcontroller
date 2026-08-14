@@ -32,6 +32,21 @@ def parse_args():
         "--urdf", required=True,
         help="Path to the robot URDF (flattened, no unresolved xacro) to visualize.",
     )
+    parser.add_argument(
+        "--zmq-url", default=None,
+        help="meshcat zmq_url to attach to (e.g. tcp://127.0.0.1:6001). If a "
+             "meshcat-server is already listening there, this process attaches "
+             "to its scene instead of spawning a new server on a random port -- "
+             "needed so other processes (e.g. a UI iframe) can reach a stable, "
+             "predictable URL. Default (None) spawns a fresh server on a "
+             "random port, as before.",
+    )
+    parser.add_argument(
+        "--open", action="store_true", default=False,
+        help="Open a browser tab pointed at the meshcat viewer on startup. "
+             "Off by default when attaching to a pinned --zmq-url server "
+             "(e.g. one already opened by a UI iframe or another viewer).",
+    )
     # Strip ROS-specific args (--ros-args -r ... -p ... etc.) before parsing
     # our own, so remapping (e.g. /joint_states -> /kinova/joint_states_lowlevel
     # on Gen3) still works cleanly when launched via ros2 launch/run.
@@ -284,7 +299,7 @@ node.create_subscription(JointState, JOINT_STATES,  joint_cb,           10)
 node.create_subscription(String,     SPRINGS_TOPIC, springs_updated_cb, 10)
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
-viz.initViewer(open=True)
+viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
 viz.loadViewerModel()
 
 # if node is already running, bootstrap from parameters

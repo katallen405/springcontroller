@@ -126,6 +126,29 @@ def generate_launch_description():
         ),
     )
 
+    meshcat_zmq_url_arg = DeclareLaunchArgument(
+        "meshcat_zmq_url",
+        default_value="tcp://127.0.0.1:6001",
+        description=(
+            "zmq_url for a dedicated meshcat-server this launch file starts "
+            "(only when armviz:=true), which armviz.py then attaches to "
+            "instead of spawning its own server on a random port. Pinning "
+            "this lets other processes (e.g. the study_control_panel_ui's "
+            "embedded meshcat iframe) reach a stable, predictable URL "
+            "instead of one that changes every run."
+        ),
+    )
+
+    meshcat_port_arg = DeclareLaunchArgument(
+        "meshcat_port",
+        default_value="7101",
+        description=(
+            "HTTP/static-asset port for the pinned meshcat-server (see "
+            "meshcat_zmq_url). The viewer is reachable at "
+            "http://localhost:<meshcat_port>/static/."
+        ),
+    )
+
     virtual_spring_node = Node(
         package="springcontroller",
         executable="virtual_spring_node",
@@ -184,16 +207,37 @@ def generate_launch_description():
         ],
     )
 
-    armviz_process = ExecuteProcess(
+    # Started immediately (not delayed) so it's already listening by the time
+    # armviz_process (below) tries to attach to it a moment later.
+    meshcat_server_process = ExecuteProcess(
         cmd=[
-            SPRINGCONTROLLER_VENV_PYTHON,
-            "/home/katallen/sandbox/src/springcontroller/test/armviz.py",
-            "--urdf", LaunchConfiguration("urdf_path"),
-            "--ros-args",
-            "-r", "/joint_states:=/kinova/joint_states_lowlevel",
+            "meshcat-server",
+            "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
+            "--port", LaunchConfiguration("meshcat_port"),
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("armviz")),
+    )
+
+    # Delayed 1.5s so meshcat_server_process has time to bind before armviz.py
+    # tries to attach via --zmq-url -- attaching to a not-yet-listening
+    # zmq_url would otherwise race the server's own startup.
+    armviz_process = TimerAction(
+        period=1.5,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    SPRINGCONTROLLER_VENV_PYTHON,
+                    "/home/katallen/sandbox/src/springcontroller/test/armviz.py",
+                    "--urdf", LaunchConfiguration("urdf_path"),
+                    "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
+                    "--ros-args",
+                    "-r", "/joint_states:=/kinova/joint_states_lowlevel",
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("armviz")),
+            )
+        ],
     )
 
     return LaunchDescription([
@@ -204,8 +248,11 @@ def generate_launch_description():
         torque_control_service_arg,
         enable_torque_control_arg,
         armviz_arg,
+        meshcat_zmq_url_arg,
+        meshcat_port_arg,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
+        meshcat_server_process,
         armviz_process,
     ])

@@ -1,0 +1,43 @@
+study_control_panel_node:
+  ros__parameters:
+    torque_enable_service: /gen3_torque_control/enable
+    torque_status_topic: /gen3_torque_control/status
+    controller_manager_switch_service: /controller_manager/switch_controller
+    controller_manager_list_service: /controller_manager/list_controllers
+    position_controller_name: joint_trajectory_controller
+    follow_joint_trajectory_action: /joint_trajectory_controller/follow_joint_trajectory
+    add_spring_service: /virtual_spring_node/add_spring
+    remove_spring_service: /virtual_spring_node/remove_spring
+    spring_node_get_parameters_service: /virtual_spring_node/get_parameters
+    safety_status_topic: /virtual_spring_node/safety_status
+    # Matches the remap gen3_spring.launch.py already applies to
+    # virtual_spring_node's /joint_states subscription -- gen3_torque_node
+    # must be launched with the same remap (see the terminal-reminder text
+    # in web/index.html) for this to actually receive data.
+    joint_states_topic: /kinova/joint_states_lowlevel
+    joint_names:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+      - joint_7
+    urdf_path: /home/katallen/sandbox/src/springcontroller/springcontroller/flat_urdf_files/gen3_kinova_flat.urdf
+    locked_joint_names:
+      - robotiq_85_left_knuckle_joint
+      - robotiq_85_right_knuckle_joint
+      - robotiq_85_left_inner_knuckle_joint
+      - robotiq_85_right_inner_knuckle_joint
+      - robotiq_85_left_finger_tip_joint
+      - robotiq_85_right_finger_tip_joint
+    tip_link_name: end_effector_link
+    reset_spring_name: reset_tip_spring
+    reset_spring_stiffness: 50.0
+    reset_spring_damping: 5.0
+    reset_spring_local_point: [0.0, 0.0, 0.1]
+    study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
+    move_duration_sec: 8.0
+    joint_state_freshness_sec: 1.0
+    safety_status_freshness_sec: 3.0
+    service_call_timeout_sec: 5.0
