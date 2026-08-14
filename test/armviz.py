@@ -14,9 +14,12 @@ import meshcat.geometry as g
 
 import rclpy
 from rclpy.utilities import remove_ros_args
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from std_msgs.msg import String
+from moveit_msgs.msg import CollisionObject
+from shape_msgs.msg import SolidPrimitive
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +46,7 @@ URDF          = _args.urdf
 JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
+COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -65,6 +69,9 @@ pinocchio_joints = {
 latest_q    = pin.neutral(model)
 springs     = {}   # name -> {"target": np.array|None, "link_name": str}
 target_subs = {}   # name -> rclpy subscription (kept alive)
+
+# id -> {"object_pose": 4x4 np.ndarray, "primitives": [(shape, dims, relative_pose 4x4)]}
+collision_objects = {}
 
 show_frames = False  # toggled via 'f' keypress in the terminal
 
@@ -193,9 +200,94 @@ def springs_updated_cb(msg):
         viz.viewer[f"springs/{name}"].delete()
         print(f"[viz] removed spring: '{name}'")
 
+def _pose_msg_to_matrix(pose):
+    """geometry_msgs/Pose -> 4x4 homogeneous transform. Same field-order
+    swap as virtual_spring_node's _pose_to_se3: ROS quaternions are
+    (x, y, z, w) but pin.Quaternion takes (w, x, y, z)."""
+    q = pin.Quaternion(
+        pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z
+    )
+    t = np.array([pose.position.x, pose.position.y, pose.position.z])
+    return pin.SE3(q, t).homogeneous
+
+def collision_object_cb(msg):
+    """Mirrors virtual_spring_node's _collision_object_cb/_apply_collision_object
+    ADD/APPEND/MOVE/REMOVE handling, but only to track shape/pose for
+    drawing -- ~/collision_object_state (TRANSIENT_LOCAL) is virtual_spring_node
+    echoing what it actually applied, from both the live ~/collision_object
+    topic and the YAML scene loader, so this stays in sync regardless of
+    which path added an object or whether armviz was even running yet."""
+    if msg.operation in (CollisionObject.ADD, CollisionObject.APPEND):
+        object_pose = _pose_msg_to_matrix(msg.pose)
+        primitives = []
+        for i, primitive in enumerate(msg.primitives):
+            relative_pose = (
+                _pose_msg_to_matrix(msg.primitive_poses[i])
+                if i < len(msg.primitive_poses)
+                else np.eye(4)
+            )
+            if primitive.type == SolidPrimitive.BOX:
+                primitives.append(("box", list(primitive.dimensions[:3]), relative_pose))
+            elif primitive.type == SolidPrimitive.CYLINDER:
+                # SolidPrimitive convention: dimensions[:2] = [height, radius]
+                primitives.append(("cylinder", list(primitive.dimensions[:2]), relative_pose))
+            else:
+                print(f"[viz] collision object '{msg.id}': unsupported primitive "
+                      f"type {primitive.type}, skipping.")
+        collision_objects[msg.id] = {"object_pose": object_pose, "primitives": primitives}
+        draw_collision_object(msg.id)
+        print(f"[viz] collision object '{msg.id}': {len(primitives)} shape(s) tracked.")
+    elif msg.operation == CollisionObject.REMOVE:
+        collision_objects.pop(msg.id, None)
+        viz.viewer[f"collision_objects/{msg.id}"].delete()
+        print(f"[viz] collision object '{msg.id}' removed.")
+    elif msg.operation == CollisionObject.MOVE:
+        entry = collision_objects.get(msg.id)
+        if entry is None:
+            print(f"[viz] collision object '{msg.id}': MOVE received but not "
+                  "currently tracked; ignoring.")
+            return
+        entry["object_pose"] = _pose_msg_to_matrix(msg.pose)
+        draw_collision_object(msg.id)
+
 # ---------------------------------------------------------------------------
 # MeshCat drawing
 # ---------------------------------------------------------------------------
+
+# meshcat.geometry.Cylinder's axis is local +Y (three.js convention); ROS/
+# shape_msgs SolidPrimitive cylinders have their axis along local +Z. This
+# extra rotation (90 deg about X) is applied after the object/relative pose
+# so the drawn cylinder's axis matches the frame it's actually collision-
+# checked against, instead of silently rendering sideways.
+_CYLINDER_AXIS_ALIGN = np.eye(4)
+_CYLINDER_AXIS_ALIGN[:3, :3] = np.array([
+    [1.0, 0.0,  0.0],
+    [0.0, 0.0, -1.0],
+    [0.0, 1.0,  0.0],
+])
+
+_COLLISION_OBJECT_MATERIAL = g.MeshLambertMaterial(
+    color=0x808080, opacity=0.5, transparent=True
+)
+
+def draw_collision_object(obj_id):
+    """(Re)draw every primitive of a tracked collision object at its current
+    pose. Event-driven (called from collision_object_cb on ADD/MOVE), unlike
+    draw_springs/draw_frames -- scene objects don't move with joint state,
+    so there's nothing to refresh in the main display loop."""
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    for i, (shape, dims, relative_pose) in enumerate(entry["primitives"]):
+        path = f"collision_objects/{obj_id}/{i}"
+        T = entry["object_pose"] @ relative_pose
+        if shape == "box":
+            viz.viewer[path].set_object(g.Box(dims), _COLLISION_OBJECT_MATERIAL)
+        else:  # cylinder
+            height, radius = dims
+            viz.viewer[path].set_object(g.Cylinder(height, radius), _COLLISION_OBJECT_MATERIAL)
+            T = T @ _CYLINDER_AXIS_ALIGN
+        viz.viewer[path].set_transform(T)
 
 
 
@@ -282,6 +374,20 @@ node = rclpy.create_node('spring_viz_node')
 node.create_subscription(JointState, JOINT_STATES,  joint_cb,           10)
 node.create_subscription(String,     SPRINGS_TOPIC, springs_updated_cb, 10)
 
+# TRANSIENT_LOCAL to match virtual_spring_node's ~/collision_object_state
+# publisher -- lets armviz pick up the full current scene even if it starts
+# after objects were already loaded (e.g. via the YAML scene loader at
+# launch), not just ones added/moved/removed while armviz happens to be
+# running.
+_collision_state_qos = QoSProfile(
+    depth=50,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+node.create_subscription(
+    CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _collision_state_qos
+)
+
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=True)
 viz.loadViewerModel()
@@ -290,9 +396,10 @@ viz.loadViewerModel()
 load_springs_from_params()
 
 print("Spring visualizer ready.")
-print(f"  Robot URDF:      {URDF}")
-print(f"  Joint states:    {JOINT_STATES}")
-print(f"  Springs updates: {SPRINGS_TOPIC}")
+print(f"  Robot URDF:        {URDF}")
+print(f"  Joint states:      {JOINT_STATES}")
+print(f"  Springs updates:   {SPRINGS_TOPIC}")
+print(f"  Collision objects: {COLLISION_STATE_TOPIC}")
 print("Waiting for springs from virtual_spring_node...")
 
 import threading, sys, tty, termios

@@ -456,6 +456,24 @@ class VirtualSpringNode(Node):
             f"Listening for scene collision objects on {collision_object_topic}"
         )
 
+        # Echoes every applied ADD/APPEND/MOVE/REMOVE (from both the live
+        # topic above and the YAML scene loader) so a late-joining consumer
+        # (e.g. armviz.py) can reconstruct current scene state without
+        # sharing this node's in-process URDFArmConfiguration. TRANSIENT_LOCAL
+        # with enough depth to cover a scene's whole operation history lets a
+        # subscriber that joins after the fact replay it and end up in the
+        # same state -- same trick as fetch_robot_description() above, just
+        # with more than 1 message of history since scene state isn't a
+        # single latest-value topic.
+        collision_state_qos = QoSProfile(
+            depth=50,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._collision_object_state_pub = self.create_publisher(
+            CollisionObject, "~/collision_object_state", collision_state_qos
+        )
+
         self._load_collision_scene_srv = self.create_service(
             LoadCollisionScene, "~/load_collision_scene", self._load_collision_scene_cb
         )
@@ -1086,6 +1104,7 @@ class VirtualSpringNode(Node):
             frames.append((sub_id, relative_pose))
 
         self._collision_object_frames[msg.id] = frames
+        self._collision_object_state_pub.publish(msg)
         return len(frames)
 
     def _collision_object_cb(self, msg: CollisionObject) -> None:
@@ -1097,6 +1116,7 @@ class VirtualSpringNode(Node):
         elif msg.operation == CollisionObject.REMOVE:
             for sub_id, _ in self._collision_object_frames.pop(msg.id, []):
                 self._arm.remove_environment_object(sub_id)
+            self._collision_object_state_pub.publish(msg)
             self.get_logger().info(f"Collision object '{msg.id}' removed.")
         elif msg.operation == CollisionObject.MOVE:
             frames = self._collision_object_frames.get(msg.id)
@@ -1109,6 +1129,7 @@ class VirtualSpringNode(Node):
             object_pose = _pose_to_se3(msg.pose)
             for sub_id, relative_pose in frames:
                 self._arm.move_environment_object(sub_id, object_pose * relative_pose)
+            self._collision_object_state_pub.publish(msg)
         else:
             self.get_logger().warn(
                 f"Collision object '{msg.id}': unknown operation "

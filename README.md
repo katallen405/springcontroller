@@ -323,8 +323,12 @@ ros2 launch springcontroller torque_relay.launch.py joint_order:="[joint1, joint
 
 `armviz.py` (in `test/`) is a MeshCat-based 3D visualizer -- opens in a
 browser, shows the robot plus live spring attachment points, targets, and
-the line between them. Not RViz. Needs `meshcat` installed in the venv (see
-[Python venv](#python-venv)).
+the line between them, plus any [collision scene objects](#collision-scene-objects)
+(translucent gray) currently loaded on `virtual_spring_node`. Not RViz --
+`virtual_spring_node` doesn't currently publish scene state in a form RViz
+understands (e.g. a `moveit_msgs/PlanningScene`), only the
+`~/collision_object_state` echo armviz consumes. Needs `meshcat` installed
+in the venv (see [Python venv](#python-venv)).
 
 Launch it alongside either robot with `armviz:=true`, or run it standalone:
 ```bash
@@ -387,6 +391,7 @@ deleted outright.
 | `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 | `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
+| `~/collision_object_state` (pub, transient-local) | `moveit_msgs/CollisionObject` | Echoes every applied ADD/APPEND/MOVE/REMOVE (from either the topic above or the YAML loader), so a late-joining consumer like `armviz.py` can reconstruct current scene state |
 
 ## Services
 
