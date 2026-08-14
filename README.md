@@ -221,6 +221,59 @@ Topic flow:
 /joint_states → virtual_spring_node → torque_relay → /kinova/joint_torque_command
 ```
 
+### Collision scene objects
+
+Static scene objects (tables, fixtures) for the self/scene-collision safety
+hard-clamp aren't declared in the launch file directly — they live in a YAML
+scene file, and the launch file just tells `virtual_spring_node` to load one
+via its `~/load_collision_scene` service, ~3s after startup. See
+`config/gen3_collision_scene.yaml` for the schema:
+
+```yaml
+objects:
+  my_fixture:
+    shape: box              # "box" or "cylinder"
+    dimensions: [0.4, 0.3, 0.6]   # box: [x, y, z] full side lengths (m)
+                                    # cylinder: [height, radius] (m)
+    frame_id: "world"        # informational only -- no TF lookup
+    pose:
+      position: [0.5, -0.3, 0.3]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+    exclude_links: []        # optional, YAML-only: URDF link names to skip
+                              # pairing against this object
+```
+
+Point the launch file at it and turn loading on (both default off, so a
+stale or placeholder scene file never silently clamps torques):
+```bash
+ros2 launch springcontroller gen3_spring.launch.py \
+    collision_scene:=/path/to/your_scene.yaml \
+    load_collision_scene:=true
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `collision_scene` | `config/gen3_collision_scene.yaml` | Scene collision-objects YAML |
+| `load_collision_scene` | `false` | If `true`, load `collision_scene` via `~/load_collision_scene` ~3s after startup |
+
+For a *live/moving* object (e.g. a tracked person), skip the YAML and
+publish `moveit_msgs/CollisionObject` ADD/MOVE/REMOVE messages to
+`~/collision_object` directly — same code path as the YAML loader, and the
+`id` used on ADD is what a later MOVE/REMOVE must match.
+
+**`exclude_links` gotcha:** without it, an object placed near a link that's
+always close to it in normal operation (e.g. `base_link` against the table
+it's mounted to) registers a permanent few-cm near-miss and blanket-scales
+torques for no real reason. Both example scene files exclude `base_link`
+against the table for this reason — see `add_environment_object`'s
+docstring in `urdf_arm_configuration.py`.
+
+This mechanism isn't Gen3-specific (`virtual_spring_node` and
+`urdf_arm_configuration` implement it generically), but only
+`gen3_spring.launch.py` currently wires up the `collision_scene` /
+`load_collision_scene` launch arguments — on UR3e, call
+`~/load_collision_scene` or publish to `~/collision_object` directly.
+
 ### UR3e (via forward_effort_controller)
 
 ```bash
@@ -333,6 +386,7 @@ deleted outright.
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
 | `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
+| `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
 
 ## Services
 
@@ -342,6 +396,7 @@ deleted outright.
 | `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
 | `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
 | `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (either type) |
+| `~/load_collision_scene` | `springcontroller_interfaces/LoadCollisionScene` | Load scene collision objects from YAML — see [Collision scene objects](#collision-scene-objects) |
 
 
 ## Using the library directly
