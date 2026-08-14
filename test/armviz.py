@@ -114,7 +114,10 @@ def get_param_link(name):
         return "ur3e_tool0"
 
 def load_springs_from_params():
-    """Bootstrap spring list from ROS params at startup."""
+    """Bootstrap spring list from ROS params at startup. Returns True if any
+    spring names were found (including ones already known), False if the
+    param service isn't reachable yet or reports none -- lets the caller
+    retry instead of treating "nothing yet" as final."""
     try:
         out = subprocess.check_output([
             'ros2', 'param', 'get', SPRING_NODE, 'spring_names'
@@ -139,10 +142,13 @@ def load_springs_from_params():
                     )
                     target_subs[name] = sub
                     print(f"[viz] loaded spring: '{name}'  link={link_name}  target={target}")
+            return True
         else:
             print("[viz] no springs found in params yet")
+            return False
     except Exception as e:
         print(f"[viz] could not read spring_names: {e}")
+        return False
 # ---------------------------------------------------------------------------
 # ROS callbacks
 # ---------------------------------------------------------------------------
@@ -392,8 +398,23 @@ viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=True)
 viz.loadViewerModel()
 
-# if node is already running, bootstrap from parameters
-load_springs_from_params()
+# Bootstrap from parameters, retrying for a bit rather than a single
+# immediate attempt: gen3_spring.launch.py starts armviz with no ordering
+# guarantee against virtual_spring_node (unlike enable_torque_control/
+# load_collision_scene, which explicitly wait), so a one-shot check here
+# routinely lost the race against virtual_spring_node still declaring its
+# spring_names/springs.* parameters -- and since nothing re-announces the
+# startup spring afterward otherwise, losing that race meant it silently
+# never appeared. Same ~10s timeout convention as wait_and_enable_torque.py.
+BOOTSTRAP_TIMEOUT_SEC = 10.0
+_bootstrap_deadline = time.time() + BOOTSTRAP_TIMEOUT_SEC
+_found_springs = load_springs_from_params()
+while not _found_springs and time.time() < _bootstrap_deadline:
+    rclpy.spin_once(node, timeout_sec=0.5)
+    _found_springs = load_springs_from_params()
+if not _found_springs:
+    print(f"[viz] no springs found in params after {BOOTSTRAP_TIMEOUT_SEC:.0f}s -- "
+          "will still pick up springs added/removed via ~/springs_updated afterward.")
 
 print("Spring visualizer ready.")
 print(f"  Robot URDF:        {URDF}")

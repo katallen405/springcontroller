@@ -394,7 +394,21 @@ class VirtualSpringNode(Node):
 
         # Spring collection
         self._springs = SpringCollection()
+
+        # Created here (ahead of the rest of the "Publishers" block below)
+        # so _load_springs_from_params can publish the initial spring set
+        # once it's done loading -- every other path that changes
+        # self._springs (_add_spring_cb/_add_joint_spring_cb/_remove_spring_cb)
+        # already does this; the initial config-driven load was the one
+        # silent exception, which meant a consumer that only learns about
+        # springs via this topic (e.g. armviz.py, if its own one-shot
+        # parameter bootstrap already lost the startup race) could
+        # permanently miss whatever was loaded from config at startup.
+        self._springs_updated_pub = self.create_publisher(String,
+                                            "~/springs_updated", 10)
+
         self._load_springs_from_params()
+        self._publish_springs_updated()
 
         # Maps a CollisionObject.id to [(internal_object_id, relative_pose), ...]
         # -- one entry per primitive -- so REMOVE/MOVE messages, which only
@@ -410,8 +424,8 @@ class VirtualSpringNode(Node):
             JointState, "~/joint_torques", 10
         )
 
-        self._springs_updated_pub = self.create_publisher(String,
-                                            "~/springs_updated", 10)
+        # (~/springs_updated publisher created earlier, above the
+        # SpringCollection/_load_springs_from_params setup -- see there.)
 
         # Lets external tools (e.g. wait_and_enable_torque.py's pre-flight
         # check) see the current self/scene-collision state without
