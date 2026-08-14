@@ -93,7 +93,7 @@ def get_param_target(name):
         out = subprocess.check_output([
             'ros2', 'param', 'get', SPRING_NODE,
             f'springs.{name}.target'
-        ], timeout=2).decode()
+        ], timeout=5).decode()
         nums = re.findall(r'[-\d.]+', out.split(':')[-1])
         if len(nums) == 3:
             return np.array([float(x) for x in nums])
@@ -107,42 +107,66 @@ def get_param_link(name):
         out = subprocess.check_output([
             'ros2', 'param', 'get', SPRING_NODE,
             f'springs.{name}.link_name'
-        ], timeout=2).decode()
+        ], timeout=5).decode()
         return out.split(':')[-1].strip()
     except Exception as e:
         print(f"[viz] could not read link_name for '{name}': {e}")
         return "ur3e_tool0"
 
+def _track_spring(name):
+    """Ensure `name` is present in `springs` with a resolved target,
+    (re)trying the target fetch if it's still missing from a previous
+    attempt. Creates the runtime ~/target/<name> subscription the first
+    time `name` is seen. Returns True once the target is known.
+
+    A spring name can become known (e.g. via spring_names or
+    ~/springs_updated) before its target/link_name sub-fetches -- separate
+    'ros2 param get' subprocesses, each with their own DDS discovery --
+    actually succeed, especially right after virtual_spring_node's own
+    heavy startup (URDF/collision model load) when it's competing hardest
+    for CPU. Previously a spring already present in `springs` was treated
+    as fully handled even with target=None, so a single transient failure
+    meant it silently never got a target -- confirmed 2026-08-14:
+    tip_spring showed up (arm was genuinely pulling toward it) but never
+    appeared in meshcat. Calling this again for an already-tracked name is
+    what gives a later retry (bootstrap loop, or another ~/springs_updated
+    message) a chance to actually recover from that."""
+    entry = springs.get(name)
+    if entry is None:
+        target    = get_param_target(name)
+        link_name = get_param_link(name)
+        springs[name] = entry = {
+            "target":    target,
+            "link_name": link_name,
+        }
+        sub = node.create_subscription(
+            PointStamped,
+            f"/virtual_spring_node/target/{name}",
+            make_target_cb(name),
+            10,
+        )
+        target_subs[name] = sub
+        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
+    elif entry.get("target") is None:
+        entry["target"] = get_param_target(name)
+        print(f"[viz] retried target for '{name}': {entry['target']}")
+    return entry.get("target") is not None
+
 def load_springs_from_params():
-    """Bootstrap spring list from ROS params at startup. Returns True if any
-    spring names were found (including ones already known), False if the
-    param service isn't reachable yet or reports none -- lets the caller
-    retry instead of treating "nothing yet" as final."""
+    """Bootstrap spring list from ROS params at startup. Returns True only
+    once every known spring name also has a target -- see _track_spring."""
     try:
         out = subprocess.check_output([
             'ros2', 'param', 'get', SPRING_NODE, 'spring_names'
-        ], timeout=2).decode()
+        ], timeout=5).decode()
         # output: "String values are: ['tip_spring', 'elbow_spring']"
         names = re.findall(r"'([^']+)'", out)
         if names:
             print(f"[viz] found springs from params: {names}")
-            for name in names:
-                if name not in springs:
-                    target    = get_param_target(name)
-                    link_name = get_param_link(name)
-                    springs[name] = {
-                        "target":    target,
-                        "link_name": link_name,
-                    }
-                    sub = node.create_subscription(
-                        PointStamped,
-                        f"/virtual_spring_node/target/{name}",
-                        make_target_cb(name),
-                        10,
-                    )
-                    target_subs[name] = sub
-                    print(f"[viz] loaded spring: '{name}'  link={link_name}  target={target}")
-            return True
+            # List comprehension, not all(gen) -- must attempt every name
+            # (each with its own retry) rather than short-circuiting on
+            # the first one still missing a target.
+            return all([_track_spring(name) for name in names])
         else:
             print("[viz] no springs found in params yet")
             return False
@@ -182,22 +206,13 @@ def springs_updated_cb(msg):
     active_names  = set(json.loads(msg.data))
     current_names = set(springs.keys())
 
-    # Add new springs
-    for name in active_names - current_names:
-        target    = get_param_target(name)
-        link_name = get_param_link(name)
-        springs[name] = {
-            "target":    target,
-            "link_name": link_name,
-        }
-        sub = node.create_subscription(
-            PointStamped,
-            f"/virtual_spring_node/target/{name}",
-            make_target_cb(name),
-            10,
-        )
-        target_subs[name] = sub
-        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
+    # Add new springs, and retry any already-tracked one whose target
+    # fetch previously failed and never got picked up again (see
+    # _track_spring) -- a later ~/springs_updated message is otherwise the
+    # only other chance after the bootstrap retry loop gives up.
+    for name in active_names:
+        if name not in current_names or springs[name].get("target") is None:
+            _track_spring(name)
 
     # Remove old springs
     for name in current_names - active_names:
@@ -405,16 +420,23 @@ viz.loadViewerModel()
 # routinely lost the race against virtual_spring_node still declaring its
 # spring_names/springs.* parameters -- and since nothing re-announces the
 # startup spring afterward otherwise, losing that race meant it silently
-# never appeared. Same ~10s timeout convention as wait_and_enable_torque.py.
-BOOTSTRAP_TIMEOUT_SEC = 10.0
+# never appeared. 20s (vs. the ~10s convention elsewhere, e.g.
+# wait_and_enable_torque.py) because load_springs_from_params() itself
+# retries per-name target/link_name lookups too -- each is its own
+# subprocess 'ros2 param get' call (own DDS discovery each time), so a
+# single bootstrap round can burn several seconds on its own, especially
+# competing with virtual_spring_node's own heavy startup for CPU.
+BOOTSTRAP_TIMEOUT_SEC = 20.0
 _bootstrap_deadline = time.time() + BOOTSTRAP_TIMEOUT_SEC
 _found_springs = load_springs_from_params()
 while not _found_springs and time.time() < _bootstrap_deadline:
     rclpy.spin_once(node, timeout_sec=0.5)
     _found_springs = load_springs_from_params()
 if not _found_springs:
-    print(f"[viz] no springs found in params after {BOOTSTRAP_TIMEOUT_SEC:.0f}s -- "
-          "will still pick up springs added/removed via ~/springs_updated afterward.")
+    print(f"[viz] springs not fully resolved from params after "
+          f"{BOOTSTRAP_TIMEOUT_SEC:.0f}s (see [viz] messages above for which "
+          "name/field) -- will still pick up further changes via "
+          "~/springs_updated afterward.")
 
 print("Spring visualizer ready.")
 print(f"  Robot URDF:        {URDF}")
