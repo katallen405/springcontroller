@@ -29,10 +29,12 @@ from launch_ros.actions import Node
 # shell). See the top-level README.md's "Python venv" section if you're
 # using a differently-named venv.
 SPRINGCONTROLLER_VENV_PYTHON = "/home/katallen/.springcontroller_venv/bin/python3"
-# meshcat-server (the standalone visualization server armviz.py attaches to)
-# is a console-script installed in the same venv -- same reasoning as above,
-# it isn't on PATH for a process launched via ros2 launch.
-SPRINGCONTROLLER_VENV_MESHCAT_SERVER = "/home/katallen/.springcontroller_venv/bin/meshcat-server"
+# meshcat's own `meshcat-server` console script has no --port flag at all
+# (it always auto-picks the HTTP port starting from 7000) -- this repo's
+# test/pinned_meshcat_server.py wraps ZMQWebSocketBridge directly so the
+# HTTP port can actually be pinned, run with this venv's python for the
+# same PATH reason as SPRINGCONTROLLER_VENV_PYTHON above.
+PINNED_MESHCAT_SERVER_SCRIPT = "/home/katallen/sandbox/src/springcontroller/test/pinned_meshcat_server.py"
 
 # ros2 bag record needs its output directory to exist before the process
 # starts (a bad cwd is an immediate hard failure, not a graceful retry).
@@ -329,7 +331,8 @@ def generate_launch_description():
     # armviz_process (below) tries to attach to it a moment later.
     meshcat_server_process = ExecuteProcess(
         cmd=[
-            SPRINGCONTROLLER_VENV_MESHCAT_SERVER,
+            SPRINGCONTROLLER_VENV_PYTHON,
+            PINNED_MESHCAT_SERVER_SCRIPT,
             "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
             "--port", LaunchConfiguration("meshcat_port"),
         ],
