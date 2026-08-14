@@ -110,6 +110,18 @@ class URDFArmConfiguration:
         self._collision_data: Optional[pin.GeometryData] = None
         self._load_collision_model(urdf_path, srdf_path, locked_joint_names)
 
+        # Geometry objects added by add_environment_object() (scene obstacles)
+        # live in the same GeometryModel as the robot's own link geometry, so
+        # they're indexed >= _n_robot_geoms and share the same distance-check
+        # machinery in get_collision_status(). Recorded here, right after the
+        # robot's own collision geometry is loaded and before anything else
+        # can be added.
+        self._n_robot_geoms = (
+            len(self._collision_model.geometryObjects)
+            if self._collision_model is not None else 0
+        )
+        self._environment_object_ids: set[str] = set()
+
         self.update(q, qdot)
 
 
@@ -141,6 +153,8 @@ class URDFArmConfiguration:
             if len(collision_model.geometryObjects) == 0:
                 return  # URDF has no collision geometry — nothing to do
 
+            self._simplify_collision_geometry(collision_model)
+
             # addAllCollisionPairs() only skips pairs on the *same* joint —
             # it does NOT skip adjacent parent/child links, which are always
             # touching at the joint and will otherwise register as permanent
@@ -162,6 +176,45 @@ class URDFArmConfiguration:
                 "Self-collision checking will be unavailable.",
                 stacklevel=2,
             )
+
+    def _simplify_collision_geometry(self, collision_model: "pin.GeometryModel") -> None:
+        """
+        Replace each loaded triangle mesh (BVHModelOBBRSS -- often several
+        thousand triangles per link) with a conservative axis-aligned
+        bounding box in the mesh's own local frame, in place.
+
+        Offline-profiled 2026-08-07/08-12: mesh-mesh distance queries via
+        pin.computeDistances cost ~126ms/call for this arm's ~91 collision
+        pairs -- capping get_collision_status() (called every control
+        cycle) to ~8Hz instead of the intended ~100Hz, later confirmed to
+        be the dominant cause of a full day's worth of live command-
+        staleness/fault incidents. Bounding boxes over the same pairs cost
+        ~0.01ms/call, a ~10,000x speedup -- negligible against a 10ms
+        cycle budget.
+
+        The box always encloses the true mesh (it's exactly the mesh's own
+        AABB), so reported distances are conservative: equal to or smaller
+        than the true mesh-to-mesh distance, never larger. That's the safe
+        direction for a collision clamp -- it can trigger early on an
+        elongated/diagonal link's loose bounding box, but it can never
+        report "clear" when the real mesh isn't.
+
+        Skips anything that isn't a BVH mesh (e.g. environment objects
+        added later via add_environment_object, already simple
+        primitives) -- nothing to simplify there.
+        """
+        import coal
+
+        for go in collision_model.geometryObjects:
+            mesh = go.geometry
+            if mesh.getObjectType() != coal.OT_BVH:
+                continue
+            mesh.computeLocalAABB()
+            aabb = mesh.aabb_local
+            box = coal.Box(aabb.width(), aabb.height(), aabb.depth())
+            center = np.asarray(aabb.center(), dtype=float).reshape(3)
+            go.geometry = box
+            go.placement = go.placement * pin.SE3(np.eye(3), center)
 
     @classmethod
     def from_urdf(
@@ -335,6 +388,125 @@ class URDFArmConfiguration:
             in_danger=in_danger,
             in_collision=in_collision,
         )
+
+    # ------------------------------------------------------------------
+    # Environment (scene) collision objects
+    # ------------------------------------------------------------------
+    #
+    # Obstacles are added as extra, world-fixed GeometryObjects in the same
+    # GeometryModel used for self-collision, with a collision pair against
+    # every robot-link geometry (never against each other). This means
+    # get_collision_status() above needs no changes at all -- it already
+    # scans every pair and reports whichever is closest, so scene objects
+    # get the same in_collision/in_danger/scale_factor treatment as
+    # self-collision for free.
+
+    def is_environment_object(self, name: str) -> bool:
+        """True if `name` is a scene object added via add_environment_object
+        (as opposed to one of the robot's own link geometries)."""
+        return name in self._environment_object_ids
+
+    def add_environment_object(
+        self,
+        object_id: str,
+        shape: str,
+        dimensions: list[float],
+        pose: pin.SE3,
+        exclude_links: list[str] | None = None,
+    ) -> None:
+        """
+        Add (or replace) a static collision object in the scene.
+
+        Parameters
+        ----------
+        object_id : str
+            Unique name for this object. Adding again with the same id
+            replaces it (matches moveit_msgs/CollisionObject's ADD
+            semantics).
+        shape : str
+            "box" or "cylinder".
+        dimensions : list[float]
+            "box": [x, y, z] full side lengths (m).
+            "cylinder": [radius, height] -- both full-size, matching
+            hppfcl's own constructor convention.
+        pose : pin.SE3
+            World-frame placement of the object.
+        exclude_links : list[str], optional
+            URDF link names to skip when creating collision pairs against
+            this object -- the environment-object equivalent of an SRDF
+            <disable_collisions> entry. Use this for permanent, expected
+            "contact" like the base link sitting on the table it's mounted
+            to: without it, that link would register a small permanent
+            near-miss (or worse, an overlap) against every object placed at
+            the mounting surface's height, which is a modeling artifact, not
+            a real hazard, and would blanket-scale torques for no reason.
+        """
+        if self._collision_model is None or self._collision_data is None:
+            raise RuntimeError(
+                "No collision model loaded -- environment collision "
+                "checking requires the robot's own collision geometry to "
+                "already be available."
+            )
+
+        # This pinocchio build's GeometryObject expects coal::CollisionGeometry
+        # (the current name for what used to be hpp-fcl) -- the separately
+        # installed `hppfcl` package looks API-compatible but is a different,
+        # incompatible boost::python type registration and fails at the
+        # GeometryObject constructor. Confirmed empirically: `coal` is what's
+        # actually wired into this pinocchio build.
+        import coal
+
+        if shape == "box":
+            geom = coal.Box(*dimensions)
+        elif shape == "cylinder":
+            radius, height = dimensions
+            geom = coal.Cylinder(radius, height)
+        else:
+            raise ValueError(f"Unknown environment object shape: {shape!r}")
+
+        # Idempotent replace, mirroring CollisionObject.ADD's "if the object
+        # previously existed, it is replaced".
+        self.remove_environment_object(object_id)
+
+        geometry_object = pin.GeometryObject(object_id, 0, pose, geom)
+        gid = self._collision_model.addGeometryObject(geometry_object)
+        excluded = set(exclude_links or [])
+        for i in range(self._n_robot_geoms):
+            if excluded:
+                link_name = self._model.frames[
+                    self._collision_model.geometryObjects[i].parentFrame
+                ].name
+                if link_name in excluded:
+                    continue
+            self._collision_model.addCollisionPair(pin.CollisionPair(i, gid))
+
+        # Pair topology changed -- GeometryData must be rebuilt to match.
+        self._collision_data = pin.GeometryData(self._collision_model)
+        self._environment_object_ids.add(object_id)
+
+    def remove_environment_object(self, object_id: str) -> bool:
+        """Remove a previously-added environment object. Returns False if
+        no object with that id exists."""
+        if object_id not in self._environment_object_ids:
+            return False
+        # Also drops this object's collision pairs.
+        self._collision_model.removeGeometryObject(object_id)
+        self._environment_object_ids.discard(object_id)
+        self._collision_data = pin.GeometryData(self._collision_model)
+        return True
+
+    def move_environment_object(self, object_id: str, pose: pin.SE3) -> bool:
+        """
+        Update the world-frame placement of an existing environment object
+        without touching collision-pair topology. Cheap enough to call every
+        control cycle for a continuously-tracked object (e.g. a person).
+        Returns False if no object with that id exists.
+        """
+        if object_id not in self._environment_object_ids:
+            return False
+        gid = self._collision_model.getGeometryId(object_id)
+        self._collision_model.geometryObjects[gid].placement = pose
+        return True
 
     # ------------------------------------------------------------------
     # State update
