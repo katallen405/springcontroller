@@ -177,10 +177,10 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
           <button class="action on" onclick="enableTorque()">Turn ON torque control</button>
           <button class="action off" onclick="disableTorque()">Turn OFF torque control</button>
         </div>
-        <label class="chk" style="margin-top:8px" title="Bypasses the safety_status check that normally blocks torque-enable when status isn't SAFE (e.g. DANGER/COLLISION from the collision clamp).">
+        <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
-        <p class="hint">Lets torque control enable even when safety status isn't SAFE. Only check this if you understand why it's non-SAFE.</p>
+        <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps of those two states (see README:224).</p>
         <div class="status-line">
           joint_trajectory_controller: <span class="val" id="pos-ctrl-state">unknown</span><br>
           torque control: <span class="val" id="torque-state">unknown</span><br>
