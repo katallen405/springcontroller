@@ -9,10 +9,24 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, sans-serif; background: #f0f0ee; color: #1a1a1a; }
 
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+summary:focus-visible, [tabindex]:focus-visible {
+  outline: 3px solid #2563eb; outline-offset: 2px;
+}
+
 .conn-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 9px 16px; background: #fff; border-bottom: 1px solid #e0e0e0;
   position: sticky; top: 0; z-index: 10;
+}
+.app-title {
+  font-size: 14px; font-weight: 700; color: #1a1a1a;
+  margin-right: 4px; padding-right: 10px; border-right: 1px solid #ddd;
 }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; flex-shrink: 0; }
 .dot.ok  { background: #3b8a3b; }
@@ -44,7 +58,7 @@ button.action {
 button.action:hover { background: #f4f4f4; }
 button.action.on   { border-color: #2E7A2E; color: #1e5a1e; }
 button.action.on:hover { background: #f0faf0; }
-button.action.off  { border-color: #999; color: #444; }
+button.action.off  { border-color: #767676; color: #444; }
 button.action.danger { border-color: #C83232; color: #a02020; }
 button.action.danger:hover { background: #fdf0f0; }
 button.action.estop {
@@ -56,7 +70,7 @@ button.action.estop:hover { background: #a02020; }
 .status-line { font-size: 13px; color: #555; margin-top: 6px; }
 .status-line .val { font-weight: 700; }
 .val.SAFE, .val.active, .val.ENABLED.ok { color: #2E7A2E; }
-.val.DANGER, .val.unknown { color: #c87800; }
+.val.DANGER, .val.unknown { color: #8a5300; }
 .val.COLLISION, .val.inactive { color: #a02020; }
 
 .msg-box { margin-top: 8px; padding: 7px 10px; border-radius: 7px; font-size: 12.5px; font-family: monospace; white-space: pre-wrap; }
@@ -68,6 +82,28 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+.layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+.sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+details.panel { padding: 0; }
+details.panel > summary { list-style: none; cursor: pointer; padding: 14px 18px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666; display: flex; align-items: center; gap: 10px; }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::marker { display: none; }
+details.panel > summary::before {
+  content: '▶';
+  display: inline-block;
+  font-size: 15px;
+  line-height: 1;
+  color: #444;
+  transform: rotate(0deg);
+  transition: transform .15s ease;
+}
+details.panel[open] > summary::before { transform: rotate(90deg); }
+details.panel > .details-body { padding: 0 18px 14px; }
+
+.hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -92,131 +128,137 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
 </head>
 <body>
 
-<div class="conn-bar">
-  <span class="dot" id="dot"></span>
-  <span class="status-text" id="conn-label">Disconnected</span>
+<header class="conn-bar">
+  <h1 class="app-title">Study Control Panel</h1>
+  <span class="dot" id="dot" aria-hidden="true"></span>
+  <span class="status-text" id="conn-label" role="status" aria-live="polite">Disconnected</span>
+  <label class="sr-only" for="ws-url">Rosbridge WebSocket URL</label>
   <input type="text" id="ws-url" value="ws://localhost:9090" style="width:190px">
   <button id="btn-connect">Connect</button>
   <button id="btn-disconnect">Disconnect</button>
-</div>
+</header>
 
-<div class="wrap">
+<main class="wrap">
 
-  <!-- ── Terminal reminders ── -->
-  <div class="panel">
-    <h2>1. Start the three terminals</h2>
-
-    <div class="field-inline">
-      Robot IP: <input type="text" id="robot-ip" value="192.168.1.10" onchange="renderCommands()">
-    </div>
-
-    <div class="cmd-row">
-      <pre class="cmd" id="cmd-torque"></pre>
-      <button class="copy-btn" onclick="copyCmd('cmd-torque')">Copy</button>
-    </div>
-    <div class="cmd-row">
-      <pre class="cmd" id="cmd-spring"></pre>
-      <button class="copy-btn" onclick="copyCmd('cmd-spring')">Copy</button>
-    </div>
-    <div class="cmd-row">
-      <pre class="cmd" id="cmd-driver"></pre>
-      <button class="copy-btn" onclick="copyCmd('cmd-driver')">Copy</button>
-    </div>
-    <p class="status-line">This page, rosbridge, and its backend node all came up together via:</p>
-    <pre class="cmd">ros2 launch springcontroller_ui study_control_panel.launch.py</pre>
-  </div>
-
-  <!-- ── Mode buttons ── -->
-  <div class="panel">
-    <h2>2. Position control / torque control</h2>
-    <div class="btn-row">
-      <button class="action on" onclick="callTrigger(svcEnablePosition, 'Position control')">Turn ON position control</button>
-      <button class="action off" onclick="deactivatePositionController()">Turn OFF position control</button>
-      <button class="action on" onclick="enableTorque()">Turn ON torque control</button>
-      <button class="action off" onclick="disableTorque()">Turn OFF torque control</button>
-      <label class="chk"><input type="checkbox" id="allow-danger"> allow danger (override safety_status)</label>
-    </div>
-    <div class="status-line">
-      joint_trajectory_controller: <span class="val" id="pos-ctrl-state">unknown</span>
-      &nbsp;|&nbsp; torque control: <span class="val" id="torque-state">unknown</span>
-      &nbsp;|&nbsp; safety status: <span class="val" id="safety-state">unknown</span>
-    </div>
-    <div class="msg-box hidden" id="mode-msg"></div>
-  </div>
-
-  <!-- ── Soft e-stop ── -->
-  <div class="panel">
-    <h2>3. Emergency stop</h2>
-    <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; disable torque + position control</button>
-    <div class="msg-box hidden" id="estop-msg"></div>
-  </div>
-
-  <div class="grid2">
-    <!-- ── Study start ── -->
-    <div class="panel">
-      <h2>4. Study start location</h2>
-      <p class="status-line">Preset: <span class="val" id="start-defined">unknown</span></p>
-      <div class="btn-row" style="margin-top:8px">
-        <button class="action on" onclick="moveToStudyStart()">Move to study start</button>
-        <button class="action off" onclick="setCurrentAsStudyStart()">Set current position as study start</button>
+  <!-- ── Terminal reminders (collapsible) ── -->
+  <details class="panel" open>
+    <summary>Startup tasks</summary>
+    <div class="details-body">
+      <div class="field-inline">
+        <label for="robot-ip">Robot IP:</label>
+        <input type="text" id="robot-ip" value="192.168.1.10" onchange="renderCommands()">
       </div>
-      <div class="msg-box hidden" id="start-msg"></div>
-    </div>
 
-    <!-- ── Reset springs ── -->
-    <div class="panel">
-      <h2>5. Reset springs</h2>
-      <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
-      <div class="btn-row" style="margin-top:8px">
-        <button class="action off" onclick="resetSprings()">Reset to single tip anchor</button>
+      <div class="cmd-row">
+        <pre class="cmd" id="cmd-torque"></pre>
+        <button class="copy-btn" onclick="copyCmd('cmd-torque')">Copy</button>
       </div>
-      <div class="msg-box hidden" id="reset-msg"></div>
+      <div class="cmd-row">
+        <pre class="cmd" id="cmd-spring"></pre>
+        <button class="copy-btn" onclick="copyCmd('cmd-spring')">Copy</button>
+      </div>
+      <div class="cmd-row">
+        <pre class="cmd" id="cmd-driver"></pre>
+        <button class="copy-btn" onclick="copyCmd('cmd-driver')">Copy</button>
+      </div>
+      <p class="status-line">This page, rosbridge, and its backend node all came up together via:</p>
+      <pre class="cmd">ros2 launch springcontroller_ui study_control_panel.launch.py</pre>
     </div>
-  </div>
+  </details>
 
-  <!-- ── Spring panel ── -->
-  <div class="panel">
-    <h2>6. Add / remove springs</h2>
-
-    <div class="spring-form">
-      <div class="row">
-        <label>Link
-          <select id="sp-link"></select>
+  <div class="layout">
+    <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
+    <aside class="sidebar" aria-label="Quick controls">
+      <div class="panel">
+        <h2>Position control / torque control</h2>
+        <div class="btn-row">
+          <button class="action on" onclick="callTrigger(svcEnablePosition, 'Position control')">Turn ON position control</button>
+          <button class="action off" onclick="deactivatePositionController()">Turn OFF position control</button>
+          <button class="action on" onclick="enableTorque()">Turn ON torque control</button>
+          <button class="action off" onclick="disableTorque()">Turn OFF torque control</button>
+        </div>
+        <label class="chk" style="margin-top:8px" title="Bypasses the safety_status check that normally blocks torque-enable when status isn't SAFE (e.g. DANGER/COLLISION from the collision clamp).">
+          <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
-        <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
+        <p class="hint">Lets torque control enable even when safety status isn't SAFE. Only check this if you understand why it's non-SAFE.</p>
+        <div class="status-line">
+          joint_trajectory_controller: <span class="val" id="pos-ctrl-state">unknown</span><br>
+          torque control: <span class="val" id="torque-state">unknown</span><br>
+          safety status: <span class="val" id="safety-state">unknown</span>
+        </div>
+        <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
-      <div class="row">
-        <label>name <input type="text" id="sp-name" value="my_spring"></label>
-        <label>target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
-        <label>target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
-        <label>target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
-      </div>
-      <div class="row">
-        <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
-        <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
-        <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
-        <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
-        <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
-        <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
-        <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
-        <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
-      </div>
-      <div class="btn-row">
-        <button class="action on" onclick="addSpring()">Add spring</button>
-      </div>
-    </div>
-    <div class="msg-box hidden" id="spring-msg"></div>
 
-    <ul class="spring-list" id="spring-list"></ul>
+      <div class="panel">
+        <h2>Emergency stop</h2>
+        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; disable torque + position control</button>
+        <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite"></div>
+      </div>
 
-    <div class="meshcat-row">
-      <span class="status-line">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
-      <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      <div class="panel">
+        <h2>Study start location</h2>
+        <p class="status-line">Preset: <span class="val" id="start-defined">unknown</span></p>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action on" onclick="moveToStudyStart()">Move to study start</button>
+          <button class="action off" onclick="setCurrentAsStudyStart()">Set current position as study start</button>
+        </div>
+        <div class="msg-box hidden" id="start-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Reset springs</h2>
+        <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action off" onclick="resetSprings()">Reset to single tip anchor</button>
+        </div>
+        <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
+      </div>
+    </aside>
+
+    <!-- ── Main column: add/remove springs ── -->
+    <div class="panel">
+      <h2>Add / remove springs</h2>
+
+      <div class="spring-form">
+        <div class="row">
+          <label>Link
+            <select id="sp-link"></select>
+          </label>
+          <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
+        </div>
+        <div class="row">
+          <label>name <input type="text" id="sp-name" value="my_spring"></label>
+          <label>target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label>target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label>target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+        </div>
+        <div class="row">
+          <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
+          <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
+          <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
+          <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
+          <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
+          <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
+          <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
+          <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
+        </div>
+        <div class="btn-row">
+          <button class="action on" onclick="addSpring()">Add spring</button>
+        </div>
+      </div>
+      <div class="msg-box hidden" id="spring-msg" role="status" aria-live="polite"></div>
+
+      <ul class="spring-list" id="spring-list"></ul>
+
+      <div class="meshcat-row">
+        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
+        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      </div>
+      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
     </div>
-    <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/"></iframe>
   </div>
 
-</div>
+</main>
 
 <script>
 'use strict';
