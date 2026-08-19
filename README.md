@@ -221,6 +221,31 @@ Topic flow:
 /joint_states → virtual_spring_node → torque_relay → /kinova/joint_torque_command
 ```
 
+### Collision safety clamp
+
+On every control tick, `virtual_spring_node` checks self/scene collision
+distance against the springs' target torques and publishes the result on
+`~/safety_status` as a `SAFE`/`DANGER`/`COLLISION`-prefixed string (see
+`_publish_safety_status` in `virtual_spring_node.py`). Gravity compensation
+is never touched by this clamp — only the spring-force contribution is
+affected, so the arm holds position rather than sagging at the worst moment:
+
+- **`SAFE`** — no scaling; full spring + gravity-comp torques as computed.
+- **`DANGER`** — a self/scene link pair has closed inside the danger-zone
+  distance. Spring torque is scaled down by `collision.scale_factor`
+  (0–1, tighter as the pair gets closer); gravity comp stays at full
+  magnitude.
+- **`COLLISION`** — a pair is inside the hard-clamp distance. Spring torque
+  is zeroed entirely; gravity comp still stays at full magnitude.
+
+This clamp runs continuously and applies regardless of how torque control
+was enabled — it is a separate mechanism from `springcontroller_ui`'s
+pre-flight interlock, which only decides whether the *transition* into
+torque control is allowed to begin (see `EnableTorqueControl`'s
+`allow_danger` field in `orchestration_node.py`). Overriding that interlock
+lets torque control start while `DANGER`/`COLLISION` is active; it does not
+change this clamp's behavior once running.
+
 ### Collision scene objects
 
 Static scene objects (tables, fixtures) for the self/scene-collision safety
