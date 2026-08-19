@@ -102,6 +102,10 @@ ul.spring-list li {
 }
 ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
 ul.spring-list button:hover { background: #fdf0f0; }
+ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
+ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
+ul.spring-list .adjust button { border-color: #999; color: #333; }
+ul.spring-list .adjust button:hover { background: #f0f0f0; }
 
 iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
 .meshcat-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
@@ -258,6 +262,7 @@ const svcListLinkNames    = { name: NODE + '/list_link_names',              type
 
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
+const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
 
 let ros = null;
 let currentSprings = [];
@@ -395,6 +400,20 @@ function removeSpring(name) {
   }, function(err) { showMsg('spring-msg', false, 'remove_spring failed: ' + err); });
 }
 
+// Current values aren't shown (springs_updated only carries names) --
+// these inputs are "set to", not "currently at".
+function updateSpring(name, kInput, bInput) {
+  const stiffness = parseFloat(kInput.value);
+  const damping = parseFloat(bInput.value);
+  if (!isFinite(stiffness) || !isFinite(damping)) {
+    showMsg('spring-msg', false, 'Stiffness and damping must both be numbers.');
+    return;
+  }
+  callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+  }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
 function handleSpringsUpdated(msg) {
   let names;
   try { names = JSON.parse(msg.data); } catch (e) { return; }
@@ -408,10 +427,25 @@ function handleSpringsUpdated(msg) {
     const li = document.createElement('li');
     const span = document.createElement('span');
     span.textContent = name;
+
+    const adjust = document.createElement('span');
+    adjust.className = 'adjust';
+    const kInput = document.createElement('input');
+    kInput.type = 'number'; kInput.step = '1'; kInput.placeholder = 'k';
+    kInput.title = 'New stiffness (N/m)';
+    const bInput = document.createElement('input');
+    bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
+    bInput.title = 'New damping (N·s/m)';
+    const updateBtn = document.createElement('button');
+    updateBtn.textContent = 'Update';
+    updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
+    adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
+    li.appendChild(span); li.appendChild(adjust);
+
     const btn = document.createElement('button');
     btn.textContent = 'Remove';
     btn.onclick = function() { removeSpring(name); };
-    li.appendChild(span); li.appendChild(btn);
+    li.appendChild(btn);
     ul.appendChild(li);
   });
 }

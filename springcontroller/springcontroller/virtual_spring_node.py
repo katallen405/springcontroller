@@ -165,6 +165,7 @@ from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
 from springcontroller_interfaces.srv import (
     AddSpring, RemoveSpring, AddJointSpring, LoadCollisionScene, CheckCollisionAtAngles,
+    UpdateSpring,
 )
 
 
@@ -461,8 +462,11 @@ class VirtualSpringNode(Node):
         self._remove_spring_srv = self.create_service(
             RemoveSpring, "~/remove_spring", self._remove_spring_cb
 )
-        # Removal is shared: RemoveSpring is name-based and doesn't care
-        # about spring type, so it works for joint springs too.
+        # Removal/update are shared: both are name-based and don't care
+        # about spring type, so they work for joint springs too.
+        self._update_spring_srv = self.create_service(
+            UpdateSpring, "~/update_spring", self._update_spring_cb
+        )
         self._add_joint_spring_srv = self.create_service(
             AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
         )
@@ -1754,6 +1758,55 @@ class VirtualSpringNode(Node):
 
         response.success = True
         response.message = f"Spring '{name}' removed."
+        self.get_logger().info(response.message)
+        self._publish_springs_updated()
+        return response
+
+    def _update_spring_cb(
+        self, request: UpdateSpring.Request, response: UpdateSpring.Response
+    ) -> UpdateSpring.Response:
+        """
+        Adjust an existing spring's stiffness/damping in place -- unlike
+        add_spring, which refuses if the name already exists, so this is
+        the only way to change these without remove-then-re-add (which
+        would also momentarily drop the spring's force entirely). Doesn't
+        change the spring's target/attachment/geometry, just k and b.
+        """
+        name = request.name.strip()
+        spring = next((s for s in self._springs if s.name == name), None)
+        if spring is None:
+            response.success = False
+            response.message = f"Spring '{name}' not found."
+            return response
+
+        if request.stiffness < 0:
+            response.success = False
+            response.message = f"stiffness must be >= 0, got {request.stiffness}."
+            return response
+        if request.damping < 0:
+            response.success = False
+            response.message = f"damping must be >= 0, got {request.damping}."
+            return response
+
+        spring.stiffness = request.stiffness
+        spring.damping = request.damping
+
+        # Mirror into the parameter namespace, same as add_spring -- keeps
+        # it in sync with the live spring instead of going stale.
+        prefix = f"springs.{name}"
+        for key, value in [
+                (f"{prefix}.stiffness", request.stiffness),
+                (f"{prefix}.damping", request.damping),
+        ]:
+            self._declare_or_ignore(key, value)
+            self.set_parameters([
+                rclpy.parameter.Parameter(key, rclpy.parameter.Parameter.Type.DOUBLE, value)
+            ])
+
+        response.success = True
+        response.message = (
+            f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}."
+        )
         self.get_logger().info(response.message)
         self._publish_springs_updated()
         return response
