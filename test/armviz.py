@@ -81,62 +81,77 @@ def get_all_frames():
 # Parameter helpers
 # ---------------------------------------------------------------------------
 
+# Cartesian-target spring types live under different parameter prefixes
+# (VirtualSpring: springs.<name>.*, OrientationSpring: orientation_springs.
+# <name>.*) but both publish on the same /virtual_spring_node/target/<name>
+# topic and both have a meaningful attachment point + target to draw, so
+# armviz treats them the same everywhere except this prefix lookup.
+SPRING_PARAM_PREFIXES = ["springs", "orientation_springs"]
+
+def _get_spring_param(name, key):
+    """Try each known spring-type prefix in turn; return the raw `ros2
+    param get` output from whichever one actually has this parameter."""
+    for prefix in SPRING_PARAM_PREFIXES:
+        try:
+            return subprocess.check_output([
+                'ros2', 'param', 'get', SPRING_NODE,
+                f'{prefix}.{name}.{key}'
+            ], timeout=2).decode()
+        except Exception:
+            continue
+    return None
+
 def get_param_target(name):
     """Read initial spring target from the spring node's ROS parameters."""
-    try:
-        out = subprocess.check_output([
-            'ros2', 'param', 'get', SPRING_NODE,
-            f'springs.{name}.target'
-        ], timeout=2).decode()
-        nums = re.findall(r'[-\d.]+', out.split(':')[-1])
-        if len(nums) == 3:
-            return np.array([float(x) for x in nums])
-    except Exception as e:
-        print(f"[viz] could not read target for '{name}': {e}")
+    out = _get_spring_param(name, 'target')
+    if out is None:
+        print(f"[viz] could not read target for '{name}'")
+        return None
+    nums = re.findall(r'[-\d.]+', out.split(':')[-1])
+    if len(nums) == 3:
+        return np.array([float(x) for x in nums])
     return None
 
 def get_param_link(name):
     """Read initial link_name from the spring node's ROS parameters."""
-    try:
-        out = subprocess.check_output([
-            'ros2', 'param', 'get', SPRING_NODE,
-            f'springs.{name}.link_name'
-        ], timeout=2).decode()
-        return out.split(':')[-1].strip()
-    except Exception as e:
-        print(f"[viz] could not read link_name for '{name}': {e}")
+    out = _get_spring_param(name, 'link_name')
+    if out is None:
+        print(f"[viz] could not read link_name for '{name}'")
         return "ur3e_tool0"
+    return out.split(':')[-1].strip()
 
 def load_springs_from_params():
     """Bootstrap spring list from ROS params at startup."""
-    try:
-        out = subprocess.check_output([
-            'ros2', 'param', 'get', SPRING_NODE, 'spring_names'
-        ], timeout=2).decode()
-        # output: "String values are: ['tip_spring', 'elbow_spring']"
-        names = re.findall(r"'([^']+)'", out)
-        if names:
-            print(f"[viz] found springs from params: {names}")
-            for name in names:
-                if name not in springs:
-                    target    = get_param_target(name)
-                    link_name = get_param_link(name)
-                    springs[name] = {
-                        "target":    target,
-                        "link_name": link_name,
-                    }
-                    sub = node.create_subscription(
-                        PointStamped,
-                        f"/virtual_spring_node/target/{name}",
-                        make_target_cb(name),
-                        10,
-                    )
-                    target_subs[name] = sub
-                    print(f"[viz] loaded spring: '{name}'  link={link_name}  target={target}")
-        else:
-            print("[viz] no springs found in params yet")
-    except Exception as e:
-        print(f"[viz] could not read spring_names: {e}")
+    for names_param in ("spring_names", "orientation_spring_names"):
+        try:
+            out = subprocess.check_output([
+                'ros2', 'param', 'get', SPRING_NODE, names_param
+            ], timeout=2).decode()
+            # output: "String values are: ['tip_spring', 'elbow_spring']"
+            names = re.findall(r"'([^']+)'", out)
+        except Exception as e:
+            print(f"[viz] could not read {names_param}: {e}")
+            continue
+        if not names:
+            print(f"[viz] no springs found in {names_param} yet")
+            continue
+        print(f"[viz] found springs from params ({names_param}): {names}")
+        for name in names:
+            if name not in springs:
+                target    = get_param_target(name)
+                link_name = get_param_link(name)
+                springs[name] = {
+                    "target":    target,
+                    "link_name": link_name,
+                }
+                sub = node.create_subscription(
+                    PointStamped,
+                    f"/virtual_spring_node/target/{name}",
+                    make_target_cb(name),
+                    10,
+                )
+                target_subs[name] = sub
+                print(f"[viz] loaded spring: '{name}'  link={link_name}  target={target}")
 # ---------------------------------------------------------------------------
 # ROS callbacks
 # ---------------------------------------------------------------------------
