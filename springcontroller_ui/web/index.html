@@ -137,19 +137,23 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
     <aside class="sidebar" aria-label="Quick controls">
       <div class="panel">
         <h2>Torque control</h2>
-        <p class="hint">"Idle" (torque off) is what lets the arm be moved -- via "Move to study start" below, or by hand. There's no separate position-control driver/controller to activate; gen3_torque_control holds position on its own once torque is off.</p>
         <div class="btn-row">
-          <button class="action on" onclick="enableTorque()">Turn ON torque control</button>
-          <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn OFF torque control (idle)</button>
+          <button class="action on" onclick="enableTorque()">Turn on torque control</button>
+          <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn off torque control</button>
+          <button class="action off" onclick="enableTorqueSpringsOff()">Turn on torque control with springs deactivated</button>
         </div>
         <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
-        <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps of those two states (see README:224).</p>
         <div class="status-line">
           torque control: <span class="val" id="torque-state">unknown</span><br>
           move status: <span class="val" id="move-state">unknown</span><br>
-          safety status: <span class="val" id="safety-state">unknown</span>
+          safety status: <span class="val" id="safety-state">unknown</span><br>
+          springs: <span class="val" id="springs-state">unknown</span>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action on" onclick="setSpringsEnabled(true)">Enable springs</button>
+          <button class="action off" onclick="setSpringsEnabled(false)">Disable springs</button>
         </div>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
@@ -286,6 +290,8 @@ const svcListLinkNames    = { name: NODE + '/list_link_names',              type
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
 
+const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
+const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
@@ -341,6 +347,28 @@ function enableTorque() {
   callService(svcEnableTorque, { allow_danger: allowDanger },
     function(resp) { showMsg('mode-msg', resp.success, resp.message); },
     function(err) { showMsg('mode-msg', false, 'Torque control on failed: ' + err); });
+}
+
+// Disables springs first so the arm can be freely repositioned under
+// gravity-comp-only torque, then enables torque control the normal way.
+function enableTorqueSpringsOff() {
+  setSpringsEnabled(false, function() { enableTorque(); });
+}
+
+// Direct call to virtual_spring_node's ~/enable, same pattern as
+// svcAddSpring/svcUpdateSpring below. onSuccess (optional) runs only if
+// the call succeeds -- used by enableTorqueSpringsOff() to sequence the
+// two calls.
+function setSpringsEnabled(enabled, onSuccess) {
+  callService(svcSpringsEnable, { data: enabled }, function(resp) {
+    showMsg('mode-msg', resp.success, resp.message);
+    if (resp.success) {
+      const el = document.getElementById('springs-state');
+      el.textContent = enabled ? 'enabled' : 'disabled';
+      el.className = 'val ' + (enabled ? 'active' : 'inactive');
+      if (onSuccess) onSuccess();
+    }
+  }, function(err) { showMsg('mode-msg', false, 'Springs enable/disable failed: ' + err); });
 }
 
 function softEstop() {
@@ -477,8 +505,10 @@ function removeSpring(name) {
   }, function(err) { showMsg('spring-msg', false, 'remove_spring failed: ' + err); });
 }
 
-// Current values aren't shown (springs_updated only carries names) --
-// these inputs are "set to", not "currently at".
+// These inputs double as both a display of the spring's current value
+// (pre-filled by fetchSpringValues, see handleSpringsUpdated) and the "set
+// to" field for the buttons below -- editing one doesn't touch the other
+// until Update/Retarget is actually clicked.
 function updateSpring(name, kInput, bInput) {
   const stiffness = parseFloat(kInput.value);
   const damping = parseFloat(bInput.value);
@@ -489,6 +519,38 @@ function updateSpring(name, kInput, bInput) {
   callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
+// Batches a lookup of every field this spring could have across all three
+// spring types (position/orientation/joint) into one GetParameters call --
+// undeclared parameters just come back PARAMETER_NOT_SET (type 0), so
+// whichever set actually resolves identifies the type as a side effect,
+// no separate spring_names/orientation_spring_names/joint_spring_names
+// classification call needed.
+const PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
+  const prefixes = ['springs', 'orientation_springs', 'joint_springs'];
+  const names = [];
+  prefixes.forEach(function(p) {
+    names.push(p + '.' + name + '.stiffness', p + '.' + name + '.damping', p + '.' + name + '.target');
+  });
+  callService(svcGetSpringParams, { names: names }, function(resp) {
+    const v = resp.values;
+    for (let i = 0; i < prefixes.length; i++) {
+      const base = i * 3;
+      if (v[base] && v[base].type === PARAM_TYPE_DOUBLE) {
+        kInput.value = v[base].double_value;
+        if (v[base + 1] && v[base + 1].type === PARAM_TYPE_DOUBLE) bInput.value = v[base + 1].double_value;
+        const t = v[base + 2];
+        if (t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
+          txInput.value = t.double_array_value[0].toFixed(4);
+          tyInput.value = t.double_array_value[1].toFixed(4);
+          tzInput.value = t.double_array_value[2].toFixed(4);
+        }
+        return;  // first matching type wins
+      }
+    }
+  }, function(err) { /* leave fields blank -- not worth surfacing a msg-box error for this */ });
 }
 
 // Retargets any spring (position or orientation -- both listen on the same
@@ -559,6 +621,8 @@ function handleSpringsUpdated(msg) {
     btn.onclick = function() { removeSpring(name); };
     li.appendChild(btn);
     ul.appendChild(li);
+
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
   });
 }
 
@@ -578,6 +642,16 @@ function handleSafetyStatus(msg) {
   const status = (msg.data || '').split(' ')[0].split(':')[0];
   el.textContent = msg.data;
   el.className = 'val ' + status;
+
+  // virtual_spring_node appends this suffix while springs are disabled
+  // because the collision clamp auto-disabled them (not for a manual
+  // ~/enable(false)) -- authoritative over the optimistic label
+  // setSpringsEnabled sets, since it reflects the node's actual state.
+  if ((msg.data || '').includes('springs disabled by collision')) {
+    const sEl = document.getElementById('springs-state');
+    sEl.textContent = 'disabled by collision -- re-enable to resume';
+    sEl.className = 'val inactive';
+  }
 }
 function handleMoveStatus(msg) {
   const el = document.getElementById('move-state');

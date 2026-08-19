@@ -450,14 +450,18 @@ class StudyControlPanelNode(Node):
         return False, f"Move did not start: status '{status}'.{danger_note}"
 
     def _list_current_spring_names(self) -> Optional[list[str]]:
-        """Live query of virtual_spring_node's spring_names/joint_spring_names
-        parameters (not a cached topic value -- ~/springs_updated is only
-        published on add/remove, so a cache could easily be stale/empty just
-        because this node started after the last change). Returns None if
-        the parameter service is unavailable (virtual_spring_node not
-        running)."""
+        """Live query of virtual_spring_node's spring_names/
+        orientation_spring_names/joint_spring_names parameters (not a
+        cached topic value -- ~/springs_updated is only published on
+        add/remove, so a cache could easily be stale/empty just because
+        this node started after the last change). Returns None if the
+        parameter service is unavailable (virtual_spring_node not
+        running). orientation_spring_names was missing here until
+        2026-08-19 -- meant _reset_springs_cb silently left any
+        orientation spring in place instead of actually resetting to a
+        single tip anchor."""
         req = GetParameters.Request()
-        req.names = ["spring_names", "joint_spring_names"]
+        req.names = ["spring_names", "orientation_spring_names", "joint_spring_names"]
         resp = self._call_sync(self._spring_params_client, req, timeout_sec=2.0)
         if resp is None:
             return None

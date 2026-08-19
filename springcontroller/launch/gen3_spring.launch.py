@@ -424,6 +424,14 @@ def generate_launch_description():
     record_rosbag = ExecuteProcess(
         cmd=[
             "ros2", "bag", "record",
+            # Write to disk immediately instead of batching in an in-memory
+            # cache -- trades a little write throughput for the bag actually
+            # being (mostly) readable if the recorder has to be hard-killed.
+            # Confirmed live 2026-08-19: rosbag2's writer needs a clean
+            # shutdown to finalize, so a Ctrl-\ during an e-stop incident
+            # meant the bag for that whole session was lost outright, even
+            # though the per-node ~/.ros/log/ text logs survived fine.
+            "--max-cache-size", "0",
             LaunchConfiguration("joint_states_topic"),
             "/virtual_spring_node/joint_torques",
             "/kinova/joint_torque_command",
