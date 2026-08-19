@@ -156,8 +156,13 @@ existing `~/remove_spring` (name-based, works for either spring type).
 ### Kinova Gen3 (via gen3_torque_control node)
 
 ```bash
-# Terminal 1 — start the Kinova torque interface
-ros2 run gen3_torque_control gen3_torque_node
+# Terminal 1 — start the Kinova torque interface. The -r remap is required:
+# virtual_spring_node and armviz both listen on joint_states_topic (default
+# /kinova/joint_states_lowlevel below), not plain /joint_states. Without
+# this remap, gen3_torque_node's joint states never reach either of them --
+# silently: no error, just no spring torque and nothing in the visualizer.
+ros2 run gen3_torque_control gen3_torque_node --ros-args \
+    -r joint_states:=/kinova/joint_states_lowlevel
 
 # Terminal 2 — start the spring controller
 ros2 launch springcontroller gen3_spring.launch.py
@@ -181,6 +186,7 @@ Launch arguments (all optional, shown with their defaults):
 |---|---|---|
 | `urdf_path` | `flat_urdf_files/gen3_kinova_flat.urdf` | URDF for pinocchio; includes the gripper so its mass counts toward gravity comp |
 | `config` | `config/gen3_springs.yaml` | Springs configuration YAML |
+| `joint_states_topic` | `/kinova/joint_states_lowlevel` | Topic `gen3_torque_node` actually publishes joint states on when started with its documented `-r joint_states:=...` remap (see above); both `virtual_spring_node` and `armviz` remap their `/joint_states` subscription to this one argument |
 | `srdf_path` | Gen3 MoveIt config SRDF | Excludes adjacent-link pairs (e.g. `base_link`/`shoulder_link`) from self-collision checks |
 | `add_gravity_compensation` | `true` | Gen3 has no hardware gravity comp, so this stays on unlike the UR3e |
 | `torque_control_service` | `/gen3_torque_control/enable` | `SetBool` service used both to auto-enable torque control and by the fail-safe to disable it again |
@@ -218,8 +224,9 @@ auto-recover on its own.
 
 Topic flow:
 ```
-/joint_states → virtual_spring_node → torque_relay → /kinova/joint_torque_command
+/kinova/joint_states_lowlevel → virtual_spring_node → torque_relay → /kinova/joint_torque_command
 ```
+(`joint_states_topic` launch argument above — see there if you're remapping to something else.)
 
 ### Collision safety clamp
 
@@ -365,9 +372,22 @@ python3 test/armviz.py --urdf /path/to/flat_urdf
 ```
 
 `--urdf` is required for the standalone form. When launched via `ros2
-launch`, it's set to the same `urdf_path` as `virtual_spring_node`, and
-remapped `/joint_states` on Gen3 to match (its default of plain
-`/joint_states` is already right for UR3e).
+launch`, it's set to the same `urdf_path` as `virtual_spring_node`, and its
+`/joint_states` subscription is remapped to the same `joint_states_topic`
+argument `virtual_spring_node` uses on Gen3 (default
+`/kinova/joint_states_lowlevel` -- plain `/joint_states` is already right
+for UR3e, which has no such argument). Both remaps come from the one
+argument specifically so they can't drift out of sync with each other again
+-- they silently did for over two weeks (2026-08-03 to 2026-08-19), which
+looked exactly like "armviz never shows a target" with no error anywhere.
+
+`armviz`'s own log output is throttled: it prints `no target yet` once per
+spring while unresolved, not on every ~20Hz redraw tick, and its
+`~/springs_updated`/`~/target/<name>` subscriptions are transient-local to
+match `virtual_spring_node`'s publishers -- so a late-starting `armviz`
+still picks up state published before it connected, instead of only
+recovering via its `ros2 param get` bootstrap retry (or missing it
+outright).
 
 Press `f` in its terminal to toggle display of every available attachment
 frame as a labeled dot -- useful for picking a `link_name` for a spring.
@@ -411,9 +431,10 @@ deleted outright.
 
 | Topic | Type | Description |
 |---|---|---|
-| `~/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities |
+| `/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities. Global, not private (`/joint_states`, not `~/joint_states`) — remapped on Gen3 via the `joint_states_topic` launch argument (default `/kinova/joint_states_lowlevel`), see [Kinova Gen3](#kinova-gen3-via-gen3_torque_control-node) |
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
-| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
+| `~/springs_updated` (pub, transient-local) | `std_msgs/String` | JSON array of every currently-loaded spring name (Cartesian + joint), republished in full on every add/remove — a late-joining consumer like `armviz.py` sees the current list immediately instead of missing whatever was already loaded |
+| `~/target/<spring_name>` (sub + pub, transient-local) | `geometry_msgs/PointStamped` | Sub: move a Cartesian spring's target at runtime. Pub: broadcasts the resolved target (on load, on resolution against the arm's real pose, and on `add_spring`) so a late-joining consumer sees the current target instead of missing it |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 | `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
 | `~/collision_object_state` (pub, transient-local) | `moveit_msgs/CollisionObject` | Echoes every applied ADD/APPEND/MOVE/REMOVE (from either the topic above or the YAML loader), so a late-joining consumer like `armviz.py` can reconstruct current scene state |
@@ -492,8 +513,9 @@ ros2 topic echo /virtual_spring_node/joint_torques
 # Watch what the relay sends to gen3_torque_control
 ros2 topic echo /kinova/joint_torque_command
 
-# Watch raw feedback from the Kortex cyclic loop
-ros2 topic echo /joint_states
+# Watch raw feedback from the Kortex cyclic loop (joint_states_topic
+# argument's default -- see the -r remap gen3_torque_node needs above)
+ros2 topic echo /kinova/joint_states_lowlevel
 
 # Watch torque-control enable state
 ros2 topic echo /gen3_torque_control/status
@@ -628,6 +650,8 @@ ros2 topic echo /virtual_spring_node/springs_updated
 ```
 
 Publishes a JSON array of spring names whenever a spring is added or removed.
+Transient-local, so echoing it after the fact still immediately shows the
+current list rather than waiting for the next add/remove.
 
 ### Manually send a torque command (testing)
 
