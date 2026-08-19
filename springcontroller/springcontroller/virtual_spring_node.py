@@ -261,6 +261,17 @@ class VirtualSpringNode(Node):
         self.declare_parameter("danger_threshold", 0.01)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
+        # If springs stay auto-disabled by the collision clamp this long
+        # without an explicit ~/enable(true), escalate to a full torque
+        # disable (via torque_disable_service) instead of leaving the arm on
+        # gravity-comp-only indefinitely. Gravity comp alone isn't a true
+        # hold -- it slowly drifts (see torque_ramp_gravity_comp_lesson
+        # project memory) -- so an operator who clears a collision, then
+        # walks to the UI to re-enable, can come back to find the arm has
+        # drifted right back into what it just cleared. Long enough to not
+        # fire during a normal "move it clear, walk over, click enable"
+        # cycle; short enough to bound how long unattended drift can run.
+        self.declare_parameter("collision_disable_grace_sec", 8.0)
         self.declare_parameter("collision_object_topic", "~/collision_object")
         # Ramp only spring-force torque in over spring_ramp_duration_sec
         # after torque control actually gets enabled on the arm (tracked
@@ -306,6 +317,13 @@ class VirtualSpringNode(Node):
         # recovery from a hard collision clamp is exactly the failure mode
         # to avoid; re-enabling is now a deliberate operator action.
         self._springs_auto_disabled = False
+        # Timestamp of when the collision clamp most recently auto-disabled
+        # springs (None while not auto-disabled) -- drives the grace-period
+        # escalation to a full torque disable, see collision_disable_grace_sec.
+        self._springs_auto_disabled_since = None
+        self._collision_disable_grace_sec = (
+            self.get_parameter("collision_disable_grace_sec").get_parameter_value().double_value
+        )
         # Timestamp of the most recent explicit ~/enable(true) call -- ramps
         # spring torque back in smoothly over spring_ramp_duration_sec from
         # THAT moment (same duration/curve as the torque-enable ramp below,
@@ -332,6 +350,10 @@ class VirtualSpringNode(Node):
                 SetBool, torque_disable_service
             )
         self._failsafe_triggered = False
+        # Own one-shot guard for the collision-clamp grace-period escalation
+        # (see _trigger_collision_disable_escalation) -- reset per episode
+        # in _set_springs_enabled, unlike _failsafe_triggered above.
+        self._collision_escalation_triggered = False
 
         # Collision-event log: written incrementally (flushed every row, not
         # just on clean shutdown) so the real closest_pair/in_collision/
@@ -1193,6 +1215,20 @@ class VirtualSpringNode(Node):
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
 
+            # Grace-period escalation: springs auto-disabled by the
+            # collision clamp, still not manually re-enabled, and it's been
+            # too long -- see collision_disable_grace_sec's declaration.
+            # Runs every cycle regardless of *current* collision/danger
+            # state, since the whole point is catching the case where the
+            # pair cleared a while ago (in_collision/in_danger both false
+            # again) but the operator hasn't reached ~/enable yet.
+            if self._springs_auto_disabled and self._springs_auto_disabled_since is not None:
+                grace_elapsed = (
+                    (now - self._springs_auto_disabled_since).nanoseconds / 1e9
+                )
+                if grace_elapsed >= self._collision_disable_grace_sec:
+                    self._trigger_collision_disable_escalation(grace_elapsed)
+
             # Record spring state for plot_spring_extensions() (on-shutdown plot)
             for spring in self._springs:
                 if spring._last_state is not None:
@@ -1239,14 +1275,49 @@ class VirtualSpringNode(Node):
         """
         On repeated spring-computation failure, switch the arm out of
         torque control entirely via torque_disable_service (if configured)
-        rather than keep trusting our own torque computation. Fires once;
-        requires a manual re-enable afterward rather than auto-recovering,
-        since a control loop that just proved unreliable shouldn't decide
-        on its own when it's safe to resume.
+        rather than keep trusting our own torque computation. Fires once
+        per node lifetime (not once per episode, unlike
+        _trigger_collision_disable_escalation below) -- a control loop
+        that just proved its own math unreliable shouldn't get to decide
+        again later in the same run that it's safe to trust itself.
         """
-        if self._torque_disable_client is None or self._failsafe_triggered:
+        if self._failsafe_triggered:
             return
         self._failsafe_triggered = True
+        self._call_torque_disable_service("spring computation failing repeatedly")
+
+    def _trigger_collision_disable_escalation(self, grace_elapsed: float) -> None:
+        """
+        Springs have stayed auto-disabled by the collision clamp for too
+        long without an explicit ~/enable(true) -- see
+        collision_disable_grace_sec. Escalate to a full torque disable so
+        gravity-comp-only drift (torque_ramp_gravity_comp_lesson) can't
+        slowly walk the arm back into what it just cleared while the
+        operator is still walking to the UI.
+
+        Own one-shot guard, separate from _failsafe_triggered: this one
+        re-arms on every fresh auto-disable episode (reset in
+        _set_springs_enabled) so it protects the *next* collision too, not
+        just the first one this session -- unlike the spring-computation
+        failsafe, "the operator was slow to reach the UI once" says
+        nothing about whether the same thing should be caught again later.
+        """
+        if self._collision_escalation_triggered:
+            return
+        self._collision_escalation_triggered = True
+        self._call_torque_disable_service(
+            f"springs stayed auto-disabled by a collision for "
+            f"{grace_elapsed:.1f}s without being re-enabled -- "
+            "gravity-comp-only drift could walk the arm back into what it "
+            "just cleared"
+        )
+
+    def _call_torque_disable_service(self, reason: str) -> None:
+        """Shared by both fail-safes above: fire-and-forget disable call
+        via torque_disable_service, once the caller's own one-shot guard
+        has already been checked/set."""
+        if self._torque_disable_client is None:
+            return
         if not self._torque_disable_client.service_is_ready():
             self.get_logger().error(
                 "Fail-safe: torque_disable_service not available -- "
@@ -1254,7 +1325,7 @@ class VirtualSpringNode(Node):
             )
             return
         self.get_logger().error(
-            "Fail-safe: spring computation failing repeatedly -- "
+            f"Fail-safe: {reason} -- "
             "disabling torque control via "
             f"{self._torque_disable_client.srv_name}."
         )
@@ -1548,8 +1619,16 @@ class VirtualSpringNode(Node):
             spring.enabled = enabled
         if auto:
             self._springs_auto_disabled = not enabled
+            if not enabled:
+                # Fresh episode -- start its own grace period and let it
+                # escalate again even if a *previous* episode already did.
+                self._springs_auto_disabled_since = self.get_clock().now()
+                self._collision_escalation_triggered = False
+            else:
+                self._springs_auto_disabled_since = None
         else:
             self._springs_auto_disabled = False
+            self._springs_auto_disabled_since = None
             if enabled:
                 self._springs_reenabled_since = self.get_clock().now()
         state = "enabled" if enabled else "disabled"
