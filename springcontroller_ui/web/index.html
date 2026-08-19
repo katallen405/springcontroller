@@ -115,8 +115,10 @@ ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid 
 ul.spring-list .adjust button { border-color: #999; color: #333; }
 ul.spring-list .adjust button:hover { background: #f0f0f0; }
 
-iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
-.meshcat-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
+.meshcat-row { display: flex; justify-content: space-between; align-items: center; }
+
+.main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -219,7 +221,8 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
       </div>
     </aside>
 
-    <!-- ── Main column: add/remove springs ── -->
+    <!-- ── Main column: add/remove springs + meshcat view ── -->
+    <div class="main-col">
     <details class="panel" open>
       <summary>Add / remove springs</summary>
 
@@ -267,13 +270,16 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
       <div class="msg-box hidden" id="spring-msg" role="status" aria-live="polite"></div>
 
       <ul class="spring-list" id="spring-list"></ul>
+    </details>
 
+    <div class="panel">
       <div class="meshcat-row">
         <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
       <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
-    </details>
+    </div>
+    </div>
   </div>
 
 </main>
