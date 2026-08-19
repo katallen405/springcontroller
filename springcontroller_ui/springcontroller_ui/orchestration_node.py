@@ -51,6 +51,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String, Float64MultiArray
 from std_srvs.srv import SetBool, Trigger
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import PointStamped
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.msg import ParameterType
 
@@ -60,6 +61,7 @@ from springcontroller_ui_interfaces.srv import (
     EnableTorqueControl,
     GetLinkPose,
     ListLinkNames,
+    MoveToJointAngles,
 )
 
 from springcontroller_ui.study_start_preset import load_preset, save_preset
@@ -137,6 +139,11 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("reset_spring_stiffness", 50.0)
         self.declare_parameter("reset_spring_damping", 5.0)
         self.declare_parameter("reset_spring_local_point", [0.0, 0.0, 0.1])
+        # Prefix for virtual_spring_node's live per-spring retarget topic
+        # (~/target/<name>) -- combined with reset_spring_name to retarget
+        # the tip anchor spring in place (see _move_tip_spring_to_current)
+        # without removing/recreating it, unlike reset_springs which does.
+        self.declare_parameter("spring_target_topic_prefix", "/virtual_spring_node/target")
         self.declare_parameter("study_start_preset_path", "~/springcontroller_ui_study_start.yaml")
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
@@ -163,6 +170,7 @@ class StudyControlPanelNode(Node):
         self._reset_spring_stiffness = float(gp("reset_spring_stiffness"))
         self._reset_spring_damping = float(gp("reset_spring_damping"))
         self._reset_spring_local_point = np.array(gp("reset_spring_local_point"), dtype=float)
+        self._spring_target_topic_prefix = gp("spring_target_topic_prefix")
         self._study_start_preset_path = gp("study_start_preset_path")
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
@@ -220,6 +228,8 @@ class StudyControlPanelNode(Node):
             GetParameters, self._spring_node_get_parameters_service, callback_group=cb_group)
         self._move_command_pub = self.create_publisher(
             Float64MultiArray, self._move_to_joint_angles_topic, 10)
+        self._tip_spring_target_pub = self.create_publisher(
+            PointStamped, f"{self._spring_target_topic_prefix}/{self._reset_spring_name}", 10)
 
         # ------------------------------------------------------------
         # Publisher: ~/study_start_status (latched -- late subscribers still
@@ -246,6 +256,8 @@ class StudyControlPanelNode(Node):
                              self._soft_estop_cb, callback_group=cb_group)
         self.create_service(Trigger, "~/move_to_study_start",
                              self._move_to_study_start_cb, callback_group=cb_group)
+        self.create_service(MoveToJointAngles, "~/move_to_joint_angles",
+                             self._move_to_joint_angles_cb, callback_group=cb_group)
         self.create_service(Trigger, "~/set_current_as_study_start",
                              self._set_current_as_study_start_cb, callback_group=cb_group)
         self.create_service(Trigger, "~/reset_springs",
@@ -496,8 +508,21 @@ class StudyControlPanelNode(Node):
     # Study-start preset
     # ------------------------------------------------------------
 
-    def _move_to_study_start_cb(self, request, response):
+    def _require_torque_disabled(self) -> Optional[str]:
+        """Returns an error message if torque control isn't confirmed off,
+        or None if it's safe to proceed (used by every move-issuing
+        service)."""
         now = self._now()
+        if not self._torque_status_freshness.is_fresh(now, self._joint_state_freshness_sec):
+            return (
+                f"No recent {self._torque_status_topic} -- cannot confirm torque "
+                "control is off. Is gen3_torque_node running?"
+            )
+        if self._torque_status_freshness.value == "ENABLED":
+            return "Torque control is enabled. Turn it off before moving."
+        return None
+
+    def _move_to_study_start_cb(self, request, response):
         preset = load_preset(self._study_start_preset_path)
         if preset is None:
             response.success = False
@@ -507,16 +532,10 @@ class StudyControlPanelNode(Node):
             )
             return response
 
-        if not self._torque_status_freshness.is_fresh(now, self._joint_state_freshness_sec):
+        err = self._require_torque_disabled()
+        if err is not None:
             response.success = False
-            response.message = (
-                f"No recent {self._torque_status_topic} -- cannot confirm torque "
-                "control is off. Is gen3_torque_node running?"
-            )
-            return response
-        if self._torque_status_freshness.value == "ENABLED":
-            response.success = False
-            response.message = "Torque control is enabled. Turn it off before moving."
+            response.message = err
             return response
 
         by_name = dict(zip(preset["joint_names"], preset["joint_angles"]))
@@ -529,6 +548,23 @@ class StudyControlPanelNode(Node):
 
         response.success, response.message = self._move_to_joint_angles(angles)
         return response
+
+    def _move_to_joint_angles_cb(self, request, response):
+        angles = list(request.joint_angles_rad)
+        if len(angles) != len(self._joint_names):
+            response.success = False
+            response.message = (
+                f"Expected {len(self._joint_names)} joint_angles_rad, got {len(angles)}."
+            )
+            return response
+
+        err = self._require_torque_disabled()
+        if err is not None:
+            response.success = False
+            response.message = err
+            return response
+
+        response.success, response.message = self._move_to_joint_angles([float(a) for a in angles])
         return response
 
     def _set_current_as_study_start_cb(self, request, response):
@@ -550,9 +586,72 @@ class StudyControlPanelNode(Node):
         save_preset(self._study_start_preset_path, self._joint_names, angles)
         self._publish_study_start_status()
 
+        # Also move the tip spring here -- otherwise it's left targeting
+        # wherever it was before, and the next torque-enable immediately
+        # pulls the arm away from the study-start pose just captured.
+        spring_note = self._move_tip_spring_to_current()
+
         response.success = True
-        response.message = f"Saved current pose as study start ({len(angles)} joints)."
+        response.message = f"Saved current pose as study start ({len(angles)} joints). {spring_note}"
         return response
+
+    # ------------------------------------------------------------
+    # Tip spring retargeting (shared by set_current_as_study_start and
+    # reset_springs -- the former retargets in place, the latter removes
+    # every spring first, but both want the same "anchor at the current tip
+    # position" point)
+    # ------------------------------------------------------------
+
+    def _current_tip_world_point(self) -> np.ndarray:
+        self._arm.validate_link_name(self._tip_link_name)
+        T = self._arm.get_link_transform(self._tip_link_name)
+        return T[:3, :3] @ self._reset_spring_local_point + T[:3, 3]
+
+    def _move_tip_spring_to_current(self) -> str:
+        """
+        Ensure self._reset_spring_name exists and is targeted at the
+        current tip position -- retargets in place via
+        ~/target/<name> (spring_target_topic_prefix) if it already exists,
+        otherwise creates it fresh via AddSpring (same params
+        reset_springs uses). Returns a short status string for the caller
+        to fold into its own response message; never raises.
+        """
+        try:
+            world_point = self._current_tip_world_point()
+        except Exception as e:
+            return f"Could not move tip spring: FK for '{self._tip_link_name}' failed: {e}."
+
+        names = self._list_current_spring_names()
+        if names is None:
+            return (
+                f"Could not move tip spring: {self._spring_node_get_parameters_service} "
+                "unavailable -- is virtual_spring_node running?"
+            )
+
+        if self._reset_spring_name in names:
+            msg = PointStamped()
+            msg.header.frame_id = "world"
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.point.x, msg.point.y, msg.point.z = [float(v) for v in world_point]
+            self._tip_spring_target_pub.publish(msg)
+            return f"Tip spring '{self._reset_spring_name}' retargeted to current position."
+
+        add_req = AddSpring.Request()
+        add_req.name = self._reset_spring_name
+        add_req.link_name = self._tip_link_name
+        add_req.stiffness = self._reset_spring_stiffness
+        add_req.damping = self._reset_spring_damping
+        add_req.rest_length = 0.0
+        add_req.local_point = [float(v) for v in self._reset_spring_local_point]
+        add_req.target = [float(v) for v in world_point]
+        add_req.inner_radius = 0.0
+        add_req.outer_radius = 0.0
+        add_resp = self._call_sync(self._add_spring_client, add_req)
+        if add_resp is None:
+            return f"Could not move tip spring: {self._add_spring_service} unavailable/timed out."
+        if not add_resp.success:
+            return f"Could not move tip spring: {add_resp.message}"
+        return f"Tip spring '{self._reset_spring_name}' created at current position."
 
     # ------------------------------------------------------------
     # Reset springs
@@ -588,8 +687,7 @@ class StudyControlPanelNode(Node):
                 removal_failures.append(f"{name} ({resp.message})")
 
         try:
-            self._arm.validate_link_name(self._tip_link_name)
-            T = self._arm.get_link_transform(self._tip_link_name)
+            world_point = self._current_tip_world_point()
         except Exception as e:
             response.success = False
             response.message = (
@@ -598,8 +696,6 @@ class StudyControlPanelNode(Node):
                 "No anchor spring re-added."
             )
             return response
-
-        world_point = T[:3, :3] @ self._reset_spring_local_point + T[:3, 3]
 
         add_req = AddSpring.Request()
         add_req.name = self._reset_spring_name

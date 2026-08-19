@@ -167,6 +167,26 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
       </div>
 
       <div class="panel">
+        <h2>Move to position</h2>
+        <p class="hint">Joint angles in radians, joint_1..joint_7. Requires torque control off; checked for collision before moving (see "Torque control" panel above).</p>
+        <div class="spring-form">
+          <div class="row">
+            <label>j1 <input type="number" step="0.01" id="mv-j1" value="0"></label>
+            <label>j2 <input type="number" step="0.01" id="mv-j2" value="0"></label>
+            <label>j3 <input type="number" step="0.01" id="mv-j3" value="0"></label>
+            <label>j4 <input type="number" step="0.01" id="mv-j4" value="0"></label>
+            <label>j5 <input type="number" step="0.01" id="mv-j5" value="0"></label>
+            <label>j6 <input type="number" step="0.01" id="mv-j6" value="0"></label>
+            <label>j7 <input type="number" step="0.01" id="mv-j7" value="0"></label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="moveToJointAngles()">Move</button>
+          </div>
+        </div>
+        <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
         <h2>Reset springs</h2>
         <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
         <div class="btn-row" style="margin-top:8px">
@@ -230,6 +250,7 @@ const svcEnablePosition   = { name: NODE + '/enable_position_control',      type
 const svcEnableTorque     = { name: NODE + '/enable_torque_control',        type: 'springcontroller_ui_interfaces/srv/EnableTorqueControl' };
 const svcSoftEstop        = { name: NODE + '/soft_estop',                   type: 'std_srvs/srv/Trigger' };
 const svcMoveToStart      = { name: NODE + '/move_to_study_start',          type: 'std_srvs/srv/Trigger' };
+const svcMoveToJointAngles = { name: NODE + '/move_to_joint_angles',        type: 'springcontroller_ui_interfaces/srv/MoveToJointAngles' };
 const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type: 'std_srvs/srv/Trigger' };
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
@@ -302,6 +323,19 @@ function handleStudyStartStatus(msg) {
   const el = document.getElementById('start-defined');
   el.textContent = payload.defined ? 'defined (' + payload.joint_angles.length + ' joints)' : 'not defined yet';
   el.className = 'val ' + (payload.defined ? 'active' : 'unknown');
+}
+
+// ---- move to position -----------------------------------------------------
+function moveToJointAngles() {
+  const ids = ['mv-j1', 'mv-j2', 'mv-j3', 'mv-j4', 'mv-j5', 'mv-j6', 'mv-j7'];
+  const angles = ids.map(function(id) { return parseFloat(document.getElementById(id).value); });
+  if (angles.some(function(a) { return !isFinite(a); })) {
+    showMsg('move-to-angles-msg', false, 'All 7 joint angles must be numbers.');
+    return;
+  }
+  callService(svcMoveToJointAngles, { joint_angles_rad: angles },
+    function(resp) { showMsg('move-to-angles-msg', resp.success, resp.message); },
+    function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
 }
 
 // ---- reset springs -----------------------------------------------------
