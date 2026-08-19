@@ -41,9 +41,6 @@ summary:focus-visible, [tabindex]:focus-visible {
 .panel { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 14px 18px; }
 .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666; margin-bottom: 10px; }
 
-pre.cmd { background: #16181d; color: #d7dbe0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; overflow-x: auto; margin: 6px 0; }
-.cmd-row { display: flex; align-items: center; gap: 8px; }
-.cmd-row pre.cmd { flex: 1; }
 .copy-btn { padding: 4px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; cursor: pointer; font-size: 12px; }
 .copy-btn:hover { background: #eee; }
 .field-inline { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #555; margin-bottom: 4px; }
@@ -87,22 +84,6 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 
-details.panel { padding: 0; }
-details.panel > summary { list-style: none; cursor: pointer; padding: 14px 18px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666; display: flex; align-items: center; gap: 10px; }
-details.panel > summary::-webkit-details-marker { display: none; }
-details.panel > summary::marker { display: none; }
-details.panel > summary::before {
-  content: '▶';
-  display: inline-block;
-  font-size: 15px;
-  line-height: 1;
-  color: #444;
-  transform: rotate(0deg);
-  transition: transform .15s ease;
-}
-details.panel[open] > summary::before { transform: rotate(90deg); }
-details.panel > .details-body { padding: 0 18px 14px; }
-
 .hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
@@ -140,28 +121,12 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
 
 <main class="wrap">
 
-  <!-- ── Terminal reminders (collapsible) ── -->
-  <details class="panel" open>
-    <summary>Startup tasks</summary>
-    <div class="details-body">
-      <div class="field-inline">
-        <label for="robot-ip">Robot IP:</label>
-        <input type="text" id="robot-ip" value="192.168.1.10" onchange="renderCommands()">
-      </div>
-
-      <div class="cmd-row">
-        <pre class="cmd" id="cmd-torque"></pre>
-        <button class="copy-btn" onclick="copyCmd('cmd-torque')">Copy</button>
-      </div>
-      <div class="cmd-row">
-        <pre class="cmd" id="cmd-spring"></pre>
-        <button class="copy-btn" onclick="copyCmd('cmd-spring')">Copy</button>
-      </div>
-      <p class="hint">Don't also launch <code>kortex_bringup</code> -- it and <code>gen3_torque_node</code> both open independent Kortex sessions and fight over the arm-global servoing mode if run at the same time. Position moves go through the "Move to study start" button below (gen3_torque_control's own move_to_joint_angles), not a separate driver.</p>
-      <p class="status-line">This page, rosbridge, and its backend node all came up together via:</p>
-      <pre class="cmd">ros2 launch springcontroller_ui study_control_panel.launch.py</pre>
+  <div class="panel">
+    <div class="field-inline">
+      <label for="robot-ip">Robot IP:</label>
+      <input type="text" id="robot-ip" value="192.168.1.10">
     </div>
-  </details>
+  </div>
 
   <div class="layout">
     <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
@@ -275,20 +240,6 @@ const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type
 
 let ros = null;
 let currentSprings = [];
-
-// ---- terminal reminders --------------------------------------------------
-function renderCommands() {
-  const ip = document.getElementById('robot-ip').value.trim() || '192.168.1.10';
-  document.getElementById('cmd-torque').textContent =
-    `ros2 run gen3_torque_control gen3_torque_node --ros-args -p kortex_ip:=${ip} -r joint_states:=/kinova/joint_states_lowlevel`;
-  document.getElementById('cmd-spring').textContent =
-    'ros2 launch springcontroller gen3_spring.launch.py armviz:=true';
-}
-function copyCmd(id) {
-  const text = document.getElementById(id).textContent;
-  navigator.clipboard && navigator.clipboard.writeText(text);
-}
-renderCommands();
 
 // ---- generic ROS helpers -------------------------------------------------
 function showMsg(elId, ok, text) {
