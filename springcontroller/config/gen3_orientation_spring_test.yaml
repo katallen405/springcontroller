@@ -36,6 +36,6 @@
         link_name:          "end_effector_link"
         local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
         local_face_normal:  [0.0, 0.0, 1.0]   # gripper's +Z, link-local
-        target:             [0.334, -0.500, 1.0]   # see edge-point math above (m)
+        target:             [0.334, -0.500, 0.5]   # see edge-point math above (m)
         stiffness:          2.0                # N*m/rad -- soft, just for viewing
         damping:            0.2                # N*m*s/rad
