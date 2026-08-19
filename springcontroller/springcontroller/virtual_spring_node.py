@@ -164,7 +164,7 @@ from springcontroller.virtual_spring import VirtualSpring, JointSpring, SpringCo
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
 from springcontroller_interfaces.srv import (
-    AddSpring, RemoveSpring, AddJointSpring, LoadCollisionScene,
+    AddSpring, RemoveSpring, AddJointSpring, LoadCollisionScene, CheckCollisionAtAngles,
 )
 
 
@@ -490,6 +490,9 @@ class VirtualSpringNode(Node):
 
         self._load_collision_scene_srv = self.create_service(
             LoadCollisionScene, "~/load_collision_scene", self._load_collision_scene_cb
+        )
+        self._check_collision_at_srv = self.create_service(
+            CheckCollisionAtAngles, "~/check_collision_at", self._check_collision_at_cb
         )
 
         # Spring-force ramp-in, keyed to the arm's actual torque-enable
@@ -1269,6 +1272,47 @@ class VirtualSpringNode(Node):
         response.message = f"Loaded {total} collision shape(s) from '{yaml_path}'."
         response.count = total
         self.get_logger().info(response.message)
+        return response
+
+    def _check_collision_at_cb(
+        self, request: CheckCollisionAtAngles.Request, response: CheckCollisionAtAngles.Response
+    ) -> CheckCollisionAtAngles.Response:
+        """
+        Pre-flight collision check for a hypothetical joint configuration --
+        e.g. before commanding a real move there -- against the currently
+        loaded model (self-collision pairs, SRDF exclusions, and any scene
+        objects from ~/load_collision_scene or ~/collision_object). Does not
+        touch the live tracked pose; see get_collision_status_for_angles().
+        """
+        angles = list(request.joint_angles_rad)
+        if len(angles) != self._arm.n_dof:
+            response.in_collision = True  # fail closed on a malformed request
+            response.in_danger = True
+            response.min_distance = float("nan")
+            response.link_a = ""
+            response.link_b = ""
+            self.get_logger().warn(
+                f"check_collision_at: expected {self._arm.n_dof} joint_angles_rad, "
+                f"got {len(angles)}. Reporting in_collision=True (fail closed)."
+            )
+            return response
+
+        status = self._arm.get_collision_status_for_angles(angles)
+        if status is None:
+            # No collision model loaded -- nothing to check against, so
+            # there's nothing to reject on. Matches get_collision_status()'s
+            # own None-means-unavailable convention.
+            response.in_collision = False
+            response.in_danger = False
+            response.min_distance = float("inf")
+            response.link_a = ""
+            response.link_b = ""
+            return response
+
+        response.in_collision = status.in_collision
+        response.in_danger = status.in_danger
+        response.min_distance = status.min_distance
+        response.link_a, response.link_b = status.closest_pair
         return response
 
     def _declare_or_ignore(self, name, default):

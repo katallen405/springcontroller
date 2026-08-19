@@ -352,17 +352,28 @@ class URDFArmConfiguration:
         """True if collision geometry was successfully loaded."""
         return self._collision_model is not None
 
-    def get_collision_status(self) -> Optional[CollisionStatus]:
-        """
-        Compute minimum self-collision distance across all non-adjacent link pairs.
+    def _angles_to_q(self, angles: np.ndarray) -> np.ndarray:
+        """Plain per-joint angles -> pinocchio's nq encoding (see update_from_angles)."""
+        q = pin.neutral(self._model)
+        for i, angle in enumerate(angles):
+            joint = self._model.joints[i + 1]
+            if joint.nq == 2:  # unbounded revolute: stored as (cos, sin)
+                q[joint.idx_q]     = np.cos(angle)
+                q[joint.idx_q + 1] = np.sin(angle)
+            else:
+                q[joint.idx_q] = angle
+        return q
 
-        Returns None if no collision model is loaded (so callers can decide
-        whether to treat that as safe or as an error).
-
-        This is cheap enough to call every control cycle — all geometry
-        placements are already up to date from the most recent update() call.
+    def _collision_status_from(
+        self, q: np.ndarray, data: pin.Data, collision_data: pin.GeometryData,
+    ) -> Optional[CollisionStatus]:
         """
-        if self._collision_model is None or self._collision_data is None:
+        Shared distance/scale-factor computation behind get_collision_status()
+        and get_collision_status_for_angles() -- takes explicit q/data/
+        collision_data so the latter can compute into scratch buffers without
+        disturbing the live tracked pose the real-time control loop reads.
+        """
+        if self._collision_model is None:
             return None
 
         n_pairs = len(self._collision_model.collisionPairs)
@@ -370,17 +381,13 @@ class URDFArmConfiguration:
             return None
 
         pin.computeDistances(
-            self._model,
-            self._data,
-            self._collision_model,
-            self._collision_data,
-            self._q,
+            self._model, data, self._collision_model, collision_data, q,
         )
 
         min_dist = float("inf")
         closest_idx = 0
         for i in range(n_pairs):
-            d = self._collision_data.distanceResults[i].min_distance
+            d = collision_data.distanceResults[i].min_distance
             if d < min_dist:
                 min_dist = d
                 closest_idx = i
@@ -408,6 +415,42 @@ class URDFArmConfiguration:
             in_danger=in_danger,
             in_collision=in_collision,
         )
+
+    def get_collision_status(self) -> Optional[CollisionStatus]:
+        """
+        Compute minimum self-collision distance across all non-adjacent link pairs,
+        at the current tracked pose (last update()/update_from_angles() call).
+
+        Returns None if no collision model is loaded (so callers can decide
+        whether to treat that as safe or as an error).
+
+        This is cheap enough to call every control cycle — all geometry
+        placements are already up to date from the most recent update() call.
+        """
+        if self._collision_data is None:
+            return None
+        return self._collision_status_from(self._q, self._data, self._collision_data)
+
+    def get_collision_status_for_angles(self, angles: np.ndarray) -> Optional[CollisionStatus]:
+        """
+        Compute collision status at a hypothetical joint configuration,
+        without touching the tracked pose get_collision_status() (or the
+        real-time control loop) reads. For pre-flight checks -- e.g. "would
+        moving to this target put the arm in collision" -- against the
+        currently-loaded model, scene objects included.
+
+        Builds scratch pin.Data/GeometryData rather than reusing self._data/
+        self._collision_data, so this is safe to call at any time regardless
+        of what the tracked pose currently is.
+        """
+        if self._collision_model is None:
+            return None
+        q = self._angles_to_q(np.asarray(angles, dtype=float))
+        data = pin.Data(self._model)
+        collision_data = pin.GeometryData(self._collision_model)
+        pin.forwardKinematics(self._model, data, q)
+        pin.updateGeometryPlacements(self._model, data, self._collision_model, collision_data)
+        return self._collision_status_from(q, data, collision_data)
 
     # ------------------------------------------------------------------
     # Environment (scene) collision objects
@@ -536,14 +579,7 @@ class URDFArmConfiguration:
         self, angles: np.ndarray, qdot: np.ndarray | None = None
     ) -> None:
         """Update from plain joint angles, handling pinocchio's nq encoding."""
-        q = pin.neutral(self._model)
-        for i, angle in enumerate(angles):
-            joint = self._model.joints[i + 1]
-            if joint.nq == 2:  # unbounded revolute: stored as (cos, sin)
-                q[joint.idx_q]     = np.cos(angle)
-                q[joint.idx_q + 1] = np.sin(angle)
-            else:
-                q[joint.idx_q] = angle
+        q = self._angles_to_q(np.asarray(angles, dtype=float))
         self.update(q, qdot)
 
     def update(self, q: np.ndarray, qdot: np.ndarray | None = None) -> None:
