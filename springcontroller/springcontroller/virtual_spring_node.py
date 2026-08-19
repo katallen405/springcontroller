@@ -582,6 +582,12 @@ class VirtualSpringNode(Node):
         self._last_js_recv_time = None
         self._js_gap_warned = False
         self._js_gap_warn_sec = 0.02
+        # Warn-once-until-clears latch (same pattern as _js_gap_warned above)
+        # for the /joint_states-too-short check below -- a flat per-message
+        # warn there filled the terminal buffer solid within ~1s the one
+        # time it fired for real (2026-08-19, gripper controller's state
+        # interface not yet up during startup's first few messages).
+        self._js_short_warned = False
 
 
         # Expose a service to toggle at runtime without restarting
@@ -794,21 +800,44 @@ class VirtualSpringNode(Node):
                 self._joint_order = [ros_names.index(n) for n in pinocchio_names]
                 self.get_logger().info(f"Joint order map (ROS->Pinocchio): {list(zip(pinocchio_names, self._joint_order))}")
                 # For each ROS joint, find its index in the pinocchio torques array
-                self._torque_order = [pinocchio_names.index(n) for n in ros_names]
-                self.get_logger().info(f"Torque order map (Pinocchio->ROS): {list(zip(ros_names, self._torque_order))}")
+                # -- skips ros_names with no pinocchio counterpart (e.g. a
+                # gripper joint reported on /joint_states but locked out of
+                # the active-DOF model) instead of raising, since a name
+                # arriving that's outside pinocchio_names doesn't mean this
+                # message is unusable, only that torque_order has nothing to
+                # say about that particular ROS joint.
+                ros_names_mapped = [n for n in ros_names if n in pinocchio_names]
+                self._torque_order = [pinocchio_names.index(n) for n in ros_names_mapped]
+                self.get_logger().info(f"Torque order map (Pinocchio->ROS): {list(zip(ros_names_mapped, self._torque_order))}")
             except ValueError as e:
                 self.get_logger().error(f"Joint name mismatch: {e}. ROS names: {ros_names}, Pinocchio names: {pinocchio_names}")
                 return
 
-        if len(msg.position) != self._arm.n_dof:
-            self.get_logger().warn(
-                f"Expected {self._arm.n_dof} joints, got {len(msg.position)}. Skipping."
-        )
+        # self._joint_order holds fixed indices into msg.position/msg.velocity
+        # (computed once above from the first message's joint names), so a
+        # message with *extra* trailing joints beyond the arm's n_dof --
+        # e.g. a locked gripper joint reported on /joint_states -- is fine;
+        # only a message too short to cover every index in self._joint_order
+        # is actually unusable. Latched (see _js_short_warned) instead of
+        # warning every callback -- this fired at full topic rate 2026-08-19
+        # (gripper controller's state interface not up yet for the first
+        # message, present by the next one) and filled the terminal buffer.
+        if len(msg.position) <= max(self._joint_order):
+            if not self._js_short_warned:
+                self.get_logger().warn(
+                    f"/joint_states has {len(msg.position)} joints, too few for "
+                    f"the arm joint indices this node resolved on startup "
+                    f"(need > {max(self._joint_order)}). Skipping until it recovers."
+                )
+                self._js_short_warned = True
             return
+        elif self._js_short_warned:
+            self.get_logger().info("/joint_states length recovered.")
+            self._js_short_warned = False
 
         # Reorder positions and velocities to match Pinocchio's joint ordering
         pos = np.array(msg.position)
-        vel = np.array(msg.velocity) if msg.velocity else np.zeros(self._arm.n_dof)
+        vel = np.array(msg.velocity) if msg.velocity else np.zeros(len(msg.position))
         q_arm = pos[self._joint_order]
         qdot  = vel[self._joint_order]
         
