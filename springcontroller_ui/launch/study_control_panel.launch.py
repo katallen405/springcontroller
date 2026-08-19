@@ -15,7 +15,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -68,6 +68,14 @@ def generate_launch_description():
         output="screen",
     )
 
+    # Printed immediately (not delayed) -- unlike ui_server_process's own
+    # eventual "serving on port ..." line, this doesn't depend on the
+    # static server actually finishing startup first, so it's visible right
+    # away instead of scrolling past in the rest of this launch's output.
+    url_log = LogInfo(
+        msg=["Study control panel: http://localhost:", LaunchConfiguration("ui_port")]
+    )
+
     return LaunchDescription([
         rosbridge_port_arg,
         ui_port_arg,
@@ -75,4 +83,5 @@ def generate_launch_description():
         rosbridge,
         orchestration_node,
         ui_server_process,
+        url_log,
     ])
