@@ -6,13 +6,23 @@ gen3_torque_control node (not ros2_control).
 
 Topic wiring
 ------------
-  /joint_states  →  virtual_spring_node  (joint positions/velocities)
+  <joint_states_topic> (default /kinova/joint_states_lowlevel)  →  virtual_spring_node, armviz
   virtual_spring_node/joint_torques  →  torque_relay
   torque_relay  →  /kinova/joint_torque_command  (Float64MultiArray, 7 values)
 
 Prerequisites
 -------------
-  ros2 run gen3_torque_control gen3_torque_node   # must be running first
+  ros2 run gen3_torque_control gen3_torque_node --ros-args \
+      -r joint_states:=/kinova/joint_states_lowlevel   # must be running first,
+      # with this remap -- see web/index.html's documented launch command.
+      # Without it, gen3_torque_node publishes on plain /joint_states, which
+      # nothing here subscribes to (both virtual_spring_node and armviz
+      # listen on joint_states_topic:= below) -- virtual_spring_node then
+      # never receives joint states, so no spring target ever resolves and
+      # nothing gets published, silently. Confirmed as a real regression
+      # 2026-08-19: virtual_spring_node's own remap was dropped in a WIP
+      # snapshot commit on 2026-08-03 and never restored, while armviz's
+      # matching remap was restored separately -- the two fell out of sync.
 """
 
 import os
@@ -80,6 +90,21 @@ def generate_launch_description():
         "config",
         default_value="/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen3_springs.yaml",
         description="Path to the springs configuration YAML.",
+    )
+
+    joint_states_topic_arg = DeclareLaunchArgument(
+        "joint_states_topic",
+        default_value="/kinova/joint_states_lowlevel",
+        description=(
+            "Topic gen3_torque_node actually publishes joint states on when "
+            "started with its documented -r joint_states:=... remap (see "
+            "web/index.html and the module docstring above) -- both "
+            "virtual_spring_node and armviz remap their /joint_states "
+            "subscription to this single argument so the two can't fall out "
+            "of sync again the way they did 2026-08-03..2026-08-19 (see "
+            "git history: virtual_spring_node's remap was dropped in a WIP "
+            "snapshot commit and never restored, while armviz's was)."
+        ),
     )
 
     srdf_path_arg = DeclareLaunchArgument(
@@ -268,6 +293,9 @@ def generate_launch_description():
             },
             LaunchConfiguration("config"),
         ],
+        remappings=[
+            ("/joint_states", LaunchConfiguration("joint_states_topic")),
+        ],
     )
 
     torque_relay_node = Node(
@@ -363,7 +391,11 @@ def generate_launch_description():
                     "--urdf", LaunchConfiguration("urdf_path"),
                     "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
                     "--ros-args",
-                    "-r", "/joint_states:=/kinova/joint_states_lowlevel",
+                    # Same joint_states_topic argument virtual_spring_node's
+                    # own remappings=[...] uses above -- a single source of
+                    # truth instead of two hardcoded copies that can (and
+                    # did, 2026-08-03..2026-08-19) drift apart.
+                    "-r", ["/joint_states:=", LaunchConfiguration("joint_states_topic")],
                 ],
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("armviz")),
@@ -408,6 +440,7 @@ def generate_launch_description():
     return LaunchDescription([
         urdf_path_arg,
         config_arg,
+        joint_states_topic_arg,
         srdf_path_arg,
         add_gravity_compensation_arg,
         torque_control_service_arg,
