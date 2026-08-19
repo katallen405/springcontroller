@@ -142,6 +142,9 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
           <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn off torque control</button>
           <button class="action off" onclick="enableTorqueSpringsOff()">Turn on torque control with springs deactivated</button>
         </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
+        </div>
         <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
@@ -289,6 +292,7 @@ const svcListLinkNames    = { name: NODE + '/list_link_names',              type
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
+const svcClearFaults      = { name: '/gen3_torque_control/clear_faults',    type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
 const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
