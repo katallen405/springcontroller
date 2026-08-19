@@ -1,0 +1,21 @@
+# Real lab table for tonight's live collision-clamp test on the Gen3.
+#
+# Table: 2m (X) x 1m (Y) x 0.5m (Z), top surface flush with base_link's
+# origin (Z=0), arm base at the center of the X=0 end -- table spans
+# X:[0,2], Y:[-0.5,0.5], Z:[-0.5,0] in the world frame.
+#
+# base_link is excluded (see urdf_arm_configuration.add_environment_object's
+# docstring): verified offline that without this, base_link sits ~3.8cm from
+# a flush table -- inside the 5cm danger_threshold -- giving a permanent
+# ~77% torque scale-down with the arm nowhere near real contact. With the
+# exclusion, baseline is a clean scale_factor=1.0.
+
+objects:
+  table:
+    shape: box
+    dimensions: [2.0, 1.0, 0.5]
+    frame_id: "world"
+    pose:
+      position: [1.0, 0.0, -0.25]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+    exclude_links: ["base_link"]

@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>springcontroller_ui</name>
+  <version>0.1.0</version>
+  <description>
+    Browser-based control panel for running a Gen3 spring-controller study:
+    mode-switch/e-stop buttons with safety interlocks, study-start-pose
+    capture/move, spring reset, and an add/remove-springs panel with an
+    embedded meshcat view.
+  </description>
+  <maintainer email="kat.allen@tufts.edu">Kat Allen</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>rosbridge_server</depend>
+  <depend>springcontroller</depend>
+  <depend>springcontroller_interfaces</depend>
+  <depend>springcontroller_ui_interfaces</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pinocchio</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
