@@ -42,5 +42,5 @@ objects:
     dimensions: [1.0, 0.3]
     frame_id: "world"
     pose:
-      position: [0.5, -0.5, 0.0]
+      position: [0.5, -0.75, 0.0]
       orientation: [0.0, 0.0, 0.0, 1.0]
