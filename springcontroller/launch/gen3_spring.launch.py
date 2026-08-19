@@ -331,7 +331,14 @@ def generate_launch_description():
     # armviz_process (below) tries to attach to it a moment later.
     meshcat_server_process = ExecuteProcess(
         cmd=[
-            SPRINGCONTROLLER_VENV_PYTHON,
+            # -u: unbuffered stdout. Without it, this script's stdout is
+            # block-buffered under ros2 launch (stdout isn't a tty) --
+            # pinned_meshcat_server.py only ever prints two short lines
+            # total, so they'd sit in the buffer and never actually appear
+            # in the launch log until the process exited, making a
+            # perfectly-running server look like it had silently failed to
+            # start (confirmed 2026-08-19).
+            SPRINGCONTROLLER_VENV_PYTHON, "-u",
             PINNED_MESHCAT_SERVER_SCRIPT,
             "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
             "--port", LaunchConfiguration("meshcat_port"),
@@ -348,7 +355,10 @@ def generate_launch_description():
         actions=[
             ExecuteProcess(
                 cmd=[
-                    SPRINGCONTROLLER_VENV_PYTHON,
+                    # -u: see meshcat_server_process above -- same
+                    # block-buffering issue applies to armviz.py's own
+                    # startup/status prints.
+                    SPRINGCONTROLLER_VENV_PYTHON, "-u",
                     "/home/katallen/sandbox/src/springcontroller/test/armviz.py",
                     "--urdf", LaunchConfiguration("urdf_path"),
                     "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),

@@ -404,8 +404,19 @@ class VirtualSpringNode(Node):
         # springs via this topic (e.g. armviz.py, if its own one-shot
         # parameter bootstrap already lost the startup race) could
         # permanently miss whatever was loaded from config at startup.
-        self._springs_updated_pub = self.create_publisher(String,
-                                            "~/springs_updated", 10)
+        # TRANSIENT_LOCAL: this is "current full spring list", republished
+        # in full on every add/remove, not a stream -- a late subscriber
+        # (e.g. armviz.py) should see the latest list immediately instead
+        # of falling back to polling `ros2 param get` for up to 20s (see
+        # armviz.py's BOOTSTRAP_TIMEOUT_SEC) or missing it outright.
+        springs_updated_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._springs_updated_pub = self.create_publisher(
+            String, "~/springs_updated", springs_updated_qos
+        )
 
         self._load_springs_from_params()
         self._publish_springs_updated()
@@ -516,6 +527,12 @@ class VirtualSpringNode(Node):
                 f"Ramping spring force over {self._spring_ramp_duration:.2f}s on each "
                 f"torque-enable, keyed off {torque_status_topic}."
             )
+        target_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+
         # Per-spring target update subscriptions
         for spring in self._springs:
             if isinstance(spring, VirtualSpring):
@@ -537,8 +554,15 @@ class VirtualSpringNode(Node):
                     10,
                 )
 
+                # TRANSIENT_LOCAL: current target is state, not a stream --
+                # published once on resolve/update, same reasoning as
+                # ~/springs_updated above. Without this, armviz.py only
+                # learns the real target if its subscription happened to
+                # already exist at the moment _joint_state_cb resolved it;
+                # confirmed 2026-08-19 as the direct cause of armviz's
+                # perpetual "no target yet" spam on late startup.
                 self._target_pubs[spring.name] = self.create_publisher(
-                    PointStamped, f"~/target/{spring.name}", 10
+                    PointStamped, f"~/target/{spring.name}", target_qos
                 )
                 # Springs with a target left unconfigured in YAML don't have
                 # a real value yet -- _target_pending is still True, and

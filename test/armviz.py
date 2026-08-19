@@ -85,6 +85,15 @@ latest_q    = pin.neutral(model)
 springs     = {}   # name -> {"target": np.array|None, "link_name": str}
 target_subs = {}   # name -> rclpy subscription (kept alive)
 
+# Names already warned about via draw_springs' "no target yet" message --
+# draw_springs runs in the main loop at ~20Hz, so without this it printed
+# that line ~20x/sec for as long as a spring's target stayed unresolved
+# (e.g. no /joint_states publisher running yet to trigger
+# virtual_spring_node's target resolution), flooding the log forever
+# instead of once. Cleared if a target later resolves and then somehow
+# reverts to None, so a genuine regression still gets reported.
+_no_target_warned = set()
+
 # id -> {"object_pose": 4x4 np.ndarray, "primitives": [(shape, dims, relative_pose 4x4)]}
 collision_objects = {}
 
@@ -154,11 +163,15 @@ def _track_spring(name):
             "target":    target,
             "link_name": link_name,
         }
+        # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
+        # publisher -- see _latched_qos below for why a plain VOLATILE
+        # subscription here misses a target resolved before this
+        # subscription existed.
         sub = node.create_subscription(
             PointStamped,
             f"/virtual_spring_node/target/{name}",
             make_target_cb(name),
-            10,
+            _latched_qos,
         )
         target_subs[name] = sub
         print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
@@ -352,6 +365,7 @@ def draw_springs(q):
         viz.viewer[f"springs/{name}/attachment"].set_transform(T_attach)
 
         if target is not None:
+            _no_target_warned.discard(name)
             # Red sphere at target
             T_target = np.eye(4)
             T_target[:3, 3] = target
@@ -369,7 +383,8 @@ def draw_springs(q):
                     g.LineBasicMaterial(color=0xff9900)
                 )
             )
-        else:
+        elif name not in _no_target_warned:
+            _no_target_warned.add(name)
             print(f"[viz] no target yet for spring '{name}' — "
                   f"try: ros2 topic pub --once "
                   f"/virtual_spring_node/target/{name} "
@@ -408,20 +423,24 @@ rclpy.init(args=sys.argv)
 node = rclpy.create_node('spring_viz_node')
 
 node.create_subscription(JointState, JOINT_STATES,  joint_cb,           10)
-node.create_subscription(String,     SPRINGS_TOPIC, springs_updated_cb, 10)
 
-# TRANSIENT_LOCAL to match virtual_spring_node's ~/collision_object_state
-# publisher -- lets armviz pick up the full current scene even if it starts
-# after objects were already loaded (e.g. via the YAML scene loader at
-# launch), not just ones added/moved/removed while armviz happens to be
-# running.
-_collision_state_qos = QoSProfile(
+# TRANSIENT_LOCAL to match virtual_spring_node's ~/springs_updated,
+# ~/target/<name>, and ~/collision_object_state publishers -- a subscriber
+# only gets a TRANSIENT_LOCAL publisher's already-published history if it
+# is *also* TRANSIENT_LOCAL (DDS durability replay is per-subscription, not
+# automatic). With plain VOLATILE subscriptions here, a late-starting
+# armviz.py never received the one-shot springs_updated/target broadcasts
+# virtual_spring_node already sent before it connected, and fell back to
+# polling `ros2 param get` (load_springs_from_params' bootstrap retry loop)
+# -- or, if that also lost the race, spammed "no target yet" forever.
+_latched_qos = QoSProfile(
     depth=50,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
     reliability=ReliabilityPolicy.RELIABLE,
 )
+node.create_subscription(String, SPRINGS_TOPIC, springs_updated_cb, _latched_qos)
 node.create_subscription(
-    CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _collision_state_qos
+    CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _latched_qos
 )
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
