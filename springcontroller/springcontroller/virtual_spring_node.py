@@ -607,16 +607,24 @@ class VirtualSpringNode(Node):
         # node or the UI any the wiser. count_publishers() reflects live
         # DDS discovery instead, so it reports 0 the instant the
         # publisher's process actually disappears, whether or not a
-        # status message was ever published around that time. Checked
-        # (throttled) in _joint_state_cb and surfaced via
-        # _publish_safety_status.
+        # status message was ever published around that time.
+        #
+        # Checked on its own timer, NOT from _joint_state_cb: on Gen3,
+        # kinova_torque_control_node is itself the source of /joint_states
+        # (republished under its own -r joint_states:=... remap), so
+        # _joint_state_cb stops firing the instant that node dies -- a
+        # check placed there would need the dead node's own messages to
+        # notice it's dead. Confirmed live 2026-08-19: with the check
+        # inline in _joint_state_cb, killing kinova_torque_control froze
+        # virtual_spring_node's whole control loop (including
+        # _publish_safety_status) along with it, so neither the liveness
+        # flag nor safety_status ever updated again.
         self._torque_control_connected = None  # None until first checked
-        self._torque_control_check_interval_sec = 1.0
-        self._last_torque_control_check_time = None
         if torque_status_topic:
             self.create_subscription(
                 String, torque_status_topic, self._torque_status_cb, 10
             )
+            self.create_timer(1.0, self._check_torque_control_connected)
             self.get_logger().info(
                 f"Ramping spring force over {self._spring_ramp_duration:.2f}s on each "
                 f"torque-enable, keyed off {torque_status_topic}."
@@ -982,6 +990,31 @@ class VirtualSpringNode(Node):
             self._torque_enabled_since = None
         self._last_torque_status = msg.data
 
+    def _check_torque_control_connected(self) -> None:
+        """
+        Runs on its own 1Hz timer -- see the comment on
+        self._torque_control_connected in __init__ for why this can't live
+        in _joint_state_cb. Edge-triggered log so a sustained outage
+        doesn't spam; on the falling edge, also republishes ~/safety_status
+        immediately (using whatever collision status was last computed)
+        rather than waiting for _joint_state_cb, since on Gen3 that may
+        never fire again once kinova_torque_control is the thing that died.
+        """
+        was_connected = self._torque_control_connected
+        self._torque_control_connected = (
+            self.count_publishers(self._torque_status_topic) > 0
+        )
+        if was_connected and not self._torque_control_connected:
+            self.get_logger().error(
+                f"{self._torque_status_topic}'s publisher has disappeared "
+                f"-- gen3_torque_control (or equivalent) is no longer "
+                f"running. Torque commands published from here are no "
+                f"longer being applied to the arm."
+            )
+            self._publish_safety_status(self._last_collision_status)
+        elif self._torque_control_connected and was_connected is False:
+            self.get_logger().info(f"{self._torque_status_topic}'s publisher is back.")
+
     def _joint_state_cb(self, msg: JointState) -> None:
         now = self.get_clock().now()
         if self._last_js_recv_time is not None:
@@ -1168,34 +1201,6 @@ class VirtualSpringNode(Node):
                 self._last_collision_status = self._arm.get_collision_status()
                 self._last_collision_check_time = now
             collision = self._last_collision_status
-
-            # Torque-control liveness (throttled -- see
-            # _torque_control_check_interval_sec). Edge-triggered log so a
-            # sustained outage doesn't spam at control-loop rate; the
-            # current state is still broadcast on every tick below via
-            # _publish_safety_status regardless of this log.
-            if self._torque_status_topic:
-                if (self._last_torque_control_check_time is None or
-                        (now - self._last_torque_control_check_time).nanoseconds / 1e9
-                        >= self._torque_control_check_interval_sec):
-                    was_connected = self._torque_control_connected
-                    self._torque_control_connected = (
-                        self.count_publishers(self._torque_status_topic) > 0
-                    )
-                    self._last_torque_control_check_time = now
-                    if was_connected and not self._torque_control_connected:
-                        self.get_logger().error(
-                            f"{self._torque_status_topic}'s publisher has "
-                            f"disappeared -- gen3_torque_control (or "
-                            f"equivalent) is no longer running. Torque "
-                            f"commands published from here are no longer "
-                            f"being applied to the arm."
-                        )
-                    elif self._torque_control_connected and was_connected is False:
-                        self.get_logger().info(
-                            f"{self._torque_status_topic}'s publisher is back."
-                        )
-
             self._publish_safety_status(collision)
             if collision is not None:
                 a, b = collision.closest_pair
