@@ -285,6 +285,20 @@ class VirtualSpringNode(Node):
         )
         self._last_collision_check_time = None
         self._last_collision_status = None
+        # Timestamp of the most recent in_danger/in_collision cycle -- used
+        # to ramp spring torque back in over spring_ramp_duration_sec after
+        # clearing the danger zone, the same way spring_ramp_duration_sec
+        # already ramps it in on torque-enable. Without this, torque snapped
+        # straight from collision.scale_factor (or 0 at the hard clamp) to
+        # full strength in a single ~10ms cycle the instant the pair cleared
+        # the danger threshold -- confirmed live 2026-08-19: an orientation
+        # spring left ~180deg off (arm manually walked out of a collision
+        # while its own torque was suppressed) re-engaged at full strength
+        # the moment the pair cleared danger, producing a large,
+        # axis-sensitive correction torque that drove joint 4 into a fault
+        # trying to close on link 5. See spring_ramp_duration_sec (declared
+        # below) for the shared ramp-duration parameter.
+        self._last_unsafe_time = None
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
         self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
         self._recentering_enabled = self.get_parameter("recentering_enabled").get_parameter_value().bool_value
@@ -1109,6 +1123,7 @@ class VirtualSpringNode(Node):
                     # links are closest would let the arm sag/fall at the
                     # worst possible moment instead of holding position.
                     torques = gravity_torques
+                    self._last_unsafe_time = now
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
                     if elapsed - self._collision_warn_log_last >= 0.5:
@@ -1126,6 +1141,21 @@ class VirtualSpringNode(Node):
                     # geometry, which can pull it back out of danger and
                     # restore full gravity comp, arm lifts back in, repeat.
                     torques = gravity_torques + collision.scale_factor * spring_only_torques
+                    self._last_unsafe_time = now
+                elif (self._last_unsafe_time is not None
+                      and self._spring_ramp_duration > 0.0):
+                    # Ramp spring torque back in over spring_ramp_duration_sec
+                    # after clearing the danger zone, instead of snapping
+                    # straight from collision.scale_factor (or 0) to full
+                    # strength in one ~10ms cycle -- see _last_unsafe_time's
+                    # declaration for why. Same ramp curve/duration as the
+                    # torque-enable ramp, just keyed off this transition
+                    # instead. Naturally resets if the pair dips back into
+                    # in_danger/in_collision before finishing, since that
+                    # updates _last_unsafe_time again above.
+                    recovery_elapsed = (now - self._last_unsafe_time).nanoseconds / 1e9
+                    recovery_scale = min(1.0, max(0.0, recovery_elapsed / self._spring_ramp_duration))
+                    torques = gravity_torques + recovery_scale * spring_only_torques
 
                 if self._collision_log_writer is not None:
                     self._collision_log_writer.writerow([
