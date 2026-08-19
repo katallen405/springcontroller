@@ -10,16 +10,29 @@ Subscriptions
 ~/joint_states  (sensor_msgs/JointState)
     Current joint positions and velocities from the arm.
 
+~/target/<spring_name>  (geometry_msgs/PointStamped)
+    Move a Cartesian or orientation spring's target at runtime.
+
+~/attachment/<spring_name>  (geometry_msgs/PointStamped)
+    Move a Cartesian or orientation spring's attachment point at runtime.
+
+~/joint_target/<spring_name>  (std_msgs/Float64)
+    Move a joint spring's target angle (rad) at runtime.
+
 Publications
 ------------
 ~/joint_torques  (sensor_msgs/JointState)
     Effort field carries the summed virtual-spring torques.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Update a spring's target at runtime.
+    Broadcasts a Cartesian or orientation spring's current target -- fired
+    on load (if configured), on resolving a deferred one against the arm's
+    real pose (see springs.<n>.target below), and on add_spring/
+    add_orientation_spring.
 
 ~/springs_updated (String)
-    Publishes when the list of springs is changed with add_spring or remove_spring (supports spring_viz, maybe later UI)
+    Publishes when the list of springs is changed with add_spring, add_joint_spring,
+    add_orientation_spring, or remove_spring (supports spring_viz, maybe later UI)
 
 Services
 --------
@@ -27,17 +40,31 @@ Services
     Enable or disable all springs at once.
 
 ~/add_spring
-    Add a spring (springcontroller_interfaces/AddSpring)
+    Add a Cartesian spring (springcontroller_interfaces/AddSpring)
+
+~/add_joint_spring
+    Add a joint spring (springcontroller_interfaces/AddJointSpring)
+
+~/add_orientation_spring
+    Add an orientation spring (springcontroller_interfaces/AddOrientationSpring)
 
 ~/remove_spring (springcontroller_interfaces/RemoveSpring)
-    Remove a spring from the torque calculations
+    Remove a spring from the torque calculations, by name -- works for any spring type
 
 
 Parameters
 ----------
 urdf_path   : str  -- path to the robot URDF or XACRO file
 config_path : str  -- path to the springs YAML file (checked at startup)
-springs.<n>.*     -- per-spring config (see config/springs.yaml)
+springs.<n>.*             -- per-spring config (see config/springs.yaml). `target`
+    left unconfigured (NaN sentinel) defers to the arm's real position on
+    the first /joint_states callback rather than resolving against the
+    URDF's zero/neutral pose at __init__ time.
+joint_springs.<n>.*        -- per-joint-spring config. `target_angle` left
+    unconfigured defers the same way, to the joint's real current angle.
+orientation_springs.<n>.*  -- per-orientation-spring config. `target` has
+    no safe default (it's an external point, e.g. a person's face, not
+    inferable from the arm's pose) and must be set explicitly.
 """
 
 import math
@@ -222,6 +249,10 @@ class VirtualSpringNode(Node):
         self._springs_updated_pub = self.create_publisher(String,
                                             "~/springs_updated", 10)
 
+        # Per-spring ~/target/<name> publishers (broadcast side -- see the
+        # subscription of the same name below for the input/override side).
+        self._target_pubs: dict[str, "rclpy.publisher.Publisher"] = {}
+
         # Subscriptions
         self._js_sub = self.create_subscription(
             JointState, "/joint_states", self._joint_state_cb, 10
@@ -262,6 +293,18 @@ class VirtualSpringNode(Node):
                     lambda msg, s=spring: self._attachment_cb(msg, s),
                     10,
                 )
+
+                self._target_pubs[spring.name] = self.create_publisher(
+                    PointStamped, f"~/target/{spring.name}", 10
+                )
+                # A spring with a target left unconfigured in YAML doesn't
+                # have a real value yet -- _target_pending is still True,
+                # and target_world_point is just the zero placeholder set
+                # in _load_one_spring. Broadcasting that now would show a
+                # wrong target briefly; _joint_state_cb publishes the real
+                # one once resolved.
+                if not getattr(spring, "_target_pending", False):
+                    self._publish_target(spring)
             elif isinstance(spring, JointSpring):
                 topic = f"~/joint_target/{spring.name}"
                 self.create_subscription(
@@ -291,6 +334,14 @@ class VirtualSpringNode(Node):
                     lambda msg, s=spring: self._attachment_cb(msg, s),
                     10,
                 )
+
+                # Unlike VirtualSpring, an OrientationSpring's target is
+                # never pending (_load_one_orientation_spring requires it
+                # explicitly) -- always safe to broadcast immediately.
+                self._target_pubs[spring.name] = self.create_publisher(
+                    PointStamped, f"~/target/{spring.name}", 10
+                )
+                self._publish_target(spring)
 
         # Services
         self._enable_srv = self.create_service(
@@ -379,14 +430,28 @@ class VirtualSpringNode(Node):
         prefix = f"springs.{name}"
         self._declare_or_ignore(f"{prefix}.link_name",   "")
         self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
-        self._declare_or_ignore(f"{prefix}.target",      [0.0, 0.0, 0.0])
+        # NaN is a sentinel for "not set in config": defaults to wherever
+        # the arm actually is at startup (zero initial extension/force)
+        # rather than a fixed point like the literal [0,0,0] this used to
+        # default to -- a spring pulling toward the origin (or any other
+        # point far from the real starting pose) the instant torque control
+        # enables is the exact mechanism behind a live incident 2026-08-07.
+        # Can't resolve "current position" here, though: this method runs
+        # during __init__, before any real /joint_states message has ever
+        # arrived, so self._arm is still at the URDF's zero/neutral
+        # configuration, not the arm's actual pose. Use a zero placeholder
+        # and resolve for real on the first _joint_state_cb, once self._arm
+        # reflects reality.
+        self._declare_or_ignore(
+            f"{prefix}.target", [float("nan"), float("nan"), float("nan")]
+        )
         self._declare_or_ignore(f"{prefix}.stiffness",   0.0)
         self._declare_or_ignore(f"{prefix}.damping",     0.0)
         self._declare_or_ignore(f"{prefix}.rest_length", 0.0)
         self._declare_or_ignore(f"{prefix}.inner_radius", 0.0)
         self._declare_or_ignore(f"{prefix}.outer_radius", 0.0)
-        
-  
+
+
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
             return default if val is None else val
@@ -394,10 +459,15 @@ class VirtualSpringNode(Node):
         link_name = _get("link_name")
         self._arm.validate_link_name(link_name)  # raises ValueError if bad
 
+        target = np.array(_get("target", [float("nan")] * 3), dtype=float)
+        target_pending = bool(np.any(np.isnan(target)))
+        if target_pending:
+            target = np.zeros(3)
+
         spring = VirtualSpring(
             link_name=link_name,
-            local_attachment_point=np.array(_get("local_point", [0, 0, 0])),
-            target_world_point=np.array(_get("target", [0, 0, 0])),
+            local_attachment_point=np.array(_get("local_point", [0, 0, 0]), dtype=float),
+            target_world_point=target,
             stiffness=float(_get("stiffness", 0.0)),
             damping=float(_get("damping", 0.0)),
             rest_length=float(_get("rest_length", 0.0)),
@@ -405,6 +475,7 @@ class VirtualSpringNode(Node):
             inner_radius=float(_get("inner_radius",0.0)),
             outer_radius=float(_get("outer_radius",0.0)),
     )
+        spring._target_pending = target_pending
         return spring
 
     def _load_one_joint_spring(self, name: str) -> JointSpring:
@@ -426,13 +497,17 @@ class VirtualSpringNode(Node):
         self._arm.validate_joint_name(joint_name)  # raises ValueError if bad
 
         target_angle = float(_get("target_angle", float("nan")))
-        if math.isnan(target_angle):
-            joint_index = self._arm.joint_names.index(joint_name)
-            target_angle = self._arm.get_joint_angle(joint_index)
-            self.get_logger().info(
-                f"Joint spring '{name}': no target_angle configured, "
-                f"defaulting to current angle ({target_angle:.4f} rad)."
-            )
+        target_pending = math.isnan(target_angle)
+        if target_pending:
+            # Can't resolve "current angle" here yet -- this method runs
+            # during __init__, before any real /joint_states message has
+            # arrived, so self._arm is still at the URDF's zero/neutral
+            # configuration, not the joint's actual angle. Resolving
+            # against that stale pose is the same mechanism as the
+            # VirtualSpring incident target's comment above describes --
+            # use a placeholder and resolve for real on the first
+            # _joint_state_cb, once self._arm reflects reality.
+            target_angle = 0.0
 
         spring = JointSpring(
             joint_name=joint_name,
@@ -441,6 +516,7 @@ class VirtualSpringNode(Node):
             damping=float(_get("damping", 0.0)),
             name=name,
         )
+        spring._target_pending = target_pending
         return spring
 
     def _load_one_orientation_spring(self, name: str) -> OrientationSpring:
@@ -530,6 +606,65 @@ class VirtualSpringNode(Node):
             
             # update the joint angles from the arm
             self._arm.update_from_angles(q_arm, qdot)
+
+            # Resolve any springs whose target was left unconfigured: now
+            # that self._arm reflects a real measured pose (not the URDF's
+            # zero/neutral configuration it started at -- see
+            # _load_one_spring / _load_one_joint_spring), set target =
+            # current position/angle so the spring starts at zero
+            # extension/force instead of pulling toward wherever the zero
+            # pose happens to put it. OrientationSpring never sets
+            # _target_pending (its target has no safe default and is
+            # required at load time), so it never matches either branch
+            # here.
+            for spring in self._springs:
+                if isinstance(spring, VirtualSpring) and getattr(spring, "_target_pending", False):
+                    T = self._arm.get_link_transform(spring.link_name)
+                    p_local_h = np.append(spring.local_attachment_point, 1.0)
+                    spring.target_world_point = (T @ p_local_h)[:3]
+                    spring._target_pending = False
+                    self.get_logger().info(
+                        f"Spring '{spring.name}': target resolved to current "
+                        f"attachment position ({spring.target_world_point[0]:.3f}, "
+                        f"{spring.target_world_point[1]:.3f}, {spring.target_world_point[2]:.3f})."
+                    )
+                    # Without this, nothing ever tells external observers
+                    # (e.g. armviz) what the resolved target actually is --
+                    # they only learn of a target via this same topic, and
+                    # a pending one has no explicit config to have already
+                    # broadcast at load time.
+                    self._publish_target(spring)
+                    # The topic publish above only reaches whoever's already
+                    # subscribed at this exact moment. The springs.<name>.
+                    # target *parameter* still holds the NaN-sentinel
+                    # placeholder otherwise -- a late subscriber/poller
+                    # (e.g. a viz tool bootstrapping via `ros2 param get`)
+                    # needs this to reflect ground truth same as the topic.
+                    self.set_parameters([
+                        rclpy.parameter.Parameter(
+                            f"springs.{spring.name}.target",
+                            rclpy.parameter.Parameter.Type.DOUBLE_ARRAY,
+                            spring.target_world_point.tolist(),
+                        )
+                    ])
+                elif isinstance(spring, JointSpring) and getattr(spring, "_target_pending", False):
+                    joint_index = self._arm.joint_names.index(spring.joint_name)
+                    spring.target_angle = self._arm.get_joint_angle(joint_index)
+                    spring._target_pending = False
+                    self.get_logger().info(
+                        f"Joint spring '{spring.name}': target_angle resolved "
+                        f"to current angle ({spring.target_angle:.4f} rad)."
+                    )
+                    # Same reasoning as VirtualSpring above -- keep the
+                    # parameter in sync with the resolved value, not just
+                    # the in-memory spring object.
+                    self.set_parameters([
+                        rclpy.parameter.Parameter(
+                            f"joint_springs.{spring.name}.target_angle",
+                            rclpy.parameter.Parameter.Type.DOUBLE,
+                            float(spring.target_angle),
+                        )
+                    ])
 
             # compute the actual torques generated by the full set of springs
             # if self._add_grav_comp is true, include calculations for gravity compensation
@@ -659,6 +794,31 @@ class VirtualSpringNode(Node):
             f"Updated target for '{spring.name}': "
             f"[{p.x:.3f}, {p.y:.3f}, {p.z:.3f}]"
         )
+        # Deliberately not republished here: this callback fires on
+        # ~/target/<name>, the same topic _publish_target() publishes to.
+        # Every subscriber (including us) already sees this message
+        # directly from whoever sent it -- republishing it would have us
+        # receive our own echo and republish again, forever.
+
+    def _publish_target(self, spring) -> None:
+        """Broadcast a Cartesian-target spring's (VirtualSpring or
+        OrientationSpring) current target on ~/target/<name>.
+
+        Only call this for a target this node set on its own initiative
+        (load-time, or resolving a pending one against the arm's real
+        pose) -- never from _target_cb, which would create a publish/
+        receive self-loop on the same topic.
+        """
+        pub = self._target_pubs.get(spring.name)
+        if pub is None:
+            return
+        msg = PointStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
+        msg.point.x, msg.point.y, msg.point.z = (
+            float(v) for v in spring.target_world_point
+        )
+        pub.publish(msg)
 
     def _attachment_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
@@ -926,6 +1086,10 @@ class VirtualSpringNode(Node):
             (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
     ]:
             self.create_subscription(PointStamped, topic, cb, 10)
+        self._target_pubs[name] = self.create_publisher(
+            PointStamped, f"~/target/{name}", 10
+        )
+        self._publish_target(spring)
 
         response.success = True
         response.message = f"Spring '{name}' added."
@@ -1063,6 +1227,10 @@ class VirtualSpringNode(Node):
             (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
         ]:
             self.create_subscription(PointStamped, topic, cb, 10)
+        self._target_pubs[name] = self.create_publisher(
+            PointStamped, f"~/target/{name}", 10
+        )
+        self._publish_target(spring)
 
         response.success = True
         response.message = f"Orientation spring '{name}' added."
