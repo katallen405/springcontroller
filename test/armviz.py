@@ -94,6 +94,18 @@ target_subs = {}   # name -> rclpy subscription (kept alive)
 # reverts to None, so a genuine regression still gets reported.
 _no_target_warned = set()
 
+# Same dedupe, for link_name staying unresolved (e.g. the robot/spring node
+# isn't up yet). Distinct from _unknown_frame_warned below: this is the
+# expected "not read yet" case, that one is "read a real value, but it's
+# not a frame this URDF has" -- worth keeping separate so a genuine bad
+# link_name still gets its own message instead of being swallowed here.
+_no_link_warned = set()
+
+# Names already warned about via draw_springs' "unknown frame" message --
+# same 20Hz flood risk as _no_target_warned above, but for a link_name that
+# *did* resolve, just not to a frame this URDF actually has.
+_unknown_frame_warned = set()
+
 # id -> {"object_pose": 4x4 np.ndarray, "primitives": [(shape, dims, relative_pose 4x4)]}
 collision_objects = {}
 
@@ -147,7 +159,17 @@ def get_param_link(name):
     out = _get_spring_param(name, 'link_name')
     if out is None:
         print(f"[viz] could not read link_name for '{name}'")
-        return "ur3e_tool0"
+        # None, not a hardcoded fallback -- this script is robot-agnostic
+        # (used for both UR3e and Gen3), so guessing a specific robot's
+        # frame name here is wrong by construction for whichever robot
+        # *isn't* that guess. Confirmed live 2026-08-19 on a Gen3 run: a
+        # transient timeout on this one read (competing with
+        # virtual_spring_node's own heavy startup for CPU, same root cause
+        # _track_spring's docstring already describes for target) left
+        # link_name permanently stuck at the old "ur3e_tool0" fallback,
+        # since -- unlike target -- nothing ever retried it. Callers must
+        # treat None as "not resolved yet", same as target=None.
+        return None
     return out.split(':')[-1].strip()
 
 def _track_spring(name):
@@ -188,10 +210,14 @@ def _track_spring(name):
         )
         target_subs[name] = sub
         print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
-    elif entry.get("target") is None:
-        entry["target"] = get_param_target(name)
-        print(f"[viz] retried target for '{name}': {entry['target']}")
-    return entry.get("target") is not None
+    else:
+        if entry.get("target") is None:
+            entry["target"] = get_param_target(name)
+            print(f"[viz] retried target for '{name}': {entry['target']}")
+        if entry.get("link_name") is None:
+            entry["link_name"] = get_param_link(name)
+            print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
+    return entry.get("target") is not None and entry.get("link_name") is not None
 
 def load_springs_from_params():
     """Bootstrap spring list from ROS params at startup. Returns True only
@@ -367,11 +393,26 @@ def draw_springs(q):
         target    = spring.get("target")
         link_name = spring.get("link_name")
 
+        if link_name is None:
+            # Not resolved yet (e.g. the spring node isn't up yet) -- an
+            # expected, transient state that _track_spring keeps retrying,
+            # not a bug. Skip this spring for now, same as an unresolved
+            # target below.
+            if name not in _no_link_warned:
+                _no_link_warned.add(name)
+                print(f"[viz] no link_name yet for spring '{name}' -- "
+                      f"waiting on virtual_spring_node's parameters")
+            continue
+        _no_link_warned.discard(name)
+
         # Attachment point from FK
         frame_id = model.getFrameId(link_name)
         if frame_id >= len(data.oMf):
-            print(f"[viz] unknown frame '{link_name}' for spring '{name}'")
+            if name not in _unknown_frame_warned:
+                _unknown_frame_warned.add(name)
+                print(f"[viz] unknown frame '{link_name}' for spring '{name}'")
             continue
+        _unknown_frame_warned.discard(name)
         attachment = data.oMf[frame_id].translation.copy()
 
         # Blue sphere at attachment point
