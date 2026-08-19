@@ -192,6 +192,18 @@ and the existing `~/remove_spring`.
 
 ### Kinova Gen3 (via gen3_torque_control node)
 
+`ROS_LOCALHOST_ONLY=1` must be set wherever `gen3_torque_node` runs (this
+should already be the case if it's set in your shell profile, e.g.
+`~/.bashrc` -- see `gen3_spring.launch.py`'s copy of this same setting for
+why). `gen3_torque_node` is normally started with a plain `ros2 run`, not
+through a launch file, so nothing else can set this for you here.
+Confirmed live 2026-08-19: without it, a physical E-STOP kills the arm's
+dedicated Ethernet link, and Cyclone DDS -- not restricted off that
+interface -- hangs *every* ROS2 node on the machine trying to use it for
+its own discovery/shutdown traffic, needing `SIGKILL` across the board
+(even nodes with nothing to do with the robot, like plain
+`ros2 bag record`).
+
 ```bash
 # Terminal 1 — start the Kinova torque interface. The -r remap is required:
 # virtual_spring_node and armviz both listen on joint_states_topic (default

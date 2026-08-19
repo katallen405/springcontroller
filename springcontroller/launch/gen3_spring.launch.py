@@ -28,7 +28,7 @@ Prerequisites
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -447,6 +447,18 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Keep all ROS2/DDS traffic on loopback, off the Gen3's dedicated
+        # Ethernet link entirely -- confirmed 2026-08-19: when the physical
+        # E-STOP kills that interface, Cyclone DDS's own multicast
+        # discovery/shutdown traffic hung on it too (even for nodes with
+        # nothing to do with the robot, e.g. plain `ros2 bag record`),
+        # needing SIGKILL across the board. gen3_torque_control's actual
+        # robot connection is a separate raw Kortex socket, unrelated to
+        # DDS -- this doesn't touch that. Backstops the same setting in
+        # ~/.bashrc (this repo's copy survives a machine reimage/different
+        # account; doesn't help gen3_torque_node's own bare `ros2 run`,
+        # which still needs the shell-level export -- see README).
+        SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
         urdf_path_arg,
         config_arg,
         joint_states_topic_arg,

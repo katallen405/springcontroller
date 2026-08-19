@@ -15,7 +15,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo
+from launch.actions import (
+    DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo,
+    SetEnvironmentVariable,
+)
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -77,6 +80,14 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # See gen3_spring.launch.py's copy of this action for why -- keeps
+        # this panel's own ROS2/DDS traffic off the Gen3's dedicated
+        # Ethernet link, so an E-STOP doesn't hang this UI too (confirmed
+        # live 2026-08-19: it did, despite having nothing to do with the
+        # robot connection itself). Doesn't affect rosbridge's websocket
+        # listener (a separate TCP socket, not DDS) -- the panel stays
+        # reachable from other devices on the LAN as before.
+        SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
         rosbridge_port_arg,
         ui_port_arg,
         config_arg,
