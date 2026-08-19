@@ -605,7 +605,11 @@ class VirtualSpringNode(Node):
                 f"Ramping spring force over {self._spring_ramp_duration:.2f}s on each "
                 f"torque-enable, keyed off {torque_status_topic}."
             )
-        target_qos = QoSProfile(
+        # Stored on self, not just a local -- _add_spring_cb/
+        # _add_orientation_spring_cb need this same profile for springs
+        # added at runtime (see their own create_publisher calls), not
+        # just the ones loaded here at startup.
+        self._target_qos = target_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -1883,8 +1887,14 @@ class VirtualSpringNode(Node):
             (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
     ]:
             self.create_subscription(PointStamped, topic, cb, 10)
+        # TRANSIENT_LOCAL (self._target_qos), matching the startup-time
+        # publishers above -- a plain depth=10 default here silently gave
+        # springs added at runtime a VOLATILE publisher, mismatching
+        # armviz's TRANSIENT_LOCAL subscription. Confirmed live 2026-08-19:
+        # "New publisher discovered ... offering incompatible QoS ...
+        # DURABILITY" the moment a spring was added from the UI.
         self._target_pubs[name] = self.create_publisher(
-            PointStamped, f"~/target/{name}", 10
+            PointStamped, f"~/target/{name}", self._target_qos
         )
         self._publish_target(spring)
 
@@ -2024,8 +2034,14 @@ class VirtualSpringNode(Node):
             (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
         ]:
             self.create_subscription(PointStamped, topic, cb, 10)
+        # TRANSIENT_LOCAL (self._target_qos), matching the startup-time
+        # publishers above -- a plain depth=10 default here silently gave
+        # springs added at runtime a VOLATILE publisher, mismatching
+        # armviz's TRANSIENT_LOCAL subscription. Confirmed live 2026-08-19:
+        # "New publisher discovered ... offering incompatible QoS ...
+        # DURABILITY" the moment a spring was added from the UI.
         self._target_pubs[name] = self.create_publisher(
-            PointStamped, f"~/target/{name}", 10
+            PointStamped, f"~/target/{name}", self._target_qos
         )
         self._publish_target(spring)
 
