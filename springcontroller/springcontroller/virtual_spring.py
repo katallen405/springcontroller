@@ -196,6 +196,37 @@ class JointSpringState:
     torques: np.ndarray
 
 
+@dataclass
+class OrientationSpringState:
+    """
+    Snapshot of an :class:`OrientationSpring`'s state after the most recent
+    call to :meth:`OrientationSpring.compute_torques`.
+
+    Attributes
+    ----------
+    world_face_normal : np.ndarray, shape (3,)
+        Current world-space direction of the link's face normal.
+    desired_direction : np.ndarray, shape (3,)
+        Unit vector from the attachment point toward target_world_point --
+        the direction the face normal is being pulled toward.
+    extension : float
+        Angular error (rad) between world_face_normal and desired_direction.
+        Named `extension` -- not `angle_error` -- for the same duck-typing
+        reason as JointSpringState above: shared plotting/bookkeeping code
+        in virtual_spring_node.py reads spring._last_state.extension
+        regardless of spring type. It's an angle here, not a distance.
+    moment_world : np.ndarray, shape (3,)
+        Restoring moment (N·m) in world coordinates.
+    torques : np.ndarray, shape (n_dof,)
+        Generalized joint torques produced by this spring.
+    """
+    world_face_normal: np.ndarray
+    desired_direction: np.ndarray
+    extension: float
+    moment_world: np.ndarray
+    torques: np.ndarray
+
+
 # ---------------------------------------------------------------------------
 # VirtualSpring
 # ---------------------------------------------------------------------------
@@ -551,6 +582,210 @@ class JointSpring:
         return (
             f"JointSpring(name={self.name!r}, "
             f"joint={self.joint_name!r}, "
+            f"k={self.stiffness} N·m/rad, "
+            f"b={self.damping} N·m·s/rad, "
+            f"enabled={self.enabled})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# OrientationSpring
+# ---------------------------------------------------------------------------
+
+class OrientationSpring:
+    """
+    A virtual rotational spring that aligns a direction fixed in a link's
+    local frame (a "face normal") with the direction from that link's
+    attachment point to a static target point in world space -- without
+    exerting any translational pull.
+
+    Where VirtualSpring pulls a point toward a target (and is structurally
+    blind to any rotation about an axis through that point), OrientationSpring
+    does the opposite: it produces a pure restoring moment about the
+    attachment point and zero translational force, by using only the
+    rotational Jacobian (Jw) -- Jv is never referenced. The desired heading
+    is recomputed every cycle from the *current* attachment position, so as
+    the arm/block moves the spring keeps pointing the face at
+    target_world_point (a "look at" constraint), not a rotation frozen at
+    spring-creation time.
+
+        M = k * angle * axis_hat - b * ω
+
+    where axis_hat/angle is the axis-angle rotation taking the current face
+    normal to the desired direction (via their cross product), and ω is the
+    link's world-frame angular velocity.
+
+    Parameters
+    ----------
+    link_name : str
+        Name of the robot link the spring is attached to.
+    local_attachment_point : array-like, shape (3,)
+        Point (link-local frame) the face normal and moment are defined
+        about -- e.g. the gripper's held-block center.
+    local_face_normal : array-like, shape (3,)
+        Direction (link-local frame) of the face to orient, e.g. [0,0,1]
+        for a face pointing along the link's local +z. Normalized
+        internally.
+    target_world_point : array-like, shape (3,)
+        Static world point the face should point at (e.g. the participant's
+        face). Only ever used to derive a *direction* -- this spring exerts
+        no force toward it, only torque.
+    stiffness : float
+        Rotational stiffness k (N·m/rad). Must be ≥ 0.
+    damping : float, optional
+        Rotational viscous damping b (N·m·s/rad). Default 0. Must be ≥ 0.
+    enabled : bool, optional
+        If False the spring produces zero torque. Default True.
+    name : str
+        Human-readable label for logging / debugging.
+    """
+
+    def __init__(
+        self,
+        link_name: str,
+        local_attachment_point: np.ndarray,
+        local_face_normal: np.ndarray,
+        target_world_point: np.ndarray,
+        stiffness: float,
+        damping: float = 0.0,
+        enabled: bool = True,
+        name: str = "",
+    ):
+        self.link_name = link_name
+        self.local_attachment_point = np.asarray(local_attachment_point, dtype=float)
+        self.local_face_normal = np.asarray(local_face_normal, dtype=float)
+        self.target_world_point = np.asarray(target_world_point, dtype=float)
+        self.stiffness = stiffness
+        self.damping = damping
+        self.enabled = enabled
+        self.name = name or f"orientation_spring_{link_name}"
+
+        if self.local_attachment_point.shape != (3,):
+            raise ValueError(
+                f"local_attachment_point must have shape (3,), "
+                f"got {self.local_attachment_point.shape}"
+            )
+        if self.local_face_normal.shape != (3,):
+            raise ValueError(
+                f"local_face_normal must have shape (3,), "
+                f"got {self.local_face_normal.shape}"
+            )
+        face_normal_norm = np.linalg.norm(self.local_face_normal)
+        if face_normal_norm < 1e-9:
+            raise ValueError("local_face_normal must be nonzero")
+        self.local_face_normal = self.local_face_normal / face_normal_norm
+        if self.target_world_point.shape != (3,):
+            raise ValueError(
+                f"target_world_point must have shape (3,), "
+                f"got {self.target_world_point.shape}"
+            )
+        if stiffness < 0:
+            raise ValueError(f"stiffness must be ≥ 0, got {stiffness}")
+        if damping < 0:
+            raise ValueError(f"damping must be ≥ 0, got {damping}")
+
+        self._last_state: Optional[OrientationSpringState] = None
+
+    def compute_torques(self, arm: ArmConfiguration) -> np.ndarray:
+        """
+        Compute the generalized joint torques produced by this spring given
+        the current arm configuration.
+
+        Returns
+        -------
+        np.ndarray, shape (n_dof,)
+            Joint torques. Returns a zero vector if ``self.enabled`` is False.
+        """
+        n_dof = arm.n_dof
+        zero_torques = np.zeros(n_dof)
+        if not self.enabled:
+            self._last_state = None
+            warnings.warn(
+                f"{self.name}: orientation spring disabled, contributing "
+                f"zero torque (gravity comp, if enabled, is unaffected).",
+                stacklevel=2,
+            )
+            return zero_torques
+
+        # 1. World-space pose of the link
+        T = arm.get_link_transform(self.link_name)          # (4, 4)
+        R = T[:3, :3]
+        p_local_h = np.append(self.local_attachment_point, 1.0)
+        p_world = (T @ p_local_h)[:3]
+
+        # 2. Current face normal, in world frame
+        n_current = R @ self.local_face_normal
+        n_current = n_current / np.linalg.norm(n_current)
+
+        # 3. Desired ("look at") direction, recomputed from the *current*
+        # attachment position every cycle -- this is what makes it a look-at
+        # constraint rather than a rotation frozen at construction time.
+        to_target = self.target_world_point - p_world
+        dist = np.linalg.norm(to_target)
+        if dist < 1e-9:
+            # Attachment point coincides with the target -- "point at" is
+            # undefined here; hold last heading (zero moment) rather than
+            # dividing 0/0 into a NaN direction.
+            n_desired = n_current.copy()
+        else:
+            n_desired = to_target / dist
+
+        # 4. Axis-angle rotation error taking n_current -> n_desired.
+        # atan2(|cross|, dot) stays well-conditioned near angle=0 and
+        # angle=pi, unlike acos(dot) alone.
+        cross = np.cross(n_current, n_desired)
+        sin_angle = np.linalg.norm(cross)
+        cos_angle = np.clip(np.dot(n_current, n_desired), -1.0, 1.0)
+        angle = math.atan2(sin_angle, cos_angle)
+        axis = cross / sin_angle if sin_angle > 1e-9 else np.zeros(3)
+
+        # 5. Restoring moment (Hooke's law in angle, about `axis`)
+        m_spring = self.stiffness * angle * axis
+
+        # 6. Damping (opposes the link's angular velocity)
+        J = arm.get_jacobian(self.link_name, self.local_attachment_point)
+        Jw = J[3:, :]                                        # rotational part
+        m_damp = np.zeros(3)
+        if self.damping > 0.0:
+            omega = Jw @ arm.joint_velocities                # world angular velocity
+            m_damp = -self.damping * omega
+        m_total = m_spring + m_damp
+
+        # 7. Joint torques via Jacobian transpose -- rotational rows ONLY.
+        # Jv is deliberately never referenced: that's what keeps this a pure
+        # orienting torque with no translational pull on the block.
+        torques = Jw.T @ m_total
+
+        # 8. Cache state
+        self._last_state = OrientationSpringState(
+            world_face_normal=n_current,
+            desired_direction=n_desired,
+            extension=float(angle),
+            moment_world=m_total,
+            torques=torques,
+        )
+        return torques
+
+    @property
+    def last_state(self) -> Optional[OrientationSpringState]:
+        """
+        The :class:`OrientationSpringState` snapshot from the most recent
+        :meth:`compute_torques` call, or ``None`` if it has never been
+        called or the spring is disabled.
+        """
+        return self._last_state
+
+    def move_target(self, new_target: np.ndarray) -> None:
+        """Update the world-space point the face should point at."""
+        new_target = np.asarray(new_target, dtype=float)
+        if new_target.shape != (3,):
+            raise ValueError(f"new_target must have shape (3,), got {new_target.shape}")
+        self.target_world_point = new_target
+
+    def __repr__(self) -> str:
+        return (
+            f"OrientationSpring(name={self.name!r}, "
+            f"link={self.link_name!r}, "
             f"k={self.stiffness} N·m/rad, "
             f"b={self.damping} N·m·s/rad, "
             f"enabled={self.enabled})"
