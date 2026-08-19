@@ -191,6 +191,15 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
       </div>
 
       <div class="panel">
+        <h2>Gripper</h2>
+        <div class="btn-row">
+          <button class="action on" onclick="gripperCommand(false)">Open</button>
+          <button class="action off" onclick="gripperCommand(true)">Close</button>
+        </div>
+        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
         <h2>Reset springs</h2>
         <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
         <div class="btn-row" style="margin-top:8px">
@@ -273,6 +282,9 @@ const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
+// Straight to gen3_torque_control, like svcAddSpring below goes straight to
+// virtual_spring_node -- no orchestration_node involvement needed.
+const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
 
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
@@ -364,6 +376,16 @@ function moveToJointAngles() {
   callService(svcMoveToJointAngles, { joint_angles_rad: angles },
     function(resp) { showMsg('move-to-angles-msg', resp.success, resp.message); },
     function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
+}
+
+// ---- gripper -----------------------------------------------------
+// close=true closes the gripper, close=false opens it -- fire-and-forget,
+// same as gen3_torque_control's own gripper_command service (no completion
+// feedback, just an ack that Kortex accepted the command).
+function gripperCommand(close) {
+  callService(svcGripperCommand, { data: close },
+    function(resp) { showMsg('gripper-msg', resp.success, resp.message); },
+    function(err) { showMsg('gripper-msg', false, 'Gripper command failed: ' + err); });
 }
 
 // ---- reset springs -----------------------------------------------------
