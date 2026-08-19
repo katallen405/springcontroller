@@ -862,6 +862,23 @@ Gen3 example (`gen3_springs.yaml`):
 See [Kinova Gen3 launch](#kinova-gen3-via-gen3_torque_control-node) above
 for the full list of valid Gen3 spring link names, including gripper links.
 
+**`inner_radius`/`outer_radius`:** these define a dead zone plus an
+optional ramp, based on distance from the attachment point to the target
+(`extension`), not on `rest_length`:
+- `extension <= inner_radius` -- dead zone, force is 0.
+- `inner_radius < extension <= outer_radius` (only if `outer_radius >
+  inner_radius`) -- force ramps in, but *quadratically* in
+  `(extension - inner_radius)`, not linearly.
+- beyond that -- plain Hooke's law, `stiffness * (extension - rest_length)`,
+  unbounded (no max-force clamp exists).
+
+For a spring that does nothing inside radius `R` and pulls once the target
+leaves it, set `inner_radius: R` (not `outer_radius`) -- `outer_radius`
+only controls how far the ramp extends, not the dead-zone size. Also set
+`rest_length: R` (i.e. `rest_length == inner_radius`) so the force is
+continuous at the zone boundary instead of jumping by `stiffness * R` the
+instant the target exits the dead zone.
+
 #### Adding a joint spring (e.g. Gen3 wrist)
 
 `joint_7`'s axis runs through `end_effector_link`, so a Cartesian spring
