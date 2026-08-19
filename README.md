@@ -25,13 +25,18 @@ ros2 launch springcontroller ur3e_spring.launch.py \
 
 **Kinova Gen3** (via `gen3_torque_control`, no hardware gravity comp):
 ```bash
-# Terminal 1 — Kortex low-level torque interface
-ros2 run gen3_torque_control gen3_torque_node
+# Terminal 1 — Kortex low-level torque interface. The remap is required:
+# without it gen3_torque_node publishes on plain /joint_states, which
+# nothing here listens to, and virtual_spring_node silently never resolves
+# a spring target.
+ros2 run gen3_torque_control gen3_torque_node --ros-args \
+  -r joint_states:=/kinova/joint_states_lowlevel
 
-# Terminal 2 — spring controller. enable_torque_control:=true auto-enables
-# torque mode ~3s after startup, once virtual_spring_node is confirmed
-# publishing valid gravity-compensated torques. Defaults to false: leave it
-# off to review things first, then enable manually (see below) when ready.
+# Terminal 2 — spring controller. enable_torque_control:=true waits (up to
+# 10s) for virtual_spring_node to come up and publish valid torques, then
+# auto-enables torque mode -- refusing if the resting pose already reads as
+# unsafe (see enable_torque_control_allow_danger below). Defaults to false:
+# leave it off to review things first, then enable manually (see below).
 ros2 launch springcontroller gen3_spring.launch.py enable_torque_control:=true
 
 # Manual enable/disable at any time (this is also what the fail-safe calls
@@ -93,7 +98,7 @@ cd ~/ros2_ws/src
 git clone <this repo>
 cd ~/ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select virtual_spring_ros2
+colcon build --packages-select springcontroller springcontroller_interfaces
 source install/setup.bash
 ```
 
@@ -217,7 +222,8 @@ ros2 run gen3_torque_control gen3_torque_node --ros-args \
 ros2 launch springcontroller gen3_spring.launch.py
 
 # Terminal 3 — enable torque mode (or pass enable_torque_control:=true above
-# to have the launch file do this automatically ~3s after startup)
+# to have the launch file do this automatically once virtual_spring_node is
+# confirmed publishing valid torques)
 ros2 service call /gen3_torque_control/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
@@ -239,8 +245,15 @@ Launch arguments (all optional, shown with their defaults):
 | `srdf_path` | Gen3 MoveIt config SRDF | Excludes adjacent-link pairs (e.g. `base_link`/`shoulder_link`) from self-collision checks |
 | `add_gravity_compensation` | `true` | Gen3 has no hardware gravity comp, so this stays on unlike the UR3e |
 | `torque_control_service` | `/gen3_torque_control/enable` | `SetBool` service used both to auto-enable torque control and by the fail-safe to disable it again |
-| `enable_torque_control` | `false` | If `true`, auto-call `torque_control_service` with `data:true` ~3s after startup |
+| `torque_status_topic` | `/gen3_torque_control/status` | `ENABLED`/`DISABLED` status `virtual_spring_node` watches to trigger the spring-force ramp below; empty disables ramping |
+| `spring_ramp_duration_sec` | `1.5` | Seconds spring-force torque ramps from 0 to full after each torque-enable event on `torque_status_topic`. Gravity comp is never ramped — a full-torque gravity-comp step ramped in the past dropped the arm toward the table |
+| `enable_torque_control` | `false` | If `true`, auto-call `torque_control_service` with `data:true` once `virtual_spring_node` is confirmed publishing valid torques (up to 10s), via `wait_and_enable_torque.py` |
+| `enable_torque_control_allow_danger` | `false` | If `false` (default), an `enable_torque_control:=true` auto-enable refuses to proceed while `~/safety_status` reports `DANGER`/`COLLISION` at the resting pose. Set `true` only when deliberately testing from a near-collision pose |
 | `armviz` | `false` | If `true`, also launch `armviz.py` (see [Visualization](#visualization)) |
+| `meshcat_zmq_url` | `tcp://127.0.0.1:6001` | zmq URL for a dedicated meshcat-server this launch file starts when `armviz:=true`, so other processes (e.g. a UI's embedded meshcat iframe) reach a stable URL instead of a random port |
+| `meshcat_port` | `7101` | HTTP/static-asset port for that pinned meshcat-server; viewer is at `http://localhost:<meshcat_port>/static/` |
+| `record_rosbag` | `true` | Record torque/state/status topics plus `/rosout` to a rosbag under `rosbag_dir` for the launch's duration. Purely additive (a subscriber, not in the control path) |
+| `rosbag_dir` | `~/gen3_bags` | Directory bag files are written under; a non-default override must already exist |
 
 To use a custom springs config:
 ```bash
@@ -264,12 +277,19 @@ state matches the neutral pose the model was built with — the locked
 joints aren't measured at runtime, so if the real gripper position varies,
 a fingertip attachment point will be slightly off.
 
-**Fail-safe:** if spring computation fails repeatedly (e.g. a persistent
-self-collision or computation error), `virtual_spring_node` automatically
-calls `torque_control_service` with `data:false` once, switching the arm
-back to Kortex position hold rather than continuing to trust its own torque
-computation. This requires a manual re-enable afterward — it won't
-auto-recover on its own.
+**Fail-safes:** two independent one-shot triggers both call
+`torque_control_service` with `data:false`, switching the arm back to
+Kortex position hold. Neither auto-recovers — both require a manual
+re-enable afterward.
+- **Computation failure** — spring computation fails repeatedly (e.g. a
+  persistent self-collision or computation error).
+- **Collision-clamp grace period** — the [collision safety
+  clamp](#collision-safety-clamp) auto-disabled springs (`DANGER`/
+  `COLLISION`) and they've stayed disabled for `collision_disable_grace_sec`
+  (default 30s) without an explicit `~/enable(true)`. Prevents gravity-comp-
+  only drift from slowly walking the arm back into whatever it just cleared
+  while the operator is still reaching the UI. Re-arms on every fresh
+  auto-disable episode, not just the first one per session.
 
 Topic flow:
 ```
@@ -488,17 +508,21 @@ deleted outright.
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 | `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
 | `~/collision_object_state` (pub, transient-local) | `moveit_msgs/CollisionObject` | Echoes every applied ADD/APPEND/MOVE/REMOVE (from either the topic above or the YAML loader), so a late-joining consumer like `armviz.py` can reconstruct current scene state |
+| `~/safety_status` (pub) | `std_msgs/String` | `SAFE`/`DANGER`/`COLLISION`-prefixed self/scene collision status, published every control tick — see [Collision safety clamp](#collision-safety-clamp) |
 
 ## Services
 
 | Service | Type | Description |
 |---|---|---|
 | `~/enable` | `std_srvs/SetBool` | Enable / disable all springs |
+| `~/set_gravity_compensation` | `std_srvs/SetBool` | Toggle gravity compensation at runtime without restarting |
 | `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
 | `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
 | `~/add_orientation_spring` | `springcontroller_interfaces/AddOrientationSpring` | Add an orientation spring at runtime |
+| `~/update_spring` | `springcontroller_interfaces/UpdateSpring` | Change an existing spring's stiffness/damping by name (any type) |
 | `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (any type) |
 | `~/load_collision_scene` | `springcontroller_interfaces/LoadCollisionScene` | Load scene collision objects from YAML — see [Collision scene objects](#collision-scene-objects) |
+| `~/check_collision_at` | `springcontroller_interfaces/CheckCollisionAtAngles` | Check self/scene collision distance at a given joint configuration, without moving the arm |
 
 
 ## Using the library directly
@@ -522,7 +546,7 @@ torques = spring.compute_torques(arm)
 ## Tests
 
 ```bash
-colcon test --packages-select virtual_spring_ros2
+colcon test --packages-select springcontroller
 colcon test-result --verbose
 ```
 
@@ -602,6 +626,25 @@ ros2 service call /virtual_spring_node/enable std_srvs/srv/SetBool "{data: false
 ros2 service call /virtual_spring_node/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
+### Toggle gravity compensation
+
+```bash
+ros2 service call /virtual_spring_node/set_gravity_compensation std_srvs/srv/SetBool "{data: true}"
+```
+
+### Check collision at a candidate joint configuration
+
+Runs the same self/scene collision check as the live clamp, but against a
+given joint configuration instead of the arm's current pose -- useful for
+vetting a target before moving there.
+
+```bash
+ros2 service call /virtual_spring_node/check_collision_at \
+    springcontroller_interfaces/srv/CheckCollisionAtAngles "{
+        joint_angles_rad: [0.0, 0.3, 0.0, -1.5, 0.0, 1.0, 1.57]
+    }"
+```
+
 ### Add a spring
 
 ```bash
@@ -655,6 +698,17 @@ ros2 service call /virtual_spring_node/add_orientation_spring \
         target: [0.6, 0.4, 0.5],
         stiffness: 2.0,
         damping: 0.2
+    }"
+```
+
+### Update a spring's stiffness/damping
+
+Also name-based and type-agnostic, like remove:
+
+```bash
+ros2 service call /virtual_spring_node/update_spring \
+    springcontroller_interfaces/srv/UpdateSpring "{
+        name: 'my_spring', stiffness: 80.0, damping: 2.0
     }"
 ```
 
