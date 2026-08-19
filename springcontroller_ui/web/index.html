@@ -645,7 +645,18 @@ function reloadMeshcat() {
 }
 
 // ---- torque / safety status displays ----------------------------------
+// gen3_torque_control only publishes /status on an ENABLED/DISABLED
+// *transition*, not periodically -- so if the node dies, this badge would
+// otherwise freeze on whatever it last said (e.g. a stale "ENABLED")
+// forever, with nothing here to say so. lastTorqueStatusRaw backs the
+// "UNREACHABLE (last seen: ...)" override below, which comes from
+// virtual_spring_node's safety_status once it notices the node is gone
+// (see handleSafetyStatus) -- kept separate from the badge's own
+// textContent so that repeated safety_status ticks while unreachable
+// don't compound into "UNREACHABLE (last seen: UNREACHABLE (last seen: ...".
+let lastTorqueStatusRaw = 'unknown';
 function handleTorqueStatus(msg) {
+  lastTorqueStatusRaw = msg.data;
   const el = document.getElementById('torque-state');
   el.textContent = msg.data;
   el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
@@ -664,6 +675,16 @@ function handleSafetyStatus(msg) {
     const sEl = document.getElementById('springs-state');
     sEl.textContent = 'disabled by collision -- re-enable to resume';
     sEl.className = 'val inactive';
+  }
+
+  // virtual_spring_node appends this once it notices gen3_torque_control's
+  // own status-topic publisher has disappeared from the DDS graph (node
+  // crashed/killed). Overrides the torque-state badge so it can't keep
+  // showing a stale "ENABLED" while nothing is actually applying torque.
+  const tEl = document.getElementById('torque-state');
+  if ((msg.data || '').includes('gen3_torque_control UNREACHABLE')) {
+    tEl.textContent = 'UNREACHABLE (last seen: ' + lastTorqueStatusRaw + ')';
+    tEl.className = 'val inactive';
   }
 }
 function handleMoveStatus(msg) {
