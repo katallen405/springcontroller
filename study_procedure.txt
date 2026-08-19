@@ -1,0 +1,12 @@
+Start the gen3 controller node:
+ros2 run gen3_torque_control gen3_torque_node --ros-args -r joint_states:=/kinova/joint_states_lowlevel
+
+Start the springcontroller:
+ros2 launch springcontroller gen3_spring.launch.py armviz:=true load_collision_scene:=true config:=/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen3_springs.yaml
+
+Start the webserver:
+ros2 launch springcontroller_ui study_control_panel.launch.py
+
+Open the study controller webserver:
+http://localhost:8090/
+

@@ -10,7 +10,12 @@
       tip_spring:
         link_name:    "end_effector_link"        # between gripper fingers
         local_point:  [0.0, 0.0, 0.1]       # attachment point in link-local frame (m)
-        target:       [0.5, 0.0, 0.5]       # target position in world frame (m)
+        # target intentionally omitted: defaults to wherever the arm
+        # actually is at startup (zero initial extension/force) rather
+        # than a fixed absolute point that may be far from the real
+        # starting pose -- see virtual_spring_node.py's _load_one_spring.
+        # Set an explicit [x, y, z] here only once you deliberately want
+        # the spring to pull toward a specific fixed point on enable.
         stiffness:    50.0                   # N/m  (start low for safety)
         damping:      5.0                    # N·s/m
         rest_length:  0.0                    # m  (0 = zero-length spring)
@@ -27,3 +32,20 @@
       #   rest_length:  0.0
       #   inner_radius: 0.0
       #   outer_radius: 0.0
+
+    # Uncomment to keep the gripper's held block facing a fixed world
+    # point (e.g. a study participant's face) -- pure rotational torque,
+    # no positional pull. Unlike springs/joint_springs above, `target`
+    # has no safe default and must be measured/set explicitly: see
+    # OrientationSpring in virtual_spring.py.
+    # orientation_spring_names:
+    #   - face_participant
+    #
+    # orientation_springs:
+    #   face_participant:
+    #     link_name:          "end_effector_link"
+    #     local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
+    #     local_face_normal:  [0.0, 0.0, 1.0]   # the block's working face, link-local
+    #     target:             [0.6, 0.4, 0.5]   # participant's measured face position (m)
+    #     stiffness:          2.0                # N*m/rad (start low for safety)
+    #     damping:            0.2                # N*m*s/rad

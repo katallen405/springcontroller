@@ -33,6 +33,16 @@ def generate_launch_description():
         description="Fallback URDF path if /robot_description is absent.",
     )
 
+    start_enabled_arg = DeclareLaunchArgument(
+        "start_enabled",
+        default_value="true",
+        description=(
+            "Whether press detection / pin creation is active on startup. "
+            "Set false to bring the node up idle; toggle later via the "
+            "~/enable service."
+        ),
+    )
+
     node = Node(
         package="springcontroller",
         executable="press_to_pin",
@@ -40,8 +50,13 @@ def generate_launch_description():
         output="screen",
         parameters=[
             LaunchConfiguration("config"),
-            {"urdf_path": LaunchConfiguration("urdf_path")},
+            {
+                "urdf_path": LaunchConfiguration("urdf_path"),
+                "start_enabled": LaunchConfiguration("start_enabled"),
+            },
         ],
     )
 
-    return LaunchDescription([config_arg, urdf_path_arg, node])
+    return LaunchDescription(
+        [config_arg, urdf_path_arg, start_enabled_arg, node]
+    )

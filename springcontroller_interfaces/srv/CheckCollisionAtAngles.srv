@@ -1,0 +1,7 @@
+float64[] joint_angles_rad
+---
+bool in_collision
+bool in_danger
+float64 min_distance
+string link_a
+string link_b

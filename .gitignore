@@ -2,3 +2,8 @@
 *.txt~
 __pycache__/
 *.pyc
+
+# Emacs lock files (.#foo) and autosave files (#foo#) -- not real content,
+# just editor-open/crash-recovery artifacts.
+.#*
+\#*\#

@@ -1,0 +1,4 @@
+float64[] joint_angles_rad
+---
+bool success
+string message

@@ -1,0 +1,28 @@
+# Real lab table for tonight's live collision-clamp test on the Gen3.
+#
+# Table: 2m (X) x 1m (Y) x 0.5m (Z), top surface flush with base_link's
+# origin (Z=0), arm base at the center of the X=0 end -- table spans
+# X:[0,2], Y:[-0.5,0.5], Z:[-0.5,0] in the world frame.
+#
+# base_link is excluded (see urdf_arm_configuration.add_environment_object's
+# docstring): verified offline that without this, base_link sits ~3.8cm from
+# a flush table. Historically (danger_threshold=0.05m/5cm) that was inside
+# the danger zone, giving a permanent scale_factor = 0.038/0.05 = 0.76 (torque
+# held to ~76%, i.e. a ~24% scale-down) with the arm nowhere near real
+# contact. With the exclusion, baseline is a clean scale_factor=1.0.
+#
+# Since danger_threshold was tightened to 0.01m/1cm (2026-08-19,
+# collision/enable unification), base_link's 3.8cm clearance is no longer
+# inside the danger zone at all (0.038 > 0.01), so this exclusion isn't doing
+# anything for base_link at the current threshold -- kept anyway since it's
+# harmless and still correct if the threshold is ever loosened again.
+
+objects:
+  table:
+    shape: box
+    dimensions: [2.0, 1.0, 0.5]
+    frame_id: "world"
+    pose:
+      position: [1.0, 0.0, -0.25]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+    exclude_links: ["base_link"]

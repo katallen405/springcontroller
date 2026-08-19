@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Study Control Panel</title>
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #f0f0ee; color: #1a1a1a; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+summary:focus-visible, [tabindex]:focus-visible {
+  outline: 3px solid #2563eb; outline-offset: 2px;
+}
+
+.conn-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 16px; background: #fff; border-bottom: 1px solid #e0e0e0;
+  position: sticky; top: 0; z-index: 10;
+}
+.app-title {
+  font-size: 14px; font-weight: 700; color: #1a1a1a;
+  margin-right: 4px; padding-right: 10px; border-right: 1px solid #ddd;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; flex-shrink: 0; }
+.dot.ok  { background: #3b8a3b; }
+.dot.err { background: #c83232; }
+.status-text { font-size: 13px; color: #666; }
+.conn-bar input { padding: 5px 9px; border: 1px solid #ccc; border-radius: 7px; font-size: 13px; font-family: inherit; }
+.conn-bar button { padding: 5px 12px; border: 1px solid #ccc; border-radius: 7px; background: #fff; cursor: pointer; font-size: 13px; font-family: inherit; }
+.conn-bar button:hover { background: #f0f0f0; }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+
+.panel { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 14px 18px; }
+.panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666; margin-bottom: 10px; }
+.panel > summary {
+  font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666;
+  cursor: pointer; list-style: none;
+}
+.panel > summary::-webkit-details-marker { display: none; }
+.panel > summary::before { content: '▸ '; display: inline-block; }
+details[open].panel > summary::before { content: '▾ '; }
+details[open].panel > summary { margin-bottom: 10px; }
+
+.copy-btn { padding: 4px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; cursor: pointer; font-size: 12px; }
+.copy-btn:hover { background: #eee; }
+.field-inline { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #555; margin-bottom: 4px; }
+.field-inline input { padding: 3px 7px; border: 1px solid #ccc; border-radius: 5px; font-size: 12.5px; font-family: monospace; }
+
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+button.action {
+  padding: 9px 16px; border: 2px solid #ccc; border-radius: 10px; background: #fff;
+  cursor: pointer; font-family: inherit; font-size: 13.5px; font-weight: 600;
+  transition: background .12s, border-color .12s;
+}
+button.action:hover { background: #f4f4f4; }
+button.action.on   { border-color: #2E7A2E; color: #1e5a1e; }
+button.action.on:hover { background: #f0faf0; }
+button.action.off  { border-color: #767676; color: #444; }
+button.action.danger { border-color: #C83232; color: #a02020; }
+button.action.danger:hover { background: #fdf0f0; }
+button.action.estop {
+  border-color: #C83232; background: #C83232; color: #fff; font-size: 15px;
+  padding: 12px 22px;
+}
+button.action.estop:hover { background: #a02020; }
+
+.status-line { font-size: 13px; color: #555; margin-top: 6px; }
+.status-line .val { font-weight: 700; }
+.val.SAFE, .val.active, .val.ENABLED.ok { color: #2E7A2E; }
+.val.DANGER, .val.unknown { color: #8a5300; }
+.val.COLLISION, .val.inactive { color: #a02020; }
+
+.msg-box { margin-top: 8px; padding: 7px 10px; border-radius: 7px; font-size: 12.5px; font-family: monospace; white-space: pre-wrap; }
+.msg-box.ok  { background: #f0faf0; color: #1e5a1e; border: 1px solid #cfe9cf; }
+.msg-box.err { background: #fdf0f0; color: #a02020; border: 1px solid #f0c8c8; }
+.msg-box.hidden { display: none; }
+
+label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #555; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+.layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+.sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+.hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
+
+.spring-form { display: flex; flex-direction: column; gap: 8px; }
+.spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spring-form label { font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px; }
+.spring-form input, .spring-form select {
+  padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
+}
+.spring-form input[type=text], .spring-form input[type=number] { width: 88px; }
+
+ul.spring-list { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+ul.spring-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 5px 9px; background: #fafafa; border: 1px solid #eee; border-radius: 7px;
+  font-family: monospace; font-size: 12.5px;
+}
+ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
+ul.spring-list button:hover { background: #fdf0f0; }
+ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
+ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
+ul.spring-list .adjust button { border-color: #999; color: #333; }
+ul.spring-list .adjust button:hover { background: #f0f0f0; }
+
+iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
+.meshcat-row { display: flex; justify-content: space-between; align-items: center; }
+
+.main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+</style>
+</head>
+<body>
+
+<header class="conn-bar">
+  <h1 class="app-title">Study Control Panel</h1>
+  <span class="dot" id="dot" aria-hidden="true"></span>
+  <span class="status-text" id="conn-label" role="status" aria-live="polite">Disconnected</span>
+  <label class="sr-only" for="ws-url">Rosbridge WebSocket URL</label>
+  <input type="text" id="ws-url" value="ws://localhost:9090" style="width:190px">
+  <button id="btn-connect">Connect</button>
+  <button id="btn-disconnect">Disconnect</button>
+  <label for="robot-ip" style="font-size:13px;color:#666;margin-left:10px;padding-left:10px;border-left:1px solid #ddd">Robot IP:</label>
+  <input type="text" id="robot-ip" value="192.168.1.10" style="width:120px">
+</header>
+
+<main class="wrap">
+
+  <div class="layout">
+    <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
+    <aside class="sidebar" aria-label="Quick controls">
+      <div class="panel">
+        <h2>Torque control</h2>
+        <div class="btn-row">
+          <button class="action on" onclick="enableTorque()">Turn on torque control</button>
+          <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn off torque control</button>
+          <button class="action off" onclick="enableTorqueSpringsOff()">Turn on torque control with springs deactivated</button>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
+        </div>
+        <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
+          <input type="checkbox" id="allow-danger"> Override safety interlock
+        </label>
+        <div class="status-line">
+          torque control: <span class="val" id="torque-state">unknown</span><br>
+          move status: <span class="val" id="move-state">unknown</span><br>
+          safety status: <span class="val" id="safety-state">unknown</span><br>
+          springs: <span class="val" id="springs-state">unknown</span>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action on" onclick="setSpringsEnabled(true)">Enable springs</button>
+          <button class="action off" onclick="setSpringsEnabled(false)">Disable springs</button>
+        </div>
+        <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Emergency stop</h2>
+        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; abort any move + disable torque</button>
+        <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Study start location</h2>
+        <p class="status-line">Preset: <span class="val" id="start-defined">unknown</span></p>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action on" onclick="moveToStudyStart()">Move to study start</button>
+          <button class="action off" onclick="setCurrentAsStudyStart()">Set current position as study start</button>
+        </div>
+        <div class="msg-box hidden" id="start-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Move to position</h2>
+        <p class="hint">Joint angles in radians, joint_1..joint_7. Requires torque control off; checked for collision before moving (see "Torque control" panel above).</p>
+        <div class="spring-form">
+          <div class="row">
+            <label>j1 <input type="number" step="0.01" id="mv-j1" value="0"></label>
+            <label>j2 <input type="number" step="0.01" id="mv-j2" value="0"></label>
+            <label>j3 <input type="number" step="0.01" id="mv-j3" value="0"></label>
+            <label>j4 <input type="number" step="0.01" id="mv-j4" value="0"></label>
+            <label>j5 <input type="number" step="0.01" id="mv-j5" value="0"></label>
+            <label>j6 <input type="number" step="0.01" id="mv-j6" value="0"></label>
+            <label>j7 <input type="number" step="0.01" id="mv-j7" value="0"></label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="moveToJointAngles()">Move</button>
+          </div>
+        </div>
+        <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Gripper</h2>
+        <div class="btn-row">
+          <button class="action on" onclick="gripperCommand(false)">Open</button>
+          <button class="action off" onclick="gripperCommand(true)">Close</button>
+        </div>
+        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Reset springs</h2>
+        <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="action off" onclick="resetSprings()">Reset to single tip anchor</button>
+        </div>
+        <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
+      </div>
+    </aside>
+
+    <!-- ── Main column: add/remove springs + meshcat view ── -->
+    <div class="main-col">
+    <details class="panel" open>
+      <summary>Add / remove springs</summary>
+
+      <div class="spring-form">
+        <div class="row">
+          <span role="radiogroup" aria-label="Spring type" style="display:flex;gap:12px;align-items:center">
+            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-position" value="position" checked onchange="updateSpringTypeFields()"> Position</label>
+            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-orientation" value="orientation" onchange="updateSpringTypeFields()"> Orientation</label>
+          </span>
+        </div>
+        <div class="row">
+          <label>Link
+            <select id="sp-link"></select>
+          </label>
+          <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
+        </div>
+        <div class="row">
+          <label>name <input type="text" id="sp-name" value="my_spring"></label>
+          <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label id="sp-target-y-label">target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label id="sp-target-z-label">target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+        </div>
+        <div class="row">
+          <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
+          <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
+          <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
+          <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
+          <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
+        </div>
+        <div class="row" id="sp-position-only">
+          <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
+          <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
+          <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
+        </div>
+        <div class="row" id="sp-orientation-only" style="display:none">
+          <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
+          <label>normal y <input type="number" step="0.01" id="sp-ny" value="0"></label>
+          <label>normal z <input type="number" step="0.01" id="sp-nz" value="1"></label>
+        </div>
+        <p class="hint" id="sp-orientation-hint" style="display:none">Orientation spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector.</p>
+        <div class="btn-row">
+          <button class="action on" onclick="addSpring()">Add spring</button>
+        </div>
+      </div>
+      <div class="msg-box hidden" id="spring-msg" role="status" aria-live="polite"></div>
+
+      <ul class="spring-list" id="spring-list"></ul>
+    </details>
+
+    <div class="panel">
+      <div class="meshcat-row">
+        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
+        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      </div>
+      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
+    </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+'use strict';
+
+// ---- node/service/topic names -------------------------------------------
+const NODE = '/study_control_panel_node';
+const svcEnablePosition   = { name: NODE + '/enable_position_control',      type: 'std_srvs/srv/Trigger' };
+const svcEnableTorque     = { name: NODE + '/enable_torque_control',        type: 'springcontroller_ui_interfaces/srv/EnableTorqueControl' };
+const svcSoftEstop        = { name: NODE + '/soft_estop',                   type: 'std_srvs/srv/Trigger' };
+const svcMoveToStart      = { name: NODE + '/move_to_study_start',          type: 'std_srvs/srv/Trigger' };
+const svcMoveToJointAngles = { name: NODE + '/move_to_joint_angles',        type: 'springcontroller_ui_interfaces/srv/MoveToJointAngles' };
+const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type: 'std_srvs/srv/Trigger' };
+const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
+const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
+const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
+// Straight to gen3_torque_control, like svcAddSpring below goes straight to
+// virtual_spring_node -- no orchestration_node involvement needed.
+const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
+const svcClearFaults      = { name: '/gen3_torque_control/clear_faults',    type: 'std_srvs/srv/Trigger' };
+
+const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
+const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
+const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
+const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
+const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
+const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
+const targetTopicPrefix   = '/virtual_spring_node/target/';
+
+let ros = null;
+let currentSprings = [];
+
+// ---- generic ROS helpers -------------------------------------------------
+function showMsg(elId, ok, text) {
+  const el = document.getElementById(elId);
+  el.textContent = text;
+  el.className = 'msg-box ' + (ok ? 'ok' : 'err');
+}
+
+function callService(desc, request, onOk, onErr) {
+  if (!ros || !ros.isConnected) { onErr && onErr('Not connected to rosbridge.'); return; }
+  const client = new ROSLIB.Service({ ros: ros, name: desc.name, serviceType: desc.type });
+  client.callService(new ROSLIB.ServiceRequest(request || {}), function(resp) {
+    onOk && onOk(resp);
+  }, function(err) {
+    onErr && onErr(String(err));
+  });
+}
+
+function callTrigger(desc, label, targetMsgId) {
+  const el = targetMsgId || 'mode-msg';
+  callService(desc, {}, function(resp) {
+    showMsg(el, resp.success, (label ? label + ': ' : '') + resp.message);
+  }, function(err) {
+    showMsg(el, false, (label ? label + ' failed: ' : '') + err);
+  });
+}
+
+function sub(topic, type, cb) {
+  if (!ros) return null;
+  const t = new ROSLIB.Topic({ ros: ros, name: topic, messageType: type });
+  t.subscribe(cb);
+  return t;
+}
+
+function pub(topic, type, msg) {
+  if (!ros || !ros.isConnected) return false;
+  const t = new ROSLIB.Topic({ ros: ros, name: topic, messageType: type });
+  t.publish(new ROSLIB.Message(msg));
+  return true;
+}
+
+// ---- torque control -------------------------------------------
+function enableTorque() {
+  const allowDanger = document.getElementById('allow-danger').checked;
+  callService(svcEnableTorque, { allow_danger: allowDanger },
+    function(resp) { showMsg('mode-msg', resp.success, resp.message); },
+    function(err) { showMsg('mode-msg', false, 'Torque control on failed: ' + err); });
+}
+
+// Disables springs first so the arm can be freely repositioned under
+// gravity-comp-only torque, then enables torque control the normal way.
+function enableTorqueSpringsOff() {
+  setSpringsEnabled(false, function() { enableTorque(); });
+}
+
+// Direct call to virtual_spring_node's ~/enable, same pattern as
+// svcAddSpring/svcUpdateSpring below. onSuccess (optional) runs only if
+// the call succeeds -- used by enableTorqueSpringsOff() to sequence the
+// two calls.
+function setSpringsEnabled(enabled, onSuccess) {
+  callService(svcSpringsEnable, { data: enabled }, function(resp) {
+    showMsg('mode-msg', resp.success, resp.message);
+    if (resp.success) {
+      const el = document.getElementById('springs-state');
+      el.textContent = enabled ? 'enabled' : 'disabled';
+      el.className = 'val ' + (enabled ? 'active' : 'inactive');
+      if (onSuccess) onSuccess();
+    }
+  }, function(err) { showMsg('mode-msg', false, 'Springs enable/disable failed: ' + err); });
+}
+
+function softEstop() {
+  callService(svcSoftEstop, {},
+    function(resp) { showMsg('estop-msg', resp.success, resp.message); },
+    function(err) { showMsg('estop-msg', false, 'Soft e-stop failed: ' + err); });
+}
+
+// ---- study start -----------------------------------------------------
+function moveToStudyStart() { callTrigger(svcMoveToStart, 'Move to study start', 'start-msg'); }
+
+function setCurrentAsStudyStart() {
+  if (!confirm('This overwrites the saved study-start preset with the arm\'s current position. Continue?')) return;
+  callTrigger(svcSetCurrentStart, 'Set current as study start', 'start-msg');
+}
+
+function handleStudyStartStatus(msg) {
+  let payload;
+  try { payload = JSON.parse(msg.data); } catch (e) { return; }
+  const el = document.getElementById('start-defined');
+  el.textContent = payload.defined ? 'defined (' + payload.joint_angles.length + ' joints)' : 'not defined yet';
+  el.className = 'val ' + (payload.defined ? 'active' : 'unknown');
+}
+
+// ---- move to position -----------------------------------------------------
+function moveToJointAngles() {
+  const ids = ['mv-j1', 'mv-j2', 'mv-j3', 'mv-j4', 'mv-j5', 'mv-j6', 'mv-j7'];
+  const angles = ids.map(function(id) { return parseFloat(document.getElementById(id).value); });
+  if (angles.some(function(a) { return !isFinite(a); })) {
+    showMsg('move-to-angles-msg', false, 'All 7 joint angles must be numbers.');
+    return;
+  }
+  callService(svcMoveToJointAngles, { joint_angles_rad: angles },
+    function(resp) { showMsg('move-to-angles-msg', resp.success, resp.message); },
+    function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
+}
+
+// ---- gripper -----------------------------------------------------
+// close=true closes the gripper, close=false opens it -- fire-and-forget,
+// same as gen3_torque_control's own gripper_command service (no completion
+// feedback, just an ack that Kortex accepted the command).
+function gripperCommand(close) {
+  callService(svcGripperCommand, { data: close },
+    function(resp) { showMsg('gripper-msg', resp.success, resp.message); },
+    function(err) { showMsg('gripper-msg', false, 'Gripper command failed: ' + err); });
+}
+
+// ---- reset springs -----------------------------------------------------
+function resetSprings() { callTrigger(svcResetSprings, 'Reset springs', 'reset-msg'); }
+
+// ---- spring panel -----------------------------------------------------
+function currentSpringType() {
+  return document.getElementById('sp-type-orientation').checked ? 'orientation' : 'position';
+}
+
+function updateSpringTypeFields() {
+  const orientation = currentSpringType() === 'orientation';
+  document.getElementById('sp-position-only').style.display = orientation ? 'none' : '';
+  document.getElementById('sp-orientation-only').style.display = orientation ? '' : 'none';
+  document.getElementById('sp-orientation-hint').style.display = orientation ? '' : 'none';
+  const targetLabel = orientation ? 'look-at ' : 'target ';
+  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x ';
+  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y ';
+  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
+}
+
+function populateLinkDropdown() {
+  callService(svcListLinkNames, {}, function(resp) {
+    const sel = document.getElementById('sp-link');
+    sel.innerHTML = '';
+    (resp.link_names || []).forEach(function(name) {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+  }, function(err) {
+    showMsg('spring-msg', false, 'Could not list link names: ' + err);
+  });
+}
+
+function fetchCurrentPosition() {
+  const link = document.getElementById('sp-link').value;
+  callService(svcGetLinkPose, { link_name: link }, function(resp) {
+    if (!resp.success) { showMsg('spring-msg', false, resp.message); return; }
+    document.getElementById('sp-tx').value = resp.point[0].toFixed(4);
+    document.getElementById('sp-ty').value = resp.point[1].toFixed(4);
+    document.getElementById('sp-tz').value = resp.point[2].toFixed(4);
+    showMsg('spring-msg', true, 'Filled target with current position of ' + link + '.');
+  }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
+}
+
+function addSpring() {
+  const name = document.getElementById('sp-name').value.trim();
+  if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
+
+  const common = {
+    name: name,
+    link_name: document.getElementById('sp-link').value,
+    stiffness: parseFloat(document.getElementById('sp-k').value),
+    damping: parseFloat(document.getElementById('sp-b').value),
+    local_point: [parseFloat(document.getElementById('sp-lx').value),
+                  parseFloat(document.getElementById('sp-ly').value),
+                  parseFloat(document.getElementById('sp-lz').value)],
+    target: [parseFloat(document.getElementById('sp-tx').value),
+             parseFloat(document.getElementById('sp-ty').value),
+             parseFloat(document.getElementById('sp-tz').value)],
+  };
+
+  if (currentSpringType() === 'orientation') {
+    const req = Object.assign({}, common, {
+      local_face_normal: [parseFloat(document.getElementById('sp-nx').value),
+                           parseFloat(document.getElementById('sp-ny').value),
+                           parseFloat(document.getElementById('sp-nz').value)],
+    });
+    callService(svcAddOrientationSpring, req, function(resp) {
+      showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+    }, function(err) { showMsg('spring-msg', false, 'add_orientation_spring failed: ' + err); });
+    return;
+  }
+
+  const req = Object.assign({}, common, {
+    rest_length: parseFloat(document.getElementById('sp-rest').value),
+    inner_radius: parseFloat(document.getElementById('sp-rin').value),
+    outer_radius: parseFloat(document.getElementById('sp-rout').value),
+  });
+  callService(svcAddSpring, req, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+  }, function(err) { showMsg('spring-msg', false, 'add_spring failed: ' + err); });
+}
+
+function removeSpring(name) {
+  callService(svcRemoveSpring, { name: name }, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Removed.' : 'Failed.'));
+  }, function(err) { showMsg('spring-msg', false, 'remove_spring failed: ' + err); });
+}
+
+// These inputs double as both a display of the spring's current value
+// (pre-filled by fetchSpringValues, see handleSpringsUpdated) and the "set
+// to" field for the buttons below -- editing one doesn't touch the other
+// until Update/Retarget is actually clicked.
+function updateSpring(name, kInput, bInput) {
+  const stiffness = parseFloat(kInput.value);
+  const damping = parseFloat(bInput.value);
+  if (!isFinite(stiffness) || !isFinite(damping)) {
+    showMsg('spring-msg', false, 'Stiffness and damping must both be numbers.');
+    return;
+  }
+  callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+  }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
+// Batches a lookup of every field this spring could have across all three
+// spring types (position/orientation/joint) into one GetParameters call --
+// undeclared parameters just come back PARAMETER_NOT_SET (type 0), so
+// whichever set actually resolves identifies the type as a side effect,
+// no separate spring_names/orientation_spring_names/joint_spring_names
+// classification call needed.
+const PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
+  const prefixes = ['springs', 'orientation_springs', 'joint_springs'];
+  const names = [];
+  prefixes.forEach(function(p) {
+    names.push(p + '.' + name + '.stiffness', p + '.' + name + '.damping', p + '.' + name + '.target');
+  });
+  callService(svcGetSpringParams, { names: names }, function(resp) {
+    const v = resp.values;
+    for (let i = 0; i < prefixes.length; i++) {
+      const base = i * 3;
+      if (v[base] && v[base].type === PARAM_TYPE_DOUBLE) {
+        kInput.value = v[base].double_value;
+        if (v[base + 1] && v[base + 1].type === PARAM_TYPE_DOUBLE) bInput.value = v[base + 1].double_value;
+        const t = v[base + 2];
+        if (t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
+          txInput.value = t.double_array_value[0].toFixed(4);
+          tyInput.value = t.double_array_value[1].toFixed(4);
+          tzInput.value = t.double_array_value[2].toFixed(4);
+        }
+        return;  // first matching type wins
+      }
+    }
+  }, function(err) { /* leave fields blank -- not worth surfacing a msg-box error for this */ });
+}
+
+// Retargets any spring (position or orientation -- both listen on the same
+// ~/target/<name> topic, see virtual_spring_node.py's per-spring loop) by
+// publishing a PointStamped. Not a service call like updateSpring -- there's
+// no synchronous ack, so this just reports "sent" rather than success/failure.
+function retargetSpring(name, xInput, yInput, zInput) {
+  const x = parseFloat(xInput.value), y = parseFloat(yInput.value), z = parseFloat(zInput.value);
+  if (![x, y, z].every(isFinite)) {
+    showMsg('spring-msg', false, 'Target x/y/z must all be numbers.');
+    return;
+  }
+  const ok = pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
+    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
+    point: { x: x, y: y, z: z },
+  });
+  showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
+}
+
+function handleSpringsUpdated(msg) {
+  let names;
+  try { names = JSON.parse(msg.data); } catch (e) { return; }
+  currentSprings = names || [];
+  document.getElementById('springs-list-inline').textContent =
+    currentSprings.length ? currentSprings.join(', ') : '(none)';
+
+  const ul = document.getElementById('spring-list');
+  ul.innerHTML = '';
+  currentSprings.forEach(function(name) {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.textContent = name;
+
+    const adjust = document.createElement('span');
+    adjust.className = 'adjust';
+    const kInput = document.createElement('input');
+    kInput.type = 'number'; kInput.step = '1'; kInput.placeholder = 'k';
+    kInput.title = 'New stiffness (N/m)';
+    const bInput = document.createElement('input');
+    bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
+    bInput.title = 'New damping (N·s/m)';
+    const updateBtn = document.createElement('button');
+    updateBtn.textContent = 'Update';
+    updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
+    adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
+
+    const retarget = document.createElement('span');
+    retarget.className = 'adjust';
+    const txInput = document.createElement('input');
+    txInput.type = 'number'; txInput.step = '0.01'; txInput.placeholder = 'x';
+    txInput.title = 'New target x (m) -- "look-at" point for an orientation spring';
+    const tyInput = document.createElement('input');
+    tyInput.type = 'number'; tyInput.step = '0.01'; tyInput.placeholder = 'y';
+    tyInput.title = 'New target y (m)';
+    const tzInput = document.createElement('input');
+    tzInput.type = 'number'; tzInput.step = '0.01'; tzInput.placeholder = 'z';
+    tzInput.title = 'New target z (m)';
+    const retargetBtn = document.createElement('button');
+    retargetBtn.textContent = 'Retarget';
+    retargetBtn.onclick = function() { retargetSpring(name, txInput, tyInput, tzInput); };
+    retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
+    retarget.appendChild(retargetBtn);
+
+    li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
+
+    const btn = document.createElement('button');
+    btn.textContent = 'Remove';
+    btn.onclick = function() { removeSpring(name); };
+    li.appendChild(btn);
+    ul.appendChild(li);
+
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
+  });
+}
+
+function reloadMeshcat() {
+  const f = document.getElementById('meshcat-frame');
+  f.src = f.src;
+}
+
+// ---- torque / safety status displays ----------------------------------
+function handleTorqueStatus(msg) {
+  const el = document.getElementById('torque-state');
+  el.textContent = msg.data;
+  el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
+}
+function handleSafetyStatus(msg) {
+  const el = document.getElementById('safety-state');
+  const status = (msg.data || '').split(' ')[0].split(':')[0];
+  el.textContent = msg.data;
+  el.className = 'val ' + status;
+
+  // virtual_spring_node appends this suffix while springs are disabled
+  // because the collision clamp auto-disabled them (not for a manual
+  // ~/enable(false)) -- authoritative over the optimistic label
+  // setSpringsEnabled sets, since it reflects the node's actual state.
+  if ((msg.data || '').includes('springs disabled by collision')) {
+    const sEl = document.getElementById('springs-state');
+    sEl.textContent = 'disabled by collision -- re-enable to resume';
+    sEl.className = 'val inactive';
+  }
+}
+function handleMoveStatus(msg) {
+  const el = document.getElementById('move-state');
+  el.textContent = msg.data;
+  el.className = 'val ' + (msg.data === 'MOVING' ? 'active' : (msg.data === 'SUCCEEDED' ? 'ok' : 'inactive'));
+}
+
+// ---- connection -----------------------------------------------------
+function connectRos() {
+  const url = document.getElementById('ws-url').value.trim();
+  if (ros) ros.close();
+  ros = new ROSLIB.Ros({ url: url });
+
+  ros.on('connection', function() {
+    document.getElementById('dot').className = 'dot ok';
+    document.getElementById('conn-label').textContent = 'Connected';
+
+    sub(NODE + '/study_start_status', 'std_msgs/msg/String', handleStudyStartStatus);
+    sub('/virtual_spring_node/springs_updated', 'std_msgs/msg/String', handleSpringsUpdated);
+    sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
+    sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
+    sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
+
+    populateLinkDropdown();
+
+    // The meshcat iframe keeps its own websocket straight to meshcat-server
+    // (not through rosbridge), established once when the iframe's src first
+    // loads. If armviz/meshcat-server gets restarted (a new gen3_spring.launch.py
+    // run) while this page's tab stays open, that old websocket doesn't
+    // reconnect on its own -- the iframe just keeps showing whatever the
+    // last live frame was before the connection dropped. Reload it here so
+    // every fresh rosbridge connection also gets a fresh meshcat connection,
+    // instead of only recovering when the user notices and clicks "Reload"
+    // (or refreshes the whole page) themselves. Confirmed live 2026-08-19.
+    reloadMeshcat();
+  });
+  ros.on('error', function(e) {
+    document.getElementById('dot').className = 'dot err';
+    document.getElementById('conn-label').textContent = 'Error';
+  });
+  ros.on('close', function() {
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('conn-label').textContent = 'Disconnected';
+  });
+}
+
+document.getElementById('btn-connect').addEventListener('click', connectRos);
+document.getElementById('btn-disconnect').addEventListener('click', function() { if (ros) ros.close(); });
+</script>
+</body>
+</html>

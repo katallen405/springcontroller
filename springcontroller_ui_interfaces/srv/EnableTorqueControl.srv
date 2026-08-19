@@ -1,0 +1,4 @@
+bool allow_danger
+---
+bool success
+string message

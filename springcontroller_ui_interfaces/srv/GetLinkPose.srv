@@ -1,0 +1,5 @@
+string link_name
+---
+bool success
+string message
+float64[3] point

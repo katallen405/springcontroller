@@ -151,13 +151,67 @@ mirroring `~/target/<name>` for Cartesian springs. Add/remove at runtime via
 `~/add_joint_spring` (`springcontroller_interfaces/AddJointSpring`) and the
 existing `~/remove_spring` (name-based, works for either spring type).
 
+### Orientation springs
+
+A `VirtualSpring` pulls a point toward a target -- it can't express "keep
+this face pointed at that point" without also dragging the attachment point
+toward it. `OrientationSpring` does the opposite: it aligns a direction
+fixed in a link's local frame (a "face normal") with the direction from the
+attachment point to a target world point, using only the rotational
+Jacobian. It produces pure restoring torque and zero translational force,
+and re-aims every cycle from the *current* attachment position, so it keeps
+pointing at the target as the arm/block moves rather than holding a
+rotation frozen at load time.
+
+```yaml
+/**:
+  ros__parameters:
+    orientation_spring_names: [face_participant]
+    orientation_springs:
+      face_participant:
+        link_name:         "end_effector_link"
+        local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
+        local_face_normal:  [0.0, 0.0, 1.0]   # the block's working face, link-local
+        target:              [0.6, 0.4, 0.5]   # e.g. the participant's measured face position (m)
+        stiffness:          2.0                # N*m/rad
+        damping:            0.2                # N*m*s/rad
+```
+
+Unlike `joint_springs`' `target_angle` or `springs`' `target`, `target` here
+has **no safe default** and must be set explicitly -- it's an external
+real-world point (e.g. a person's face), not something inferable from the
+arm's own pose, so an unconfigured spring fails to load rather than aiming
+at whatever the zero/neutral pose happens to imply. Add it to the same
+config file as `springs`/`joint_springs` to sum all three into one total
+torque. Runtime target updates: `~/target/<name>` (`geometry_msgs/
+PointStamped`), same topic Cartesian springs use. Add/remove at runtime via
+`~/add_orientation_spring` (`springcontroller_interfaces/AddOrientationSpring`)
+and the existing `~/remove_spring`.
+
 ## Launch
 
 ### Kinova Gen3 (via gen3_torque_control node)
 
+`ROS_LOCALHOST_ONLY=1` must be set wherever `gen3_torque_node` runs (this
+should already be the case if it's set in your shell profile, e.g.
+`~/.bashrc` -- see `gen3_spring.launch.py`'s copy of this same setting for
+why). `gen3_torque_node` is normally started with a plain `ros2 run`, not
+through a launch file, so nothing else can set this for you here.
+Confirmed live 2026-08-19: without it, a physical E-STOP kills the arm's
+dedicated Ethernet link, and Cyclone DDS -- not restricted off that
+interface -- hangs *every* ROS2 node on the machine trying to use it for
+its own discovery/shutdown traffic, needing `SIGKILL` across the board
+(even nodes with nothing to do with the robot, like plain
+`ros2 bag record`).
+
 ```bash
-# Terminal 1 — start the Kinova torque interface
-ros2 run gen3_torque_control gen3_torque_node
+# Terminal 1 — start the Kinova torque interface. The -r remap is required:
+# virtual_spring_node and armviz both listen on joint_states_topic (default
+# /kinova/joint_states_lowlevel below), not plain /joint_states. Without
+# this remap, gen3_torque_node's joint states never reach either of them --
+# silently: no error, just no spring torque and nothing in the visualizer.
+ros2 run gen3_torque_control gen3_torque_node --ros-args \
+    -r joint_states:=/kinova/joint_states_lowlevel
 
 # Terminal 2 — start the spring controller
 ros2 launch springcontroller gen3_spring.launch.py
@@ -181,6 +235,7 @@ Launch arguments (all optional, shown with their defaults):
 |---|---|---|
 | `urdf_path` | `flat_urdf_files/gen3_kinova_flat.urdf` | URDF for pinocchio; includes the gripper so its mass counts toward gravity comp |
 | `config` | `config/gen3_springs.yaml` | Springs configuration YAML |
+| `joint_states_topic` | `/kinova/joint_states_lowlevel` | Topic `gen3_torque_node` actually publishes joint states on when started with its documented `-r joint_states:=...` remap (see above); both `virtual_spring_node` and `armviz` remap their `/joint_states` subscription to this one argument |
 | `srdf_path` | Gen3 MoveIt config SRDF | Excludes adjacent-link pairs (e.g. `base_link`/`shoulder_link`) from self-collision checks |
 | `add_gravity_compensation` | `true` | Gen3 has no hardware gravity comp, so this stays on unlike the UR3e |
 | `torque_control_service` | `/gen3_torque_control/enable` | `SetBool` service used both to auto-enable torque control and by the fail-safe to disable it again |
@@ -218,8 +273,87 @@ auto-recover on its own.
 
 Topic flow:
 ```
-/joint_states → virtual_spring_node → torque_relay → /kinova/joint_torque_command
+/kinova/joint_states_lowlevel → virtual_spring_node → torque_relay → /kinova/joint_torque_command
 ```
+(`joint_states_topic` launch argument above — see there if you're remapping to something else.)
+
+### Collision safety clamp
+
+On every control tick, `virtual_spring_node` checks self/scene collision
+distance against the springs' target torques and publishes the result on
+`~/safety_status` as a `SAFE`/`DANGER`/`COLLISION`-prefixed string (see
+`_publish_safety_status` in `virtual_spring_node.py`). Gravity compensation
+is never touched by this clamp — only the spring-force contribution is
+affected, so the arm holds position rather than sagging at the worst moment:
+
+- **`SAFE`** — no scaling; full spring + gravity-comp torques as computed.
+- **`DANGER`** — a self/scene link pair has closed inside the danger-zone
+  distance. Spring torque is scaled down by `collision.scale_factor`
+  (0–1, tighter as the pair gets closer); gravity comp stays at full
+  magnitude.
+- **`COLLISION`** — a pair is inside the hard-clamp distance. Spring torque
+  is zeroed entirely; gravity comp still stays at full magnitude.
+
+This clamp runs continuously and applies regardless of how torque control
+was enabled — it is a separate mechanism from `springcontroller_ui`'s
+pre-flight interlock, which only decides whether the *transition* into
+torque control is allowed to begin (see `EnableTorqueControl`'s
+`allow_danger` field in `orchestration_node.py`). Overriding that interlock
+lets torque control start while `DANGER`/`COLLISION` is active; it does not
+change this clamp's behavior once running.
+
+### Collision scene objects
+
+Static scene objects (tables, fixtures) for the self/scene-collision safety
+hard-clamp aren't declared in the launch file directly — they live in a YAML
+scene file, and the launch file just tells `virtual_spring_node` to load one
+via its `~/load_collision_scene` service, ~3s after startup. See
+`config/gen3_collision_scene.yaml` for the schema:
+
+```yaml
+objects:
+  my_fixture:
+    shape: box              # "box" or "cylinder"
+    dimensions: [0.4, 0.3, 0.6]   # box: [x, y, z] full side lengths (m)
+                                    # cylinder: [height, radius] (m)
+    frame_id: "world"        # informational only -- no TF lookup
+    pose:
+      position: [0.5, -0.3, 0.3]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+    exclude_links: []        # optional, YAML-only: URDF link names to skip
+                              # pairing against this object
+```
+
+Point the launch file at it and turn loading on (both default off, so a
+stale or placeholder scene file never silently clamps torques):
+```bash
+ros2 launch springcontroller gen3_spring.launch.py \
+    collision_scene:=/path/to/your_scene.yaml \
+    load_collision_scene:=true
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `collision_scene` | `config/gen3_collision_scene.yaml` | Scene collision-objects YAML |
+| `load_collision_scene` | `false` | If `true`, load `collision_scene` via `~/load_collision_scene` ~3s after startup |
+
+For a *live/moving* object (e.g. a tracked person), skip the YAML and
+publish `moveit_msgs/CollisionObject` ADD/MOVE/REMOVE messages to
+`~/collision_object` directly — same code path as the YAML loader, and the
+`id` used on ADD is what a later MOVE/REMOVE must match.
+
+**`exclude_links` gotcha:** without it, an object placed near a link that's
+always close to it in normal operation (e.g. `base_link` against the table
+it's mounted to) registers a permanent few-cm near-miss and blanket-scales
+torques for no real reason. Both example scene files exclude `base_link`
+against the table for this reason — see `add_environment_object`'s
+docstring in `urdf_arm_configuration.py`.
+
+This mechanism isn't Gen3-specific (`virtual_spring_node` and
+`urdf_arm_configuration` implement it generically), but only
+`gen3_spring.launch.py` currently wires up the `collision_scene` /
+`load_collision_scene` launch arguments — on UR3e, call
+`~/load_collision_scene` or publish to `~/collision_object` directly.
 
 ### UR3e (via forward_effort_controller)
 
@@ -270,8 +404,12 @@ ros2 launch springcontroller torque_relay.launch.py joint_order:="[joint1, joint
 
 `armviz.py` (in `test/`) is a MeshCat-based 3D visualizer -- opens in a
 browser, shows the robot plus live spring attachment points, targets, and
-the line between them. Not RViz. Needs `meshcat` installed in the venv (see
-[Python venv](#python-venv)).
+the line between them, plus any [collision scene objects](#collision-scene-objects)
+(translucent gray) currently loaded on `virtual_spring_node`. Not RViz --
+`virtual_spring_node` doesn't currently publish scene state in a form RViz
+understands (e.g. a `moveit_msgs/PlanningScene`), only the
+`~/collision_object_state` echo armviz consumes. Needs `meshcat` installed
+in the venv (see [Python venv](#python-venv)).
 
 Launch it alongside either robot with `armviz:=true`, or run it standalone:
 ```bash
@@ -283,9 +421,22 @@ python3 test/armviz.py --urdf /path/to/flat_urdf
 ```
 
 `--urdf` is required for the standalone form. When launched via `ros2
-launch`, it's set to the same `urdf_path` as `virtual_spring_node`, and
-remapped `/joint_states` on Gen3 to match (its default of plain
-`/joint_states` is already right for UR3e).
+launch`, it's set to the same `urdf_path` as `virtual_spring_node`, and its
+`/joint_states` subscription is remapped to the same `joint_states_topic`
+argument `virtual_spring_node` uses on Gen3 (default
+`/kinova/joint_states_lowlevel` -- plain `/joint_states` is already right
+for UR3e, which has no such argument). Both remaps come from the one
+argument specifically so they can't drift out of sync with each other again
+-- they silently did for over two weeks (2026-08-03 to 2026-08-19), which
+looked exactly like "armviz never shows a target" with no error anywhere.
+
+`armviz`'s own log output is throttled: it prints `no target yet` once per
+spring while unresolved, not on every ~20Hz redraw tick, and its
+`~/springs_updated`/`~/target/<name>` subscriptions are transient-local to
+match `virtual_spring_node`'s publishers -- so a late-starting `armviz`
+still picks up state published before it connected, instead of only
+recovering via its `ros2 param get` bootstrap retry (or missing it
+outright).
 
 Press `f` in its terminal to toggle display of every available attachment
 frame as a labeled dot -- useful for picking a `link_name` for a spring.
@@ -329,10 +480,14 @@ deleted outright.
 
 | Topic | Type | Description |
 |---|---|---|
-| `~/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities |
+| `/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities. Global, not private (`/joint_states`, not `~/joint_states`) — remapped on Gen3 via the `joint_states_topic` launch argument (default `/kinova/joint_states_lowlevel`), see [Kinova Gen3](#kinova-gen3-via-gen3_torque_control-node) |
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
-| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
+| `~/springs_updated` (pub, transient-local) | `std_msgs/String` | JSON array of every currently-loaded spring name (Cartesian, joint, or orientation), republished in full on every add/remove — a late-joining consumer like `armviz.py` sees the current list immediately instead of missing whatever was already loaded |
+| `~/target/<spring_name>` (sub + pub, transient-local) | `geometry_msgs/PointStamped` | Sub: move a Cartesian or orientation spring's target at runtime. Pub: broadcasts the resolved target (on load, on resolution against the arm's real pose, and on `add_spring`/`add_orientation_spring`) so a late-joining consumer sees the current target instead of missing it |
+| `~/attachment/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian or orientation spring's attachment point at runtime |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
+| `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
+| `~/collision_object_state` (pub, transient-local) | `moveit_msgs/CollisionObject` | Echoes every applied ADD/APPEND/MOVE/REMOVE (from either the topic above or the YAML loader), so a late-joining consumer like `armviz.py` can reconstruct current scene state |
 
 ## Services
 
@@ -341,7 +496,9 @@ deleted outright.
 | `~/enable` | `std_srvs/SetBool` | Enable / disable all springs |
 | `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
 | `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
-| `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (either type) |
+| `~/add_orientation_spring` | `springcontroller_interfaces/AddOrientationSpring` | Add an orientation spring at runtime |
+| `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (any type) |
+| `~/load_collision_scene` | `springcontroller_interfaces/LoadCollisionScene` | Load scene collision objects from YAML — see [Collision scene objects](#collision-scene-objects) |
 
 
 ## Using the library directly
@@ -407,8 +564,9 @@ ros2 topic echo /virtual_spring_node/joint_torques
 # Watch what the relay sends to gen3_torque_control
 ros2 topic echo /kinova/joint_torque_command
 
-# Watch raw feedback from the Kortex cyclic loop
-ros2 topic echo /joint_states
+# Watch raw feedback from the Kortex cyclic loop (joint_states_topic
+# argument's default -- see the -r remap gen3_torque_node needs above)
+ros2 topic echo /kinova/joint_states_lowlevel
 
 # Watch torque-control enable state
 ros2 topic echo /gen3_torque_control/status
@@ -480,9 +638,29 @@ ros2 service call /virtual_spring_node/add_joint_spring \
     }"
 ```
 
+### Add an orientation spring
+
+Aligns a link-local face normal with the direction toward a fixed world
+point, using only the rotational Jacobian -- pure torque, no positional
+pull. See [Orientation springs](#orientation-springs) above for the full
+explanation.
+
+```bash
+ros2 service call /virtual_spring_node/add_orientation_spring \
+    springcontroller_interfaces/srv/AddOrientationSpring "{
+        name: 'face_participant',
+        link_name: 'end_effector_link',
+        local_point: [0.0, 0.0, 0.1],
+        local_face_normal: [0.0, 0.0, 1.0],
+        target: [0.6, 0.4, 0.5],
+        stiffness: 2.0,
+        damping: 0.2
+    }"
+```
+
 ### Remove a spring
 
-Works for either spring type -- it's name-based, not type-specific.
+Works for any spring type -- it's name-based, not type-specific.
 
 ```bash
 ros2 service call /virtual_spring_node/remove_spring \
@@ -543,6 +721,8 @@ ros2 topic echo /virtual_spring_node/springs_updated
 ```
 
 Publishes a JSON array of spring names whenever a spring is added or removed.
+Transient-local, so echoing it after the fact still immediately shows the
+current list rather than waiting for the next add/remove.
 
 ### Manually send a torque command (testing)
 
