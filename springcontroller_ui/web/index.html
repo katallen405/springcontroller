@@ -676,6 +676,17 @@ function connectRos() {
     sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
 
     populateLinkDropdown();
+
+    // The meshcat iframe keeps its own websocket straight to meshcat-server
+    // (not through rosbridge), established once when the iframe's src first
+    // loads. If armviz/meshcat-server gets restarted (a new gen3_spring.launch.py
+    // run) while this page's tab stays open, that old websocket doesn't
+    // reconnect on its own -- the iframe just keeps showing whatever the
+    // last live frame was before the connection dropped. Reload it here so
+    // every fresh rosbridge connection also gets a fresh meshcat connection,
+    // instead of only recovering when the user notices and clicks "Reload"
+    // (or refreshes the whole page) themselves. Confirmed live 2026-08-19.
+    reloadMeshcat();
   });
   ros.on('error', function(e) {
     document.getElementById('dot').className = 'dot err';

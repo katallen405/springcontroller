@@ -1270,16 +1270,32 @@ class VirtualSpringNode(Node):
 
     def _target_cb(self, msg: PointStamped, spring: VirtualSpring) -> None:
         p = msg.point
-        spring.move_target(np.array([p.x, p.y, p.z]))
+        new_target = np.array([p.x, p.y, p.z])
+        # Skip if this is our own echo (see the re-publish below) -- the
+        # np.allclose() bounds the recursion to one bounce: the republished
+        # message comes back through this same callback with the target
+        # already applied, so the second time through this is a no-op.
+        if np.allclose(spring.target_world_point, new_target):
+            return
+        spring.move_target(new_target)
         self.get_logger().debug(
             f"Updated target for '{spring.name}': "
             f"[{p.x:.3f}, {p.y:.3f}, {p.z:.3f}]"
         )
-        # Deliberately not republished here: this callback fires on
-        # ~/target/<name>, the same topic _publish_target() publishes to.
-        # Every subscriber (including us) already sees this message
-        # directly from whoever sent it -- republishing it would have us
-        # receive our own echo and republish again, forever.
+        # Re-broadcast on the same topic so a subscriber whose QoS the
+        # ORIGINAL publisher doesn't satisfy still sees the update --
+        # confirmed live 2026-08-19: retargeting a spring from the UI
+        # (rosbridge-created publisher, default/VOLATILE durability) never
+        # reached armviz, whose ~/target/<name> subscription is
+        # TRANSIENT_LOCAL (needed separately so a late-joining armviz sees
+        # an already-resolved target -- see _publish_target's call sites).
+        # This node's own publisher on this same topic IS TRANSIENT_LOCAL,
+        # so re-publishing here is what actually reaches it. This was
+        # previously "deliberately not republished" on the assumption that
+        # every subscriber -- including armviz -- already sees the
+        # original message directly; that assumption held before armviz's
+        # subscription needed to be TRANSIENT_LOCAL.
+        self._publish_target(spring)
 
     def _publish_target(self, spring) -> None:
         """Broadcast a Cartesian-target spring's (VirtualSpring or
