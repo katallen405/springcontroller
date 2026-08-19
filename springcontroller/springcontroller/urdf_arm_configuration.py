@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pinocchio as pin
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 import os
@@ -32,7 +33,22 @@ def _build_pinocchio_model(
     full_model = pin.buildModelFromUrdf(urdf_path)
     if not locked_joint_names:
         return full_model
-    joint_ids = [full_model.getJointId(name) for name in locked_joint_names]
+    # getJointId() returns the same sentinel index for any name it doesn't
+    # recognize instead of raising, so two-or-more missing names silently
+    # collide into "duplicate index" -- filter to names the model actually
+    # has first, so a URDF source without some locked joint (e.g. a
+    # gripper-less /robot_description) degrades to "nothing to lock" rather
+    # than crashing with a confusing pinocchio error.
+    present = [name for name in locked_joint_names if full_model.existJointName(name)]
+    missing = [name for name in locked_joint_names if name not in present]
+    if missing:
+        warnings.warn(
+            f"locked_joint_names not found in URDF, skipping: {missing} "
+            "(their mass/inertia is only counted if present in this model)"
+        )
+    if not present:
+        return full_model
+    joint_ids = [full_model.getJointId(name) for name in present]
     reference_configuration = pin.neutral(full_model)
     return pin.buildReducedModel(full_model, joint_ids, reference_configuration)
 
@@ -143,8 +159,12 @@ class URDFArmConfiguration:
         try:
             full_model, collision_model, _ = pin.buildModelsFromUrdf(urdf_path)
 
-            if locked_joint_names:
-                joint_ids = [full_model.getJointId(name) for name in locked_joint_names]
+            present_locked_names = [
+                name for name in (locked_joint_names or [])
+                if full_model.existJointName(name)
+            ]
+            if present_locked_names:
+                joint_ids = [full_model.getJointId(name) for name in present_locked_names]
                 reference_configuration = pin.neutral(full_model)
                 _, collision_model = pin.buildReducedModel(
                     full_model, collision_model, joint_ids, reference_configuration
