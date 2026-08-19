@@ -23,7 +23,13 @@ objects:
     dimensions: [1.2, 0.8, 0.05]
     frame_id: "world"
     pose:
-      position: [0.5, 0.0, 0.0]
+      # z = -half the box height so the *top* face lands at z=0, flush with
+      # base_link's origin -- matches the convention verified live in
+      # gen3_live_table_scene.yaml. Centering at z=0.0 (the old value) put
+      # the top face 2.5cm above the real table surface, so the box floated
+      # above the true table in meshcat and the collision clamp could trip
+      # on links that were actually still clear of the real table.
+      position: [0.5, 0.0, -0.025]
       orientation: [0.0, 0.0, 0.0, 1.0]
     # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
     # URDF link names to exclude from collision pairs against this object,
