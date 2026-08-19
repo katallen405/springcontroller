@@ -271,7 +271,7 @@ class VirtualSpringNode(Node):
         # drifted right back into what it just cleared. Long enough to not
         # fire during a normal "move it clear, walk over, click enable"
         # cycle; short enough to bound how long unattended drift can run.
-        self.declare_parameter("collision_disable_grace_sec", 8.0)
+        self.declare_parameter("collision_disable_grace_sec", 30.0)
         self.declare_parameter("collision_object_topic", "~/collision_object")
         # Ramp only spring-force torque in over spring_ramp_duration_sec
         # after torque control actually gets enabled on the arm (tracked
