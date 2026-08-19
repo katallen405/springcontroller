@@ -96,7 +96,7 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 
 ul.spring-list { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 ul.spring-list li {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
   padding: 5px 9px; background: #fafafa; border: 1px solid #eee; border-radius: 7px;
   font-family: monospace; font-size: 12.5px;
 }
@@ -206,6 +206,12 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
 
       <div class="spring-form">
         <div class="row">
+          <span role="radiogroup" aria-label="Spring type" style="display:flex;gap:12px;align-items:center">
+            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-position" value="position" checked onchange="updateSpringTypeFields()"> Position</label>
+            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-orientation" value="orientation" onchange="updateSpringTypeFields()"> Orientation</label>
+          </span>
+        </div>
+        <div class="row">
           <label>Link
             <select id="sp-link"></select>
           </label>
@@ -213,9 +219,9 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
         </div>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
-          <label>target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
-          <label>target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
-          <label>target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+          <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label id="sp-target-y-label">target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label id="sp-target-z-label">target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
         </div>
         <div class="row">
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
@@ -223,10 +229,18 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
           <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
           <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
           <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
+        </div>
+        <div class="row" id="sp-position-only">
           <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
           <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
           <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
+        <div class="row" id="sp-orientation-only" style="display:none">
+          <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
+          <label>normal y <input type="number" step="0.01" id="sp-ny" value="0"></label>
+          <label>normal z <input type="number" step="0.01" id="sp-nz" value="1"></label>
+        </div>
+        <p class="hint" id="sp-orientation-hint" style="display:none">Orientation spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector.</p>
         <div class="btn-row">
           <button class="action on" onclick="addSpring()">Add spring</button>
         </div>
@@ -261,8 +275,10 @@ const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
 
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
+const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
 const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
+const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
 let currentSprings = [];
@@ -298,6 +314,13 @@ function sub(topic, type, cb) {
   const t = new ROSLIB.Topic({ ros: ros, name: topic, messageType: type });
   t.subscribe(cb);
   return t;
+}
+
+function pub(topic, type, msg) {
+  if (!ros || !ros.isConnected) return false;
+  const t = new ROSLIB.Topic({ ros: ros, name: topic, messageType: type });
+  t.publish(new ROSLIB.Message(msg));
+  return true;
 }
 
 // ---- torque control -------------------------------------------
@@ -347,6 +370,21 @@ function moveToJointAngles() {
 function resetSprings() { callTrigger(svcResetSprings, 'Reset springs', 'reset-msg'); }
 
 // ---- spring panel -----------------------------------------------------
+function currentSpringType() {
+  return document.getElementById('sp-type-orientation').checked ? 'orientation' : 'position';
+}
+
+function updateSpringTypeFields() {
+  const orientation = currentSpringType() === 'orientation';
+  document.getElementById('sp-position-only').style.display = orientation ? 'none' : '';
+  document.getElementById('sp-orientation-only').style.display = orientation ? '' : 'none';
+  document.getElementById('sp-orientation-hint').style.display = orientation ? '' : 'none';
+  const targetLabel = orientation ? 'look-at ' : 'target ';
+  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x ';
+  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y ';
+  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
+}
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
     const sel = document.getElementById('sp-link');
@@ -373,22 +411,39 @@ function fetchCurrentPosition() {
 }
 
 function addSpring() {
-  const req = {
-    name: document.getElementById('sp-name').value.trim(),
+  const name = document.getElementById('sp-name').value.trim();
+  if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
+
+  const common = {
+    name: name,
     link_name: document.getElementById('sp-link').value,
     stiffness: parseFloat(document.getElementById('sp-k').value),
     damping: parseFloat(document.getElementById('sp-b').value),
-    rest_length: parseFloat(document.getElementById('sp-rest').value),
     local_point: [parseFloat(document.getElementById('sp-lx').value),
                   parseFloat(document.getElementById('sp-ly').value),
                   parseFloat(document.getElementById('sp-lz').value)],
     target: [parseFloat(document.getElementById('sp-tx').value),
              parseFloat(document.getElementById('sp-ty').value),
              parseFloat(document.getElementById('sp-tz').value)],
+  };
+
+  if (currentSpringType() === 'orientation') {
+    const req = Object.assign({}, common, {
+      local_face_normal: [parseFloat(document.getElementById('sp-nx').value),
+                           parseFloat(document.getElementById('sp-ny').value),
+                           parseFloat(document.getElementById('sp-nz').value)],
+    });
+    callService(svcAddOrientationSpring, req, function(resp) {
+      showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+    }, function(err) { showMsg('spring-msg', false, 'add_orientation_spring failed: ' + err); });
+    return;
+  }
+
+  const req = Object.assign({}, common, {
+    rest_length: parseFloat(document.getElementById('sp-rest').value),
     inner_radius: parseFloat(document.getElementById('sp-rin').value),
     outer_radius: parseFloat(document.getElementById('sp-rout').value),
-  };
-  if (!req.name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
+  });
   callService(svcAddSpring, req, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'add_spring failed: ' + err); });
@@ -412,6 +467,23 @@ function updateSpring(name, kInput, bInput) {
   callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
+// Retargets any spring (position or orientation -- both listen on the same
+// ~/target/<name> topic, see virtual_spring_node.py's per-spring loop) by
+// publishing a PointStamped. Not a service call like updateSpring -- there's
+// no synchronous ack, so this just reports "sent" rather than success/failure.
+function retargetSpring(name, xInput, yInput, zInput) {
+  const x = parseFloat(xInput.value), y = parseFloat(yInput.value), z = parseFloat(zInput.value);
+  if (![x, y, z].every(isFinite)) {
+    showMsg('spring-msg', false, 'Target x/y/z must all be numbers.');
+    return;
+  }
+  const ok = pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
+    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
+    point: { x: x, y: y, z: z },
+  });
+  showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
 }
 
 function handleSpringsUpdated(msg) {
@@ -440,7 +512,25 @@ function handleSpringsUpdated(msg) {
     updateBtn.textContent = 'Update';
     updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
     adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
-    li.appendChild(span); li.appendChild(adjust);
+
+    const retarget = document.createElement('span');
+    retarget.className = 'adjust';
+    const txInput = document.createElement('input');
+    txInput.type = 'number'; txInput.step = '0.01'; txInput.placeholder = 'x';
+    txInput.title = 'New target x (m) -- "look-at" point for an orientation spring';
+    const tyInput = document.createElement('input');
+    tyInput.type = 'number'; tyInput.step = '0.01'; tyInput.placeholder = 'y';
+    tyInput.title = 'New target y (m)';
+    const tzInput = document.createElement('input');
+    tzInput.type = 'number'; tzInput.step = '0.01'; tzInput.placeholder = 'z';
+    tzInput.title = 'New target z (m)';
+    const retargetBtn = document.createElement('button');
+    retargetBtn.textContent = 'Retarget';
+    retargetBtn.onclick = function() { retargetSpring(name, txInput, tyInput, tzInput); };
+    retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
+    retarget.appendChild(retargetBtn);
+
+    li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
 
     const btn = document.createElement('button');
     btn.textContent = 'Remove';
