@@ -108,7 +108,13 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("move_status_topic", "/gen3_torque_control/move_status")
         self.declare_parameter("abort_move_service", "/gen3_torque_control/abort_move")
         self.declare_parameter("check_collision_service", "/virtual_spring_node/check_collision_at")
-        self.declare_parameter("move_wait_timeout_sec", 35.0)
+        # How long to wait for a move_status update confirming a move
+        # actually started, NOT how long to wait for it to finish -- a real
+        # move can take many seconds to tens of seconds, far longer than
+        # rosbridge's own service-call timeout tolerates (see
+        # _move_to_joint_angles). Completion is tracked by the UI's live
+        # move-status display instead of this call's return.
+        self.declare_parameter("move_confirm_timeout_sec", 3.0)
         self.declare_parameter("add_spring_service", "/virtual_spring_node/add_spring")
         self.declare_parameter("remove_spring_service", "/virtual_spring_node/remove_spring")
         self.declare_parameter("spring_node_get_parameters_service", "/virtual_spring_node/get_parameters")
@@ -156,7 +162,7 @@ class StudyControlPanelNode(Node):
         self._move_status_topic = gp("move_status_topic")
         self._abort_move_service = gp("abort_move_service")
         self._check_collision_service = gp("check_collision_service")
-        self._move_wait_timeout_sec = float(gp("move_wait_timeout_sec"))
+        self._move_confirm_timeout_sec = float(gp("move_confirm_timeout_sec"))
         self._add_spring_service = gp("add_spring_service")
         self._remove_spring_service = gp("remove_spring_service")
         self._spring_node_get_parameters_service = gp("spring_node_get_parameters_service")
@@ -211,6 +217,18 @@ class StudyControlPanelNode(Node):
             callback_group=cb_group,
         )
 
+        # TRANSIENT_LOCAL: matches virtual_spring_node's own QoS for this
+        # topic (see its target_qos) -- current target is state, not a
+        # stream, and every publisher on ~/target/<name> needs matching
+        # durability or DDS refuses to deliver between them. A plain
+        # default-QoS publisher here triggered a live "requesting
+        # incompatible QoS ... DURABILITY" warning (2026-08-19).
+        latched_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+
         # ------------------------------------------------------------
         # Clients to other nodes' services/actions
         # ------------------------------------------------------------
@@ -229,18 +247,13 @@ class StudyControlPanelNode(Node):
         self._move_command_pub = self.create_publisher(
             Float64MultiArray, self._move_to_joint_angles_topic, 10)
         self._tip_spring_target_pub = self.create_publisher(
-            PointStamped, f"{self._spring_target_topic_prefix}/{self._reset_spring_name}", 10)
+            PointStamped, f"{self._spring_target_topic_prefix}/{self._reset_spring_name}", latched_qos)
 
         # ------------------------------------------------------------
         # Publisher: ~/study_start_status (latched -- late subscribers still
         # see the current defined/not-defined state without waiting for the
         # next capture).
         # ------------------------------------------------------------
-        latched_qos = QoSProfile(
-            depth=1,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            reliability=ReliabilityPolicy.RELIABLE,
-        )
         self._study_start_status_pub = self.create_publisher(
             String, "~/study_start_status", latched_qos)
         self._publish_study_start_status()
@@ -370,13 +383,21 @@ class StudyControlPanelNode(Node):
 
     def _move_to_joint_angles(self, angles: list[float]) -> tuple[bool, str]:
         """
-        Collision-checked, blocking move via gen3_torque_control's
+        Collision-checked move via gen3_torque_control's
         move_to_joint_angles topic -- mirrors test/move_to_joint_angles.py's
         logic (this node is itself a ROS client of both services, not a
         subprocess wrapper around that script). Refuses (no move published)
         if the target is in outright collision, or if the collision check
         itself is unreachable (fails closed); warns but proceeds if only in
         the danger zone.
+
+        Only waits for confirmation the move *started*, not for it to
+        finish -- a real PlayJointTrajectory move can take many seconds to
+        tens of seconds, far longer than rosbridge's own service-call
+        timeout tolerates (confirmed live 2026-08-19: move_to_study_start
+        timed out through rosbridge waiting for full completion). Actual
+        completion is tracked separately by the UI's live move-status
+        display (gen3_torque_control/move_status), not this call's return.
         """
         check_resp = self._call_sync(
             self._check_collision_client,
@@ -404,22 +425,29 @@ class StudyControlPanelNode(Node):
         issue_time = self._now()
         self._move_command_pub.publish(Float64MultiArray(data=[float(a) for a in angles]))
 
-        # Busy-wait for a move_status update newer than issue_time and past
-        # the transient "MOVING" state -- safe under this node's
-        # MultiThreadedExecutor, same pattern as _wait_for_future.
-        deadline = time.monotonic() + self._move_wait_timeout_sec
+        # Busy-wait only for a move_status update newer than issue_time --
+        # any status at all, "MOVING" included, just confirms
+        # gen3_torque_node actually received and started the command.
+        # Bounded by move_confirm_timeout_sec (a few seconds), not the
+        # move's own duration.
+        deadline = time.monotonic() + self._move_confirm_timeout_sec
         while time.monotonic() < deadline:
             stamp = self._move_status_freshness.stamp()
-            if stamp is not None and stamp >= issue_time and self._move_status_freshness.value != "MOVING":
+            if stamp is not None and stamp >= issue_time:
                 break
             time.sleep(0.02)
         else:
-            return False, f"Timed out waiting for {self._move_status_topic}.{danger_note}"
+            return False, (
+                f"No {self._move_status_topic} update after publishing -- is "
+                f"gen3_torque_node running?{danger_note}"
+            )
 
         status = self._move_status_freshness.value
+        if status == "MOVING":
+            return True, f"Move started -- watch 'move status' for completion.{danger_note}"
         if status == "SUCCEEDED":
-            return True, f"Moved to target.{danger_note}"
-        return False, f"Move ended with status '{status}'.{danger_note}"
+            return True, f"Move completed.{danger_note}"
+        return False, f"Move did not start: status '{status}'.{danger_note}"
 
     def _list_current_spring_names(self) -> Optional[list[str]]:
         """Live query of virtual_spring_node's spring_names/joint_spring_names
@@ -492,8 +520,9 @@ class StudyControlPanelNode(Node):
         # gen3_torque_control's _kortex_lock for its whole duration
         # (deliberately, so torque-enable can't race in mid-move -- see
         # move_to_joint_angles/kinova_torque_control_node), so _set_torque
-        # below would otherwise queue up behind it for as long as
-        # move_wait_timeout_sec instead of taking effect immediately.
+        # below would otherwise queue up behind it for as long as that
+        # node's own move_timeout_sec (default 30s) instead of taking
+        # effect immediately.
         abort_ok, abort_msg = self._abort_move()
         torque_ok, torque_msg = self._set_torque(False)
 

@@ -10,7 +10,7 @@ study_control_panel_node:
     move_status_topic: /gen3_torque_control/move_status
     abort_move_service: /gen3_torque_control/abort_move
     check_collision_service: /virtual_spring_node/check_collision_at
-    move_wait_timeout_sec: 35.0
+    move_confirm_timeout_sec: 3.0
     add_spring_service: /virtual_spring_node/add_spring
     remove_spring_service: /virtual_spring_node/remove_spring
     spring_node_get_parameters_service: /virtual_spring_node/get_parameters
