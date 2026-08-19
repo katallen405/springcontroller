@@ -2,10 +2,15 @@ study_control_panel_node:
   ros__parameters:
     torque_enable_service: /gen3_torque_control/enable
     torque_status_topic: /gen3_torque_control/status
-    controller_manager_switch_service: /controller_manager/switch_controller
-    controller_manager_list_service: /controller_manager/list_controllers
-    position_controller_name: joint_trajectory_controller
-    follow_joint_trajectory_action: /joint_trajectory_controller/follow_joint_trajectory
+    # Position moves go through gen3_torque_control's own high-level move
+    # primitive, not ros2_kortex/kortex_bringup -- see orchestration_node.py's
+    # module docstring for why (the two drivers can't coexist against real
+    # hardware).
+    move_to_joint_angles_topic: /gen3_torque_control/move_to_joint_angles
+    move_status_topic: /gen3_torque_control/move_status
+    abort_move_service: /gen3_torque_control/abort_move
+    check_collision_service: /virtual_spring_node/check_collision_at
+    move_wait_timeout_sec: 35.0
     add_spring_service: /virtual_spring_node/add_spring
     remove_spring_service: /virtual_spring_node/remove_spring
     spring_node_get_parameters_service: /virtual_spring_node/get_parameters
@@ -37,7 +42,6 @@ study_control_panel_node:
     reset_spring_damping: 5.0
     reset_spring_local_point: [0.0, 0.0, 0.1]
     study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
-    move_duration_sec: 8.0
     joint_state_freshness_sec: 1.0
     safety_status_freshness_sec: 3.0
     service_call_timeout_sec: 5.0

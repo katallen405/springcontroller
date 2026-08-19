@@ -157,10 +157,7 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
         <pre class="cmd" id="cmd-spring"></pre>
         <button class="copy-btn" onclick="copyCmd('cmd-spring')">Copy</button>
       </div>
-      <div class="cmd-row">
-        <pre class="cmd" id="cmd-driver"></pre>
-        <button class="copy-btn" onclick="copyCmd('cmd-driver')">Copy</button>
-      </div>
+      <p class="hint">Don't also launch <code>kortex_bringup</code> -- it and <code>gen3_torque_node</code> both open independent Kortex sessions and fight over the arm-global servoing mode if run at the same time. Position moves go through the "Move to study start" button below (gen3_torque_control's own move_to_joint_angles), not a separate driver.</p>
       <p class="status-line">This page, rosbridge, and its backend node all came up together via:</p>
       <pre class="cmd">ros2 launch springcontroller_ui study_control_panel.launch.py</pre>
     </div>
@@ -170,20 +167,19 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
     <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
     <aside class="sidebar" aria-label="Quick controls">
       <div class="panel">
-        <h2>Position control / torque control</h2>
+        <h2>Torque control</h2>
+        <p class="hint">"Idle" (torque off) is what lets the arm be moved -- via "Move to study start" below, or by hand. There's no separate position-control driver/controller to activate; gen3_torque_control holds position on its own once torque is off.</p>
         <div class="btn-row">
-          <button class="action on" onclick="callTrigger(svcEnablePosition, 'Position control')">Turn ON position control</button>
-          <button class="action off" onclick="deactivatePositionController()">Turn OFF position control</button>
           <button class="action on" onclick="enableTorque()">Turn ON torque control</button>
-          <button class="action off" onclick="disableTorque()">Turn OFF torque control</button>
+          <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn OFF torque control (idle)</button>
         </div>
         <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
         <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps of those two states (see README:224).</p>
         <div class="status-line">
-          joint_trajectory_controller: <span class="val" id="pos-ctrl-state">unknown</span><br>
           torque control: <span class="val" id="torque-state">unknown</span><br>
+          move status: <span class="val" id="move-state">unknown</span><br>
           safety status: <span class="val" id="safety-state">unknown</span>
         </div>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
@@ -191,7 +187,7 @@ iframe.meshcat { width: 100%; height: 480px; border: 1px solid #ddd; border-radi
 
       <div class="panel">
         <h2>Emergency stop</h2>
-        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; disable torque + position control</button>
+        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; abort any move + disable torque</button>
         <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite"></div>
       </div>
 
@@ -274,16 +270,10 @@ const svcResetSprings     = { name: NODE + '/reset_springs',                type
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
 
-const svcTorqueEnable     = { name: '/gen3_torque_control/enable',          type: 'std_srvs/srv/SetBool' };
-const svcSwitchController = { name: '/controller_manager/switch_controller', type: 'controller_manager_msgs/srv/SwitchController' };
-const svcListControllers  = { name: '/controller_manager/list_controllers', type: 'controller_manager_msgs/srv/ListControllers' };
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
 
-const POSITION_CONTROLLER = 'joint_trajectory_controller';
-
 let ros = null;
-let controllersTimer = null;
 let currentSprings = [];
 
 // ---- terminal reminders --------------------------------------------------
@@ -293,8 +283,6 @@ function renderCommands() {
     `ros2 run gen3_torque_control gen3_torque_node --ros-args -p kortex_ip:=${ip} -r joint_states:=/kinova/joint_states_lowlevel`;
   document.getElementById('cmd-spring').textContent =
     'ros2 launch springcontroller gen3_spring.launch.py armviz:=true';
-  document.getElementById('cmd-driver').textContent =
-    `ros2 launch kortex_bringup gen3.launch.py robot_ip:=${ip} gripper:=robotiq_2f_85`;
 }
 function copyCmd(id) {
   const text = document.getElementById(id).textContent;
@@ -335,20 +323,7 @@ function sub(topic, type, cb) {
   return t;
 }
 
-// ---- position / torque control -------------------------------------------
-function deactivatePositionController() {
-  callService(svcSwitchController,
-    { activate_controllers: [], deactivate_controllers: [POSITION_CONTROLLER], strictness: 2 },
-    function(resp) { showMsg('mode-msg', resp.ok, 'Position control off: ' + resp.message); },
-    function(err) { showMsg('mode-msg', false, 'Position control off failed: ' + err); });
-}
-
-function disableTorque() {
-  callService(svcTorqueEnable, { data: false },
-    function(resp) { showMsg('mode-msg', resp.success, 'Torque control off: ' + resp.message); },
-    function(err) { showMsg('mode-msg', false, 'Torque control off failed: ' + err); });
-}
-
+// ---- torque control -------------------------------------------
 function enableTorque() {
   const allowDanger = document.getElementById('allow-danger').checked;
   callService(svcEnableTorque, { allow_danger: allowDanger },
@@ -360,18 +335,6 @@ function softEstop() {
   callService(svcSoftEstop, {},
     function(resp) { showMsg('estop-msg', resp.success, resp.message); },
     function(err) { showMsg('estop-msg', false, 'Soft e-stop failed: ' + err); });
-}
-
-function pollControllers() {
-  callService(svcListControllers, {}, function(resp) {
-    const c = (resp.controller || []).find(function(x) { return x.name === POSITION_CONTROLLER; });
-    const el = document.getElementById('pos-ctrl-state');
-    el.textContent = c ? c.state : 'not found';
-    el.className = 'val ' + (c ? c.state : 'unknown');
-  }, function() {
-    const el = document.getElementById('pos-ctrl-state');
-    el.textContent = 'not connected'; el.className = 'val unknown';
-  });
 }
 
 // ---- study start -----------------------------------------------------
@@ -485,6 +448,11 @@ function handleSafetyStatus(msg) {
   el.textContent = msg.data;
   el.className = 'val ' + status;
 }
+function handleMoveStatus(msg) {
+  const el = document.getElementById('move-state');
+  el.textContent = msg.data;
+  el.className = 'val ' + (msg.data === 'MOVING' ? 'active' : (msg.data === 'SUCCEEDED' ? 'ok' : 'inactive'));
+}
 
 // ---- connection -----------------------------------------------------
 function connectRos() {
@@ -500,11 +468,9 @@ function connectRos() {
     sub('/virtual_spring_node/springs_updated', 'std_msgs/msg/String', handleSpringsUpdated);
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
+    sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
 
     populateLinkDropdown();
-    pollControllers();
-    if (controllersTimer) clearInterval(controllersTimer);
-    controllersTimer = setInterval(pollControllers, 2000);
   });
   ros.on('error', function(e) {
     document.getElementById('dot').className = 'dot err';
@@ -513,7 +479,6 @@ function connectRos() {
   ros.on('close', function() {
     document.getElementById('dot').className = 'dot';
     document.getElementById('conn-label').textContent = 'Disconnected';
-    if (controllersTimer) { clearInterval(controllersTimer); controllersTimer = null; }
   });
 }
 

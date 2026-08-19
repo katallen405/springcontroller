@@ -4,20 +4,28 @@ orchestration_node.py
 
 Backend node for the study control panel UI (springcontroller_ui). Wraps
 the handful of operations that a browser-side roslibjs client can't safely
-do as a plain 1:1 service passthrough over rosbridge: switching between
-position control (ros2_kortex's joint_trajectory_controller) and torque
-control (gen3_torque_control's kinova_torque_control_node) with the correct
-disable-first ordering, a soft e-stop, moving to/capturing a saved "study
-start" joint-angle preset, resolving forward kinematics for the spring
-panel, and resetting springs back to a single anchor at the arm's current
-tip position.
+do as a plain 1:1 service passthrough over rosbridge: enabling/disabling
+torque control (gen3_torque_control's kinova_torque_control_node) with a
+safety-status check, a soft e-stop that also aborts any in-flight move,
+moving to/capturing a saved "study start" joint-angle preset (via
+gen3_torque_control's move_to_joint_angles, collision-gated against
+virtual_spring_node's ~/check_collision_at), resolving forward kinematics
+for the spring panel, and resetting springs back to a single anchor at the
+arm's current tip position.
+
+Position moves never go through ros2_kortex/kortex_bringup -- that driver
+and gen3_torque_control both open independent Kortex sessions and fight
+over the arm-global servoing mode if run at the same time against real
+hardware (see gen3_ros2_kortex_coexistence in project memory, 2026-08-19).
+"Position control" in this file means "torque disabled, arm holding
+position via SINGLE_LEVEL_SERVOING," not a separate ros2_control
+controller.
 
 Everything else the UI needs (add_spring, remove_spring, direct torque-off,
-direct position-off, live spring/status displays) is a plain 1:1
-service/topic call the frontend makes straight to gen3_torque_control /
-virtual_spring_node / controller_manager over rosbridge -- this node only
-exists for the pieces that need sequencing, forward kinematics, or local
-file state.
+live spring/status displays) is a plain 1:1 service/topic call the frontend
+makes straight to gen3_torque_control / virtual_spring_node over rosbridge
+-- this node only exists for the pieces that need sequencing, forward
+kinematics, or local file state.
 
 Concurrency note: several service callbacks here make blocking calls to
 *other* services/actions and need to wait for their result without
@@ -38,21 +46,16 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.action import ActionClient
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64MultiArray
 from std_srvs.srv import SetBool, Trigger
 from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from builtin_interfaces.msg import Duration
-from control_msgs.action import FollowJointTrajectory
-from controller_manager_msgs.srv import SwitchController, ListControllers
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.msg import ParameterType
 
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
-from springcontroller_interfaces.srv import AddSpring, RemoveSpring
+from springcontroller_interfaces.srv import AddSpring, RemoveSpring, CheckCollisionAtAngles
 from springcontroller_ui_interfaces.srv import (
     EnableTorqueControl,
     GetLinkPose,
@@ -79,6 +82,9 @@ class _Freshness:
     def is_fresh(self, now: float, max_age_sec: float) -> bool:
         return self._stamp is not None and (now - self._stamp) <= max_age_sec
 
+    def stamp(self) -> Optional[float]:
+        return self._stamp
+
 
 class StudyControlPanelNode(Node):
     def __init__(self) -> None:
@@ -89,10 +95,18 @@ class StudyControlPanelNode(Node):
         # ------------------------------------------------------------
         self.declare_parameter("torque_enable_service", "/gen3_torque_control/enable")
         self.declare_parameter("torque_status_topic", "/gen3_torque_control/status")
-        self.declare_parameter("controller_manager_switch_service", "/controller_manager/switch_controller")
-        self.declare_parameter("controller_manager_list_service", "/controller_manager/list_controllers")
-        self.declare_parameter("position_controller_name", "joint_trajectory_controller")
-        self.declare_parameter("follow_joint_trajectory_action", "/joint_trajectory_controller/follow_joint_trajectory")
+        # Position moves go through gen3_torque_control's own
+        # move_to_joint_angles/move_status/abort_move, not kortex_bringup's
+        # joint_trajectory_controller -- the two drivers can't run
+        # simultaneously against real hardware (both open independent
+        # Kortex sessions and fight over the arm-global servoing mode; see
+        # gen3_ros2_kortex_coexistence in project memory). check_collision_at
+        # is the same pre-flight gate test/move_to_joint_angles.py uses.
+        self.declare_parameter("move_to_joint_angles_topic", "/gen3_torque_control/move_to_joint_angles")
+        self.declare_parameter("move_status_topic", "/gen3_torque_control/move_status")
+        self.declare_parameter("abort_move_service", "/gen3_torque_control/abort_move")
+        self.declare_parameter("check_collision_service", "/virtual_spring_node/check_collision_at")
+        self.declare_parameter("move_wait_timeout_sec", 35.0)
         self.declare_parameter("add_spring_service", "/virtual_spring_node/add_spring")
         self.declare_parameter("remove_spring_service", "/virtual_spring_node/remove_spring")
         self.declare_parameter("spring_node_get_parameters_service", "/virtual_spring_node/get_parameters")
@@ -124,7 +138,6 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("reset_spring_damping", 5.0)
         self.declare_parameter("reset_spring_local_point", [0.0, 0.0, 0.1])
         self.declare_parameter("study_start_preset_path", "~/springcontroller_ui_study_start.yaml")
-        self.declare_parameter("move_duration_sec", 8.0)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -132,10 +145,11 @@ class StudyControlPanelNode(Node):
         gp = lambda name: self.get_parameter(name).value  # noqa: E731
         self._torque_enable_service = gp("torque_enable_service")
         self._torque_status_topic = gp("torque_status_topic")
-        self._switch_controller_service = gp("controller_manager_switch_service")
-        self._list_controllers_service = gp("controller_manager_list_service")
-        self._position_controller_name = gp("position_controller_name")
-        self._follow_joint_trajectory_action = gp("follow_joint_trajectory_action")
+        self._move_to_joint_angles_topic = gp("move_to_joint_angles_topic")
+        self._move_status_topic = gp("move_status_topic")
+        self._abort_move_service = gp("abort_move_service")
+        self._check_collision_service = gp("check_collision_service")
+        self._move_wait_timeout_sec = float(gp("move_wait_timeout_sec"))
         self._add_spring_service = gp("add_spring_service")
         self._remove_spring_service = gp("remove_spring_service")
         self._spring_node_get_parameters_service = gp("spring_node_get_parameters_service")
@@ -150,7 +164,6 @@ class StudyControlPanelNode(Node):
         self._reset_spring_damping = float(gp("reset_spring_damping"))
         self._reset_spring_local_point = np.array(gp("reset_spring_local_point"), dtype=float)
         self._study_start_preset_path = gp("study_start_preset_path")
-        self._move_duration_sec = float(gp("move_duration_sec"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -169,6 +182,7 @@ class StudyControlPanelNode(Node):
         self._joint_state_freshness = _Freshness()
         self._torque_status_freshness = _Freshness()
         self._safety_status_freshness = _Freshness()
+        self._move_status_freshness = _Freshness()
 
         cb_group = ReentrantCallbackGroup()
 
@@ -184,25 +198,28 @@ class StudyControlPanelNode(Node):
             String, self._safety_status_topic, self._safety_status_cb, 10,
             callback_group=cb_group,
         )
+        self.create_subscription(
+            String, self._move_status_topic, self._move_status_cb, 10,
+            callback_group=cb_group,
+        )
 
         # ------------------------------------------------------------
         # Clients to other nodes' services/actions
         # ------------------------------------------------------------
         self._torque_enable_client = self.create_client(
             SetBool, self._torque_enable_service, callback_group=cb_group)
-        self._switch_controller_client = self.create_client(
-            SwitchController, self._switch_controller_service, callback_group=cb_group)
-        self._list_controllers_client = self.create_client(
-            ListControllers, self._list_controllers_service, callback_group=cb_group)
+        self._abort_move_client = self.create_client(
+            Trigger, self._abort_move_service, callback_group=cb_group)
+        self._check_collision_client = self.create_client(
+            CheckCollisionAtAngles, self._check_collision_service, callback_group=cb_group)
         self._add_spring_client = self.create_client(
             AddSpring, self._add_spring_service, callback_group=cb_group)
         self._remove_spring_client = self.create_client(
             RemoveSpring, self._remove_spring_service, callback_group=cb_group)
         self._spring_params_client = self.create_client(
             GetParameters, self._spring_node_get_parameters_service, callback_group=cb_group)
-        self._trajectory_action_client = ActionClient(
-            self, FollowJointTrajectory, self._follow_joint_trajectory_action,
-            callback_group=cb_group)
+        self._move_command_pub = self.create_publisher(
+            Float64MultiArray, self._move_to_joint_angles_topic, 10)
 
         # ------------------------------------------------------------
         # Publisher: ~/study_start_status (latched -- late subscribers still
@@ -304,6 +321,9 @@ class StudyControlPanelNode(Node):
     def _safety_status_cb(self, msg: String) -> None:
         self._safety_status_freshness.update(msg.data, self._now())
 
+    def _move_status_cb(self, msg: String) -> None:
+        self._move_status_freshness.update(msg.data, self._now())
+
     # ------------------------------------------------------------
     # Publish helper
     # ------------------------------------------------------------
@@ -330,18 +350,64 @@ class StudyControlPanelNode(Node):
             return False, f"{self._torque_enable_service} unavailable -- is gen3_torque_node running?"
         return resp.success, resp.message
 
-    def _switch_controller(self, activate: list[str], deactivate: list[str]) -> tuple[bool, str]:
-        req = SwitchController.Request()
-        req.activate_controllers = activate
-        req.deactivate_controllers = deactivate
-        req.strictness = SwitchController.Request.STRICT
-        resp = self._call_sync(self._switch_controller_client, req)
+    def _abort_move(self) -> tuple[bool, str]:
+        resp = self._call_sync(self._abort_move_client, Trigger.Request(), timeout_sec=2.0)
         if resp is None:
+            return False, f"{self._abort_move_service} unavailable -- is gen3_torque_node running?"
+        return resp.success, resp.message
+
+    def _move_to_joint_angles(self, angles: list[float]) -> tuple[bool, str]:
+        """
+        Collision-checked, blocking move via gen3_torque_control's
+        move_to_joint_angles topic -- mirrors test/move_to_joint_angles.py's
+        logic (this node is itself a ROS client of both services, not a
+        subprocess wrapper around that script). Refuses (no move published)
+        if the target is in outright collision, or if the collision check
+        itself is unreachable (fails closed); warns but proceeds if only in
+        the danger zone.
+        """
+        check_resp = self._call_sync(
+            self._check_collision_client,
+            CheckCollisionAtAngles.Request(joint_angles_rad=angles),
+            timeout_sec=5.0,
+        )
+        if check_resp is None:
             return False, (
-                f"{self._switch_controller_service} unavailable -- is the "
-                "Kinova driver (gen3.launch.py) running?"
+                f"{self._check_collision_service} unavailable -- is "
+                "virtual_spring_node running? NOT moving (fail closed)."
             )
-        return bool(resp.ok), resp.message
+        if check_resp.in_collision:
+            return False, (
+                f"Target would be in collision (closest pair: {check_resp.link_a}, "
+                f"{check_resp.link_b}, min_distance={check_resp.min_distance:.4f}m). NOT moving."
+            )
+        danger_note = ""
+        if check_resp.in_danger:
+            danger_note = (
+                f" (in danger zone, min_distance={check_resp.min_distance:.4f}m, "
+                f"closest pair: {check_resp.link_a}, {check_resp.link_b} -- "
+                "proceeding, not outright collision)"
+            )
+
+        issue_time = self._now()
+        self._move_command_pub.publish(Float64MultiArray(data=[float(a) for a in angles]))
+
+        # Busy-wait for a move_status update newer than issue_time and past
+        # the transient "MOVING" state -- safe under this node's
+        # MultiThreadedExecutor, same pattern as _wait_for_future.
+        deadline = time.monotonic() + self._move_wait_timeout_sec
+        while time.monotonic() < deadline:
+            stamp = self._move_status_freshness.stamp()
+            if stamp is not None and stamp >= issue_time and self._move_status_freshness.value != "MOVING":
+                break
+            time.sleep(0.02)
+        else:
+            return False, f"Timed out waiting for {self._move_status_topic}.{danger_note}"
+
+        status = self._move_status_freshness.value
+        if status == "SUCCEEDED":
+            return True, f"Moved to target.{danger_note}"
+        return False, f"Move ended with status '{status}'.{danger_note}"
 
     def _list_current_spring_names(self) -> Optional[list[str]]:
         """Live query of virtual_spring_node's spring_names/joint_spring_names
@@ -366,23 +432,19 @@ class StudyControlPanelNode(Node):
     # ------------------------------------------------------------
 
     def _enable_position_control_cb(self, request, response):
+        """
+        "Position control" no longer means a separate ros2_control
+        controller (see move_to_joint_angles_topic's declare_parameter
+        comment) -- disabling torque already leaves the arm holding
+        position via SINGLE_LEVEL_SERVOING, and that's the only state
+        move_to_joint_angles/move_to_study_start can run from. Kept as its
+        own named service (rather than folding into the frontend's
+        disableTorque path) since it's the interlocked, UI-facing entry
+        point for "make it safe to jog/move the arm."
+        """
         ok, msg = self._set_torque(False)
-        if not ok:
-            response.success = False
-            response.message = f"Torque disable failed: {msg}. NOT activating position controller."
-            return response
-
-        ok, msg = self._switch_controller([self._position_controller_name], [])
-        if not ok:
-            response.success = False
-            response.message = (
-                f"Torque control has been disabled. Activating "
-                f"'{self._position_controller_name}' failed: {msg}"
-            )
-            return response
-
-        response.success = True
-        response.message = "Position control enabled."
+        response.success = ok
+        response.message = msg if ok else f"Torque disable failed: {msg}."
         return response
 
     def _enable_torque_control_cb(self, request, response):
@@ -403,19 +465,10 @@ class StudyControlPanelNode(Node):
             )
             return response
 
-        ok, msg = self._switch_controller([], [self._position_controller_name])
-        if not ok:
-            response.success = False
-            response.message = f"Deactivating '{self._position_controller_name}' failed: {msg}"
-            return response
-
         ok, msg = self._set_torque(True)
         if not ok:
             response.success = False
-            response.message = (
-                f"Position controller deactivated, but torque enable failed: {msg}. "
-                "Arm has no active controller -- press 'Turn on position control' to recover."
-            )
+            response.message = f"Torque enable failed: {msg}."
             return response
 
         response.success = True
@@ -423,28 +476,25 @@ class StudyControlPanelNode(Node):
         return response
 
     def _soft_estop_cb(self, request, response):
+        # Abort first: an in-flight move_to_joint_angles holds
+        # gen3_torque_control's _kortex_lock for its whole duration
+        # (deliberately, so torque-enable can't race in mid-move -- see
+        # move_to_joint_angles/kinova_torque_control_node), so _set_torque
+        # below would otherwise queue up behind it for as long as
+        # move_wait_timeout_sec instead of taking effect immediately.
+        abort_ok, abort_msg = self._abort_move()
         torque_ok, torque_msg = self._set_torque(False)
-        controller_ok, controller_msg = self._switch_controller([], [self._position_controller_name])
 
-        response.success = torque_ok
+        response.success = torque_ok and abort_ok
         response.message = (
-            f"Torque control: {'disabled' if torque_ok else 'FAILED - ' + torque_msg}. "
-            f"Position controller: {'deactivated' if controller_ok else 'FAILED - ' + controller_msg}."
+            f"Abort move: {'ok' if abort_ok else 'FAILED - ' + abort_msg}. "
+            f"Torque control: {'disabled' if torque_ok else 'FAILED - ' + torque_msg}."
         )
         return response
 
     # ------------------------------------------------------------
     # Study-start preset
     # ------------------------------------------------------------
-
-    def _controller_is_active(self, name: str) -> Optional[bool]:
-        resp = self._call_sync(self._list_controllers_client, ListControllers.Request(), timeout_sec=2.0)
-        if resp is None:
-            return None
-        for c in resp.controller:
-            if c.name == name:
-                return c.state == "active"
-        return False
 
     def _move_to_study_start_cb(self, request, response):
         now = self._now()
@@ -457,19 +507,6 @@ class StudyControlPanelNode(Node):
             )
             return response
 
-        position_active = self._controller_is_active(self._position_controller_name)
-        if position_active is None:
-            response.success = False
-            response.message = (
-                f"{self._list_controllers_service} unavailable -- is the Kinova "
-                "driver (gen3.launch.py) running?"
-            )
-            return response
-        if not position_active:
-            response.success = False
-            response.message = "Position control is not active. Press 'Turn on position control' first."
-            return response
-
         if not self._torque_status_freshness.is_fresh(now, self._joint_state_freshness_sec):
             response.success = False
             response.message = (
@@ -479,48 +516,19 @@ class StudyControlPanelNode(Node):
             return response
         if self._torque_status_freshness.value == "ENABLED":
             response.success = False
-            response.message = "Torque control is enabled. Turn it off before moving via position control."
+            response.message = "Torque control is enabled. Turn it off before moving."
             return response
 
-        if not self._trajectory_action_client.wait_for_server(timeout_sec=5.0):
+        by_name = dict(zip(preset["joint_names"], preset["joint_angles"]))
+        missing = [n for n in self._joint_names if n not in by_name]
+        if missing:
             response.success = False
-            response.message = (
-                f"{self._follow_joint_trajectory_action} action server unavailable -- "
-                "is the Kinova driver running and joint_trajectory_controller active?"
-            )
+            response.message = f"Study-start preset is missing joints: {missing}"
             return response
+        angles = [float(by_name[n]) for n in self._joint_names]
 
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory = JointTrajectory()
-        goal.trajectory.joint_names = list(preset["joint_names"])
-        point = JointTrajectoryPoint()
-        point.positions = [float(a) for a in preset["joint_angles"]]
-        duration_sec = self._move_duration_sec
-        point.time_from_start = Duration(
-            sec=int(duration_sec), nanosec=int((duration_sec % 1.0) * 1e9))
-        goal.trajectory.points = [point]
-
-        send_goal_future = self._trajectory_action_client.send_goal_async(goal)
-        goal_handle = self._wait_for_future(send_goal_future, timeout_sec=5.0)
-        if goal_handle is None or not goal_handle.accepted:
-            response.success = False
-            response.message = "Trajectory goal was rejected or timed out being sent."
-            return response
-
-        result_future = goal_handle.get_result_async()
-        result_wrapper = self._wait_for_future(result_future, timeout_sec=duration_sec + 5.0)
-        if result_wrapper is None:
-            response.success = False
-            response.message = "Timed out waiting for the move to complete."
-            return response
-
-        if result_wrapper.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
-            response.success = False
-            response.message = f"Move failed: {result_wrapper.result.error_string}"
-            return response
-
-        response.success = True
-        response.message = "Moved to study start."
+        response.success, response.message = self._move_to_joint_angles(angles)
+        return response
         return response
 
     def _set_current_as_study_start_cb(self, request, response):
