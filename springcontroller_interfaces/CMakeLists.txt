@@ -8,6 +8,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddSpring.srv"
   "srv/RemoveSpring.srv"
   "srv/AddJointSpring.srv"
+  "srv/AddOrientationSpring.srv"
 )
 
 ament_package()

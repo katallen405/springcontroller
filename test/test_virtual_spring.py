@@ -7,7 +7,7 @@ Uses a minimal stub arm so no real URDF is required.
 
 import pytest
 import numpy as np
-from virtual_spring_ros2.virtual_spring import VirtualSpring, SpringCollection
+from springcontroller.virtual_spring import VirtualSpring, SpringCollection
 
 
 # ── Minimal stub arm ──────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ def test_spring_collection_sums_torques():
     col = SpringCollection()
     col.add(make_spring(stiffness=10.0, name="a"))
     col.add(make_spring(stiffness=10.0, name="b"))
-    total = col.compute_total_torques(arm)
+    total = col.compute_total_torques(arm, add_gravity_compensation=False)
     single = make_spring(stiffness=10.0).compute_torques(arm)
     np.testing.assert_allclose(total, 2 * single, rtol=1e-6)
 

@@ -151,6 +151,43 @@ mirroring `~/target/<name>` for Cartesian springs. Add/remove at runtime via
 `~/add_joint_spring` (`springcontroller_interfaces/AddJointSpring`) and the
 existing `~/remove_spring` (name-based, works for either spring type).
 
+### Orientation springs
+
+A `VirtualSpring` pulls a point toward a target -- it can't express "keep
+this face pointed at that point" without also dragging the attachment point
+toward it. `OrientationSpring` does the opposite: it aligns a direction
+fixed in a link's local frame (a "face normal") with the direction from the
+attachment point to a target world point, using only the rotational
+Jacobian. It produces pure restoring torque and zero translational force,
+and re-aims every cycle from the *current* attachment position, so it keeps
+pointing at the target as the arm/block moves rather than holding a
+rotation frozen at load time.
+
+```yaml
+/**:
+  ros__parameters:
+    orientation_spring_names: [face_participant]
+    orientation_springs:
+      face_participant:
+        link_name:         "end_effector_link"
+        local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
+        local_face_normal:  [0.0, 0.0, 1.0]   # the block's working face, link-local
+        target:              [0.6, 0.4, 0.5]   # e.g. the participant's measured face position (m)
+        stiffness:          2.0                # N*m/rad
+        damping:            0.2                # N*m*s/rad
+```
+
+Unlike `joint_springs`' `target_angle` or `springs`' `target`, `target` here
+has **no safe default** and must be set explicitly -- it's an external
+real-world point (e.g. a person's face), not something inferable from the
+arm's own pose, so an unconfigured spring fails to load rather than aiming
+at whatever the zero/neutral pose happens to imply. Add it to the same
+config file as `springs`/`joint_springs` to sum all three into one total
+torque. Runtime target updates: `~/target/<name>` (`geometry_msgs/
+PointStamped`), same topic Cartesian springs use. Add/remove at runtime via
+`~/add_orientation_spring` (`springcontroller_interfaces/AddOrientationSpring`)
+and the existing `~/remove_spring`.
+
 ## Launch
 
 ### Kinova Gen3 (via gen3_torque_control node)
@@ -331,7 +368,7 @@ deleted outright.
 |---|---|---|
 | `~/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities |
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
-| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian spring's target at runtime |
+| `~/target/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian or orientation spring's target at runtime |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 
 ## Services
@@ -341,7 +378,8 @@ deleted outright.
 | `~/enable` | `std_srvs/SetBool` | Enable / disable all springs |
 | `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
 | `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
-| `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (either type) |
+| `~/add_orientation_spring` | `springcontroller_interfaces/AddOrientationSpring` | Add an orientation spring at runtime |
+| `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (any type) |
 
 
 ## Using the library directly
@@ -480,9 +518,29 @@ ros2 service call /virtual_spring_node/add_joint_spring \
     }"
 ```
 
+### Add an orientation spring
+
+Aligns a link-local face normal with the direction toward a fixed world
+point, using only the rotational Jacobian -- pure torque, no positional
+pull. See [Orientation springs](#orientation-springs) above for the full
+explanation.
+
+```bash
+ros2 service call /virtual_spring_node/add_orientation_spring \
+    springcontroller_interfaces/srv/AddOrientationSpring "{
+        name: 'face_participant',
+        link_name: 'end_effector_link',
+        local_point: [0.0, 0.0, 0.1],
+        local_face_normal: [0.0, 0.0, 1.0],
+        target: [0.6, 0.4, 0.5],
+        stiffness: 2.0,
+        damping: 0.2
+    }"
+```
+
 ### Remove a spring
 
-Works for either spring type -- it's name-based, not type-specific.
+Works for any spring type -- it's name-based, not type-specific.
 
 ```bash
 ros2 service call /virtual_spring_node/remove_spring \

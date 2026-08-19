@@ -57,10 +57,14 @@ from std_msgs.msg import String, Float64
 import os
 import threading
 
-from springcontroller.virtual_spring import VirtualSpring, JointSpring, SpringCollection
+from springcontroller.virtual_spring import (
+    VirtualSpring, JointSpring, OrientationSpring, SpringCollection,
+)
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
-from springcontroller_interfaces.srv import AddSpring, RemoveSpring, AddJointSpring
+from springcontroller_interfaces.srv import (
+    AddSpring, RemoveSpring, AddJointSpring, AddOrientationSpring,
+)
 
 
 import collections
@@ -231,9 +235,12 @@ class VirtualSpringNode(Node):
             RemoveSpring, "~/remove_spring", self._remove_spring_cb
 )
         # Removal is shared: RemoveSpring is name-based and doesn't care
-        # about spring type, so it works for joint springs too.
+        # about spring type, so it works for joint/orientation springs too.
         self._add_joint_spring_srv = self.create_service(
             AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
+        )
+        self._add_orientation_spring_srv = self.create_service(
+            AddOrientationSpring, "~/add_orientation_spring", self._add_orientation_spring_cb
         )
         # Per-spring target update subscriptions
         for spring in self._springs:
@@ -264,6 +271,26 @@ class VirtualSpringNode(Node):
                     10,
                 )
                 self.get_logger().info(f"Listening for target updates on {topic}")
+            elif isinstance(spring, OrientationSpring):
+                # Reuses VirtualSpring's target/attachment topics and
+                # callbacks -- both duck-type on target_world_point /
+                # local_attachment_point, which OrientationSpring has too.
+                topic = f"~/target/{spring.name}"
+                self.create_subscription(
+                    PointStamped,
+                    topic,
+                    lambda msg, s=spring: self._target_cb(msg, s),
+                    10,
+                )
+                self.get_logger().info(f"Listening for target updates on {topic}")
+
+                topic = f"~/attachment/{spring.name}"
+                self.create_subscription(
+                    PointStamped,
+                    topic,
+                    lambda msg, s=spring: self._attachment_cb(msg, s),
+                    10,
+                )
 
         # Services
         self._enable_srv = self.create_service(
@@ -415,6 +442,52 @@ class VirtualSpringNode(Node):
             name=name,
         )
         return spring
+
+    def _load_one_orientation_spring(self, name: str) -> OrientationSpring:
+        """Load a single orientation spring by name from current parameters. Raises on error."""
+        prefix = f"orientation_springs.{name}"
+        self._declare_or_ignore(f"{prefix}.link_name", "")
+        self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
+        self._declare_or_ignore(f"{prefix}.local_face_normal", [0.0, 0.0, 1.0])
+        # No NaN-sentinel default-to-current-pose here, unlike
+        # target_angle above: a joint spring's "hold the current angle"
+        # default and a Cartesian spring's "start at the current position"
+        # default are both inferable from the arm's own state, but this
+        # spring's target is an external real-world point (e.g. the study
+        # participant's face) that has no relationship to the arm's pose
+        # -- there's no safe value to fall back on, so it's required.
+        self._declare_or_ignore(
+            f"{prefix}.target", [float("nan"), float("nan"), float("nan")]
+        )
+        self._declare_or_ignore(f"{prefix}.stiffness", 0.0)
+        self._declare_or_ignore(f"{prefix}.damping", 0.0)
+
+        def _get(key, default=None, _prefix=prefix):
+            val = self.get_parameter(f"{_prefix}.{key}").value
+            return default if val is None else val
+
+        link_name = _get("link_name")
+        self._arm.validate_link_name(link_name)  # raises ValueError if bad
+
+        target = np.array(_get("target", [float("nan")] * 3), dtype=float)
+        if np.any(np.isnan(target)):
+            raise ValueError(
+                f"Orientation spring '{name}': 'target' must be set "
+                f"explicitly (e.g. the participant's measured face "
+                f"position) -- there's no safe default to infer it from."
+            )
+
+        spring = OrientationSpring(
+            link_name=link_name,
+            local_attachment_point=np.array(_get("local_point", [0, 0, 0]), dtype=float),
+            local_face_normal=np.array(_get("local_face_normal", [0, 0, 1]), dtype=float),
+            target_world_point=target,
+            stiffness=float(_get("stiffness", 0.0)),
+            damping=float(_get("damping", 0.0)),
+            name=name,
+        )
+        return spring
+
     def _joint_state_cb(self, msg: JointState) -> None:
     # Build joint reordering maps on first message
         if self._joint_order is None:
@@ -928,6 +1001,77 @@ class VirtualSpringNode(Node):
         self._check_equilibrium_shift()
         return response
 
+    def _add_orientation_spring_cb(
+        self, request: AddOrientationSpring.Request, response: AddOrientationSpring.Response
+    ) -> AddOrientationSpring.Response:
+        name = request.name.strip()
+        if not name:
+            response.success = False
+            response.message = "Orientation spring name must not be empty."
+            return response
+
+        if any(s.name == name for s in self._springs):
+            response.success = False
+            response.message = f"Spring '{name}' already exists."
+            return response
+
+        try:
+            self._arm.validate_link_name(request.link_name)
+            spring = OrientationSpring(
+                name=name,
+                link_name=request.link_name,
+                local_attachment_point=np.array(request.local_point),
+                local_face_normal=np.array(request.local_face_normal),
+                target_world_point=np.array(request.target),
+                stiffness=request.stiffness,
+                damping=request.damping,
+            )
+        except ValueError as e:
+            response.success = False
+            response.message = str(e)
+            return response
+
+        # Mirror the parameter namespace so external tools (e.g. visualisation)
+        # can see this spring the same way as one loaded from YAML
+        prefix = f"orientation_springs.{name}"
+        params = {
+            f"{prefix}.link_name":         (rclpy.parameter.Parameter.Type.STRING,       request.link_name),
+            f"{prefix}.local_point":       (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
+            f"{prefix}.local_face_normal": (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_face_normal)),
+            f"{prefix}.target":            (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
+            f"{prefix}.stiffness":         (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
+            f"{prefix}.damping":           (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
+        }
+        for key, (ptype, value) in params.items():
+            self._declare_or_ignore(key, value)
+            self.set_parameters([rclpy.parameter.Parameter(key, ptype, value)])
+
+        # Also add the name to orientation_spring_names so it shows up if someone lists params
+        current_names = list(
+            self.get_parameter("orientation_spring_names").get_parameter_value().string_array_value
+        )
+        if name not in current_names:
+            self.set_parameters([
+                rclpy.parameter.Parameter("orientation_spring_names",
+                                          rclpy.Parameter.Type.STRING_ARRAY,
+                                          current_names + [name])
+            ])
+
+        self._springs.add(spring)
+        for topic, cb in [
+            (f"~/target/{name}",     lambda msg, s=spring: self._target_cb(msg, s)),
+            (f"~/attachment/{name}", lambda msg, s=spring: self._attachment_cb(msg, s)),
+        ]:
+            self.create_subscription(PointStamped, topic, cb, 10)
+
+        response.success = True
+        response.message = f"Orientation spring '{name}' added."
+        response.id = len(self._springs) - 1
+        self.get_logger().info(response.message)
+        self._publish_springs_updated()
+        self._check_equilibrium_shift()
+        return response
+
     def _load_springs_from_params(self) -> None:
         self._declare_or_ignore("spring_names", [""])
         spring_names = (
@@ -965,42 +1109,83 @@ class VirtualSpringNode(Node):
             self._springs.add(joint_spring)
             self.get_logger().info(f"Loaded joint spring: {joint_spring}")
 
+        self._declare_or_ignore("orientation_spring_names", [""])
+        orientation_spring_names = (
+            self.get_parameter("orientation_spring_names")
+            .get_parameter_value()
+            .string_array_value
+        )
+        self.get_logger().info(f"Orientation spring names from params: {list(orientation_spring_names)}")
+        for name in orientation_spring_names:
+            if not name:
+                continue
+            try:
+                orientation_spring = self._load_one_orientation_spring(name)
+            except (ValueError, RuntimeError) as e:
+                self.get_logger().fatal(f"Orientation spring '{name}' failed to load: {e}")
+                raise
+            self._springs.add(orientation_spring)
+            self.get_logger().info(f"Loaded orientation spring: {orientation_spring}")
+
     def _remove_spring_cb(
         self, request: RemoveSpring.Request, response: RemoveSpring.Response
 ) -> RemoveSpring.Response:
         name = request.name.strip()
 
-        if not any(s.name == name for s in self._springs):
+        spring = next((s for s in self._springs if s.name == name), None)
+        if spring is None:
             response.success = False
             response.message = f"Spring '{name}' not found."
             return response
-        
+
         self._springs.remove(name)
-        
-        # Remove from spring_names parameter
+
+        # Which names-list parameter and per-spring parameter keys to clean
+        # up depends on the spring's type -- each type lives under its own
+        # prefix and its own <type>_names list (spring_names / joint_spring_
+        # names / orientation_spring_names). Previously this always assumed
+        # VirtualSpring's springs.<name>.* prefix and only ever edited
+        # spring_names, so removing a JointSpring left it in
+        # joint_spring_names (it would reload on restart) and its
+        # joint_springs.<name>.* parameters undeclared -- never actually
+        # exercised until OrientationSpring made the type-specific cleanup
+        # unavoidable to get right for a third type too.
+        if isinstance(spring, VirtualSpring):
+            names_param = "spring_names"
+            prefix = f"springs.{name}"
+            keys = [
+                f"{prefix}.link_name", f"{prefix}.local_point", f"{prefix}.target",
+                f"{prefix}.stiffness", f"{prefix}.damping", f"{prefix}.rest_length",
+                f"{prefix}.inner_radius", f"{prefix}.outer_radius",
+            ]
+        elif isinstance(spring, JointSpring):
+            names_param = "joint_spring_names"
+            prefix = f"joint_springs.{name}"
+            keys = [
+                f"{prefix}.joint_name", f"{prefix}.target_angle",
+                f"{prefix}.stiffness", f"{prefix}.damping",
+            ]
+        else:  # OrientationSpring
+            names_param = "orientation_spring_names"
+            prefix = f"orientation_springs.{name}"
+            keys = [
+                f"{prefix}.link_name", f"{prefix}.local_point",
+                f"{prefix}.local_face_normal", f"{prefix}.target",
+                f"{prefix}.stiffness", f"{prefix}.damping",
+            ]
+
         current_names = list(
-            self.get_parameter("spring_names").get_parameter_value().string_array_value
+            self.get_parameter(names_param).get_parameter_value().string_array_value
         )
         self.set_parameters([
             rclpy.parameter.Parameter(
-                "spring_names",
+                names_param,
                 rclpy.parameter.Parameter.Type.STRING_ARRAY,
                 [n for n in current_names if n != name]
             )
         ])
 
-        # Undeclare the spring's parameter namespace
-        prefix = f"springs.{name}"
-        for key in [
-                f"{prefix}.link_name",
-                f"{prefix}.local_point",
-                f"{prefix}.target",
-                f"{prefix}.stiffness",
-                f"{prefix}.damping",
-                f"{prefix}.rest_length",
-                f"{prefix}.inner_radius",
-                f"{prefix}.outer_radius",
-        ]:
+        for key in keys:
             try:
                 self.undeclare_parameter(key)
             except rclpy.exceptions.ParameterNotDeclaredException:

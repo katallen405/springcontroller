@@ -27,3 +27,20 @@
       #   rest_length:  0.0
       #   inner_radius: 0.0
       #   outer_radius: 0.0
+
+    # Uncomment to keep the gripper's held block facing a fixed world
+    # point (e.g. a study participant's face) -- pure rotational torque,
+    # no positional pull. Unlike springs/joint_springs above, `target`
+    # has no safe default and must be measured/set explicitly: see
+    # OrientationSpring in virtual_spring.py.
+    # orientation_spring_names:
+    #   - face_participant
+    #
+    # orientation_springs:
+    #   face_participant:
+    #     link_name:          "end_effector_link"
+    #     local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
+    #     local_face_normal:  [0.0, 0.0, 1.0]   # the block's working face, link-local
+    #     target:             [0.6, 0.4, 0.5]   # participant's measured face position (m)
+    #     stiffness:          2.0                # N*m/rad (start low for safety)
+    #     damping:            0.2                # N*m*s/rad

@@ -1,0 +1,11 @@
+string name
+string link_name
+float64[3] local_point
+float64[3] local_face_normal
+float64[3] target
+float64 stiffness
+float64 damping
+---
+bool success
+string message
+int32 id
