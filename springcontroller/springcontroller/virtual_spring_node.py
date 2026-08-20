@@ -67,6 +67,11 @@ Services
 ~/set_gravity_compensation  (std_srvs/SetBool)
     Toggle add_gravity_compensation at runtime.
 
+~/set_repulsion_enabled  (std_srvs/SetBool)
+    Toggle the repulsion_enabled field (see get_repulsion_torques) at
+    runtime -- ros2 param set has no effect on it, same as every other
+    parameter here; this is the only way to flip it without restarting.
+
 ~/add_spring  (springcontroller_interfaces/AddSpring)
     Add a Cartesian spring.
 
@@ -413,6 +418,7 @@ class VirtualSpringNode(Node):
         # cache altogether.
         self._collision_error_log_last = -1.0
         self._collision_warn_log_last = -1.0
+        self._repulsion_warn_log_last = -1.0
         if collision_log_path:
             try:
                 write_header = not os.path.isfile(collision_log_path)
@@ -766,6 +772,18 @@ class VirtualSpringNode(Node):
         self._grav_comp_srv = self.create_service(
             SetBool, "~/set_gravity_compensation", self._set_grav_comp_cb
         )
+        # Same reasoning as gravity comp above -- repulsion_enabled is read
+        # once into self._repulsion_enabled at startup like any other
+        # declare_parameter default, and this node has no
+        # add_on_set_parameters_callback anywhere, so a live
+        # `ros2 param set /virtual_spring_node repulsion_enabled true`
+        # reports success (the parameter server accepts it) but the running
+        # control loop never re-reads it -- confirmed live 2026-08-19 as the
+        # cause of repulsion silently never activating. A dedicated service
+        # is the only way to flip it without a full node restart.
+        self._repulsion_enable_srv = self.create_service(
+            SetBool, "~/set_repulsion_enabled", self._set_repulsion_enabled_cb
+        )
     def _load_arm(self) -> URDFArmConfiguration:
         """
         Load URDF from /robot_description topic if available
@@ -813,7 +831,18 @@ class VirtualSpringNode(Node):
         response.success = True
         response.message = f"add_gravity_compensation = {request.data}"
         return response
-    
+
+    def _set_repulsion_enabled_cb(self, request, response):
+        self._repulsion_enabled = request.data
+        if not request.data:
+            self._last_repulsion_torques = None
+        self.get_logger().info(
+            f"Repulsion field {'enabled' if request.data else 'disabled'}"
+        )
+        response.success = True
+        response.message = f"repulsion_enabled = {request.data}"
+        return response
+
     def _flatten_dict(self, d: dict, prefix: str = "") -> dict:
         """Flatten nested dict to dot-separated keys."""
         result = {}
@@ -1264,6 +1293,12 @@ class VirtualSpringNode(Node):
             # keeps torque_ramp_gravity_comp_lesson's invariant intact.
             if self._repulsion_enabled and self._last_repulsion_torques is not None:
                 torques = torques + self._last_repulsion_torques
+                repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
+                if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
+                    self.get_logger().warn(
+                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
+                    )
+                    self._repulsion_warn_log_last = elapsed
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
