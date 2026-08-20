@@ -182,7 +182,7 @@ from geometry_msgs.msg import Pose, PointStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
-from std_msgs.msg import String, Float64
+from std_msgs.msg import String, Float64, Bool
 import os
 import threading
 
@@ -548,8 +548,24 @@ class VirtualSpringNode(Node):
             String, "~/springs_updated", springs_updated_qos
         )
 
+        # TRANSIENT_LOCAL for the same reason as springs_updated above --
+        # this is current state, not a stream, so a UI that connects (or
+        # reconnects/reloads) after the last enable/disable event should see
+        # the real current value immediately rather than showing "unknown"
+        # until the next state change happens to occur. Confirmed live
+        # 2026-08-20: the study UI's springs-state had no authoritative
+        # source at all before this -- it only ever showed whatever the
+        # browser's own last ~/enable call optimistically claimed, so a
+        # fresh page load (or one where that call was never made this
+        # session) just stayed "unknown" forever, even though the real
+        # springs were actively enabled or disabled the whole time.
+        self._springs_enabled_pub = self.create_publisher(
+            Bool, "~/springs_enabled", springs_updated_qos
+        )
+
         self._load_springs_from_params()
         self._publish_springs_updated()
+        self._publish_springs_enabled()
 
         # Maps a CollisionObject.id to [(internal_object_id, relative_pose), ...]
         # -- one entry per primitive -- so REMOVE/MOVE messages, which only
@@ -1843,6 +1859,7 @@ class VirtualSpringNode(Node):
         state = "enabled" if enabled else "disabled"
         suffix = f" ({reason})" if reason else ""
         self.get_logger().info(f"Springs {state}{suffix}.")
+        self._publish_springs_enabled()
 
     def _enable_cb(
         self, request: SetBool.Request, response: SetBool.Response
@@ -2464,6 +2481,13 @@ class VirtualSpringNode(Node):
         msg = String()
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
+
+    def _publish_springs_enabled(self) -> None:
+        # All springs are always enabled/disabled together (see
+        # _set_springs_enabled) -- any one of them reflects the aggregate
+        # state, defaulting True if there are no springs loaded at all yet.
+        enabled = self._springs[0].enabled if self._springs else True
+        self._springs_enabled_pub.publish(Bool(data=enabled))
 
     def _publish_safety_status(self, collision) -> None:
         """
