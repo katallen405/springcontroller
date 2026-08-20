@@ -505,7 +505,7 @@ class StudyControlPanelNode(Node):
             response.success = False
             response.message = (
                 f"safety_status reports '{status}' -- refusing to enable torque "
-                "control (check 'allow danger' to override)."
+                "control (check 'Override safety interlock' to override)."
             )
             return response
 
