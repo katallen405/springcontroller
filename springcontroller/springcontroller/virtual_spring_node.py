@@ -1498,7 +1498,8 @@ class VirtualSpringNode(Node):
                 torques = torques + self._last_repulsion_torques
                 repulsion_out = self._last_repulsion_torques
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
-                if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
+                if (repulsion_norm > 1e-6 and self._last_torque_status == "ENABLED"
+                        and elapsed - self._repulsion_warn_log_last >= 0.5):
                     self.get_logger().warn(
                         f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
                     )
