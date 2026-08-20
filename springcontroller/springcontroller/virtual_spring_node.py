@@ -273,12 +273,12 @@ class VirtualSpringNode(Node):
         self.declare_parameter("danger_threshold", 0.01)
         # Low-strength repulsion field around scene collision objects --
         # separate from (and additive on top of) the danger_threshold clamp
-        # above, which only ever removes spring torque. Off by default until
-        # verified on hardware: this is a new autonomous force, and per
-        # collision_recovery_torque_ramp project memory, new autonomous
-        # collision-adjacent behavior on this arm goes through an explicit
-        # opt-in before it runs unattended.
-        self.declare_parameter("repulsion_enabled", False)
+        # above, which only ever removes spring torque. Was off by default
+        # pending hardware verification (per collision_recovery_torque_ramp
+        # project memory's explicit-opt-in policy for new autonomous
+        # collision-adjacent behavior) -- verified live 2026-08-20, now on
+        # by default. ~/set_repulsion_enabled still overrides it either way.
+        self.declare_parameter("repulsion_enabled", True)
         # Must be > danger_threshold -- the ramp runs from caution_threshold
         # (force starts at 0) down to danger_threshold (force saturates at
         # repulsion_max_force_n). 5cm was the project's old danger_threshold
