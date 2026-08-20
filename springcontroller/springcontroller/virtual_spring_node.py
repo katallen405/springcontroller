@@ -440,7 +440,6 @@ class VirtualSpringNode(Node):
         # instead of the intended rate. A simple elapsed-time comparison
         # (same pattern as _collision_log_last_flush above) sidesteps that
         # cache altogether.
-        self._collision_error_log_last = -1.0
         self._collision_warn_log_last = -1.0
         self._repulsion_warn_log_last = -1.0
         if collision_log_path:
@@ -906,10 +905,15 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = "caution_threshold must be > danger_threshold."
             return response
+        if request.repulsion_max_force_n <= 0.0:
+            response.success = False
+            response.message = "repulsion_max_force_n must be > 0."
+            return response
         self._arm.danger_threshold = request.danger_threshold
         self._caution_threshold = request.caution_threshold
+        self._repulsion_max_force_n = request.repulsion_max_force_n
         # Mirror into the parameter namespace, same as _update_spring_cb --
-        # both names are already declared (see __init__), so no
+        # all three names are already declared (see __init__), so no
         # _declare_or_ignore needed here.
         self.set_parameters([
             rclpy.parameter.Parameter(
@@ -920,16 +924,22 @@ class VirtualSpringNode(Node):
                 "caution_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
                 request.caution_threshold,
             ),
+            rclpy.parameter.Parameter(
+                "repulsion_max_force_n", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.repulsion_max_force_n,
+            ),
         ])
         self.get_logger().info(
             f"Collision thresholds updated: danger_threshold="
             f"{request.danger_threshold:.4f}m, caution_threshold="
-            f"{request.caution_threshold:.4f}m"
+            f"{request.caution_threshold:.4f}m, repulsion_max_force_n="
+            f"{request.repulsion_max_force_n:.2f}N"
         )
         response.success = True
         response.message = (
             f"danger_threshold={request.danger_threshold:.4f}m, "
-            f"caution_threshold={request.caution_threshold:.4f}m"
+            f"caution_threshold={request.caution_threshold:.4f}m, "
+            f"repulsion_max_force_n={request.repulsion_max_force_n:.2f}N"
         )
         return response
 
@@ -1319,13 +1329,22 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    if elapsed - self._collision_error_log_last >= 1.0:
+                    # Latch, like _set_springs_enabled's own "Springs
+                    # disabled (...)" INFO log already does -- log once per
+                    # collision *episode*, not every throttled cycle for as
+                    # long as the arm sits in collision (confirmed live
+                    # 2026-08-20: this was spamming ERROR once/second even
+                    # with torque control disabled and nothing left to do
+                    # about it). _springs_auto_disabled only clears via an
+                    # explicit ~/enable (or ~/enable's own pre-flight
+                    # rejection re-evaluating this same collision state),
+                    # so this naturally reappears when the episode is
+                    # genuinely fresh, not just still ongoing.
+                    if not self._springs_auto_disabled:
                         self.get_logger().error(
                             f"{kind} detected between {a} and {b}! Zeroing spring torque "
                             f"(gravity comp held)."
                         )
-                        self._collision_error_log_last = elapsed
-                    if not self._springs_auto_disabled:
                         self._set_springs_enabled(
                             False,
                             reason=f"{kind} detected between {a} and {b}",
