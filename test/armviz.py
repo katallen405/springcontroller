@@ -372,11 +372,14 @@ _COLLISION_OBJECT_MATERIAL = g.MeshLambertMaterial(
     color=0x808080, opacity=0.5, transparent=True
 )
 
-# Same gold as the study UI's .val.CAUTION (springcontroller_ui/web/index.html)
-# -- low opacity so overlapping halos from nearby objects don't wash the scene
-# out, and so the solid obstacle underneath stays clearly visible through it.
-_CAUTION_HALO_MATERIAL = g.MeshLambertMaterial(
-    color=0xd4a017, opacity=0.12, transparent=True, depthWrite=False
+# Same gold as the study UI's .val.CAUTION (springcontroller_ui/web/index.html).
+# Wireframe, not a filled translucent volume -- two overlapping transparent
+# meshes (this halo and the solid object's own semi-transparent material)
+# don't reliably depth-sort in WebGL, so a low-opacity filled halo could
+# render behind/be swallowed by the solid object depending on draw order.
+# A wireframe has no fill to fight over, so it stays visible regardless.
+_CAUTION_HALO_MATERIAL = g.MeshBasicMaterial(
+    color=0xd4a017, wireframe=True, opacity=0.7, transparent=True
 )
 
 def draw_collision_object(obj_id):
