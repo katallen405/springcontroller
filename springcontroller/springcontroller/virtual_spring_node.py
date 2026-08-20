@@ -579,6 +579,17 @@ class VirtualSpringNode(Node):
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
         )
+        # Repulsion-only component, separate from the combined ~/joint_torques
+        # output -- there was previously no way to see this in a rosbag, only
+        # a throttled (0.5s) terminal WARN with just the total norm. Same
+        # JointState/effort shape as ~/joint_torques so existing tooling
+        # (PlotJuggler, etc.) handles it the same way. Always published
+        # (zeros when repulsion_enabled is off or nothing's within
+        # caution_threshold) for a continuous signal to plot against, rather
+        # than a sparse one that only appears while nonzero.
+        self._repulsion_torque_pub = self.create_publisher(
+            JointState, "~/repulsion_torques", 10
+        )
 
         # (~/springs_updated publisher created earlier, above the
         # SpringCollection/_load_springs_from_params setup -- see there.)
@@ -1403,12 +1414,20 @@ class VirtualSpringNode(Node):
             # keeps torque_ramp_gravity_comp_lesson's invariant intact.
             if self._repulsion_enabled and self._last_repulsion_torques is not None:
                 torques = torques + self._last_repulsion_torques
+                repulsion_out = self._last_repulsion_torques
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
                 if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
                     self.get_logger().warn(
                         f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
                     )
                     self._repulsion_warn_log_last = elapsed
+            else:
+                repulsion_out = np.zeros(self._arm.n_dof)
+            repulsion_msg = JointState()
+            repulsion_msg.header.stamp = self.get_clock().now().to_msg()
+            repulsion_msg.name = self._arm.joint_names
+            repulsion_msg.effort = repulsion_out.tolist()
+            self._repulsion_torque_pub.publish(repulsion_msg)
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been

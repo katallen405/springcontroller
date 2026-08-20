@@ -451,6 +451,8 @@ def generate_launch_description():
             "--max-cache-size", "0",
             LaunchConfiguration("joint_states_topic"),
             "/virtual_spring_node/joint_torques",
+            "/virtual_spring_node/repulsion_torques",
+            "/virtual_spring_node/safety_status",
             "/kinova/joint_torque_command",
             "/gen3_torque_control/status",
             "/press_to_pin/residuals",
