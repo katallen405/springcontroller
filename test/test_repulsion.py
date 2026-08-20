@@ -151,12 +151,18 @@ def test_saturates_at_max_force_below_danger_threshold():
     assert np.linalg.norm(torques_a) > 0.0
 
 
-def test_handles_interpenetration_without_crashing():
+def test_interpenetrating_pairs_contribute_nothing():
+    # Regression test: confirmed live 2026-08-19 that coal's witness points
+    # are not a reliable push-out direction once a pair actually overlaps
+    # (a gripper link embedded in a cylinder obstacle got pushed further
+    # in, not out) -- get_repulsion_torques() now skips any pair with
+    # min_distance < 0 entirely rather than trust that direction. See
+    # get_repulsion_torques's docstring.
     arm = make_arm()
     add_object_at_gap(arm, gap=-0.01)  # 1cm overlap
     torques = arm.get_repulsion_torques(CAUTION, MAX_FORCE)
     assert torques.shape == (2,)
-    assert np.all(np.isfinite(torques))
+    np.testing.assert_array_equal(torques, np.zeros(2))
 
 
 def test_multiple_objects_sum_independently():

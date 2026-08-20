@@ -2326,10 +2326,17 @@ class VirtualSpringNode(Node):
     def _publish_safety_status(self, collision) -> None:
         """
         Broadcast the current self/scene-collision state on
-        ~/safety_status, prefixed "SAFE"/"DANGER"/"COLLISION" so a plain
-        prefix check is enough for a consumer (e.g.
-        wait_and_enable_torque.py's pre-flight check) to act on it without
-        parsing distances or link names.
+        ~/safety_status, prefixed "SAFE"/"CAUTION"/"DANGER"/"COLLISION" so a
+        plain prefix check is enough for a consumer (e.g.
+        wait_and_enable_torque.py's pre-flight check, which treats anything
+        not starting with "SAFE" as unsafe) to act on it without parsing
+        distances or link names.
+
+        CAUTION mirrors the repulsion field's caution_threshold (see
+        get_repulsion_torques) -- reported whenever the closest pair is
+        inside that radius but not yet in_danger, regardless of whether
+        repulsion_enabled is actually on, since it's useful early warning
+        either way.
         """
         msg = String()
         if collision is None:
@@ -2343,6 +2350,8 @@ class VirtualSpringNode(Node):
                     f"DANGER: {a}/{b} dist={collision.min_distance:.4f}m "
                     f"scale={collision.scale_factor:.2f}"
                 )
+            elif collision.min_distance < self._caution_threshold:
+                msg.data = f"CAUTION: {a}/{b} dist={collision.min_distance:.4f}m"
             else:
                 msg.data = f"SAFE (closest: {a}/{b} dist={collision.min_distance:.4f}m)"
         # Append, never prepend -- consumers (e.g. wait_and_enable_torque.py)

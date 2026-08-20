@@ -463,10 +463,19 @@ class URDFArmConfiguration:
         one only ever *removes* spring torque as the arm nears an obstacle;
         this one *adds* an outward push, ramping from 0 at caution_threshold
         to max_force_n at self._danger_threshold, then holding at
-        max_force_n for anything closer (including interpenetration, where
-        min_distance goes negative) -- unlike the clamp, this is meant to
-        keep helping exactly when the arm is already deep in the danger
-        zone, not cut out there.
+        max_force_n for anything closer down to (but not including) actual
+        interpenetration -- unlike the clamp, this is meant to keep helping
+        while the arm is deep in the danger zone but still short of contact,
+        not cut out there.
+
+        Pairs that have actually started interpenetrating (min_distance < 0)
+        are skipped entirely rather than saturated: confirmed empirically
+        2026-08-19 that coal's witness points are not a reliable push-out
+        direction once shapes overlap (a test box driven deeper into a
+        cylinder kept getting a witness point on its FAR side, flipping the
+        resulting direction to push further in) -- get_collision_status()'s
+        hard clamp is the safety response for genuine interpenetration, not
+        this field.
 
         Only pairs where one side is an environment object contribute
         (is_environment_object()) -- self-collision pairs are out of scope
@@ -505,6 +514,26 @@ class URDFArmConfiguration:
             result = self._collision_data.distanceResults[i]
             d = result.min_distance
             if d >= caution_threshold:
+                continue
+            if d < 0.0:
+                # Once a pair actually interpenetrates, coal's witness
+                # points are no longer a reliable push-out direction --
+                # confirmed empirically 2026-08-19 live on hardware (a
+                # gripper link embedded in a cylinder obstacle got pushed
+                # *deeper* in, not out) and reproduced offline: as a test
+                # box was driven further into a cylinder, getNearestPoint1()
+                # kept returning a point on the box's FAR side rather than
+                # its near side, flipping the resulting direction, and this
+                # didn't improve with DistanceRequest.enable_signed_distance
+                # either. get_collision_status()'s hard clamp (zero spring
+                # torque, auto-disable, escalate to a full torque disable
+                # after collision_disable_grace_sec) is already the safety
+                # response for actual interpenetration -- skip contributing
+                # a force here rather than trust a direction that can't be
+                # trusted. Saturation at max_force_n for 0 <= d <
+                # danger_threshold (below) is unaffected by this -- that
+                # band is still non-penetrating, where witness points are
+                # reliable.
                 continue
 
             if b_is_env:
