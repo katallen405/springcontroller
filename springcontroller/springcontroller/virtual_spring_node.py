@@ -67,6 +67,17 @@ Services
 ~/set_gravity_compensation  (std_srvs/SetBool)
     Toggle add_gravity_compensation at runtime.
 
+~/set_repulsion_enabled  (std_srvs/SetBool)
+    Toggle the repulsion_enabled field (see get_repulsion_torques) at
+    runtime -- ros2 param set has no effect on it, same as every other
+    parameter here; this is the only way to flip it without restarting.
+
+~/update_collision_thresholds  (springcontroller_interfaces/UpdateCollisionThresholds)
+    Live-tune danger_threshold and caution_threshold together (rejects the
+    request if caution_threshold isn't strictly greater than
+    danger_threshold). Same "ros2 param set has no effect" reasoning as
+    set_repulsion_enabled above.
+
 ~/add_spring  (springcontroller_interfaces/AddSpring)
     Add a Cartesian spring.
 
@@ -138,6 +149,10 @@ collision_check_interval_sec : double
 collision_log_path : str
     CSV log of collision-check events, flushed incrementally. Empty
     disables logging.
+collision_log_max_bytes : int
+    Once collision_log_path would exceed this size, it's rotated to
+    <path>.1 (overwriting any previous one) and a fresh file starts.
+    Default 50_000_000 (50MB). <= 0 disables rotation.
 spring_names, springs.<n>.* : per-VirtualSpring config (see
     config/springs.yaml) -- link_name, local_point, target, stiffness,
     damping, rest_length, inner_radius, outer_radius. `target` left
@@ -171,7 +186,7 @@ from geometry_msgs.msg import Pose, PointStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
-from std_msgs.msg import String, Float64
+from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
 import threading
 
@@ -183,6 +198,7 @@ import yaml
 from springcontroller_interfaces.srv import (
     AddSpring, RemoveSpring, AddJointSpring, AddOrientationSpring,
     LoadCollisionScene, CheckCollisionAtAngles, UpdateSpring,
+    UpdateCollisionThresholds,
 )
 
 
@@ -259,6 +275,43 @@ class VirtualSpringNode(Node):
         # memory) -- scaling starting a full 5cm out interfered with normal
         # spring operation well before anything was actually at risk.
         self.declare_parameter("danger_threshold", 0.01)
+        # Low-strength repulsion field around scene collision objects --
+        # separate from (and additive on top of) the danger_threshold clamp
+        # above, which only ever removes spring torque. Off by default until
+        # verified on hardware: this is a new autonomous force, and per
+        # collision_recovery_torque_ramp project memory, new autonomous
+        # collision-adjacent behavior on this arm goes through an explicit
+        # opt-in before it runs unattended.
+        self.declare_parameter("repulsion_enabled", False)
+        # Must be > danger_threshold -- the ramp runs from caution_threshold
+        # (force starts at 0) down to danger_threshold (force saturates at
+        # repulsion_max_force_n). 5cm was the project's old danger_threshold
+        # default before it was tightened to 1cm for close-quarters spring
+        # work (see gen3_collision_clamp_debug project memory) -- reused here
+        # as a reasonable "starting to notice an obstacle" radius for a much
+        # gentler force than the clamp ever applied.
+        self.declare_parameter("caution_threshold", 0.05)
+        # Small Cartesian force (N) applied at the near-collision point,
+        # mapped to joint torques via Jacobian-transpose -- see
+        # get_repulsion_torques(). Chosen to stay well under
+        # gen3_torque_control's torque_limit_nm even at the smallest (wrist)
+        # joints' typical lever arms; raise cautiously and re-check against
+        # that limit if this default proves too weak on hardware.
+        self.declare_parameter("repulsion_max_force_n", 5.0)
+        # repulsion_max_force_n bounds each *pair*'s own Cartesian force,
+        # not the resulting joint torque -- a contact far out on the
+        # gripper already has a large lever arm, and several simultaneous
+        # contacts (e.g. a multi-geometry gripper wrapping a curved
+        # obstacle) sum on top of that. Confirmed live 2026-08-19: a
+        # gripper closing around a cylinder scene object produced summed
+        # |tau| of 20-36 N*m, well past "low-strength" and close to the
+        # wrist joints' torque_limit_nm=9. 5.0 sits a bit above what a
+        # single max-force contact alone typically produces near the
+        # shoulder (so a normal single-contact case isn't neutered) while
+        # strongly bounding the multi-contact pileup that caused that --
+        # tune down further if it still feels strong with several
+        # simultaneous contacts.
+        self.declare_parameter("repulsion_max_total_torque_nm", 5.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -300,6 +353,18 @@ class VirtualSpringNode(Node):
         )
         self._last_collision_check_time = None
         self._last_collision_status = None
+        self._repulsion_enabled = self.get_parameter("repulsion_enabled").get_parameter_value().bool_value
+        self._caution_threshold = self.get_parameter("caution_threshold").get_parameter_value().double_value
+        self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
+        self._repulsion_max_total_torque_nm = (
+            self.get_parameter("repulsion_max_total_torque_nm").get_parameter_value().double_value
+        )
+        # Cached alongside _last_collision_status -- recomputed at the same
+        # throttled cadence (collision_check_interval_sec) since it reuses
+        # the same pin.computeDistances results get_collision_status() just
+        # populated. None until repulsion_enabled and the first throttled
+        # check has run.
+        self._last_repulsion_torques = None
         # Whether springs are currently disabled *because the hard collision
         # clamp disabled them* (as opposed to an operator explicitly calling
         # ~/enable(false) themselves) -- an edge-trigger guard so the
@@ -364,8 +429,20 @@ class VirtualSpringNode(Node):
         self.declare_parameter(
             "collision_log_path", os.path.expanduser("~/springcontroller_collision_log.csv")
         )
-        collision_log_path = os.path.expanduser(
+        # Opened in append mode across every launch with no cap -- confirmed
+        # live 2026-08-20 this had grown to 251MB / 2.5M rows over a couple
+        # days of repulsion-field testing. Single-generation rotation (like
+        # the simplest logrotate config): once the file would exceed this
+        # size, the current one becomes <path>.1 (overwriting any previous
+        # <path>.1) and a fresh one starts. 50MB is a few hundred thousand
+        # rows at this row width -- generous for a day's testing, nowhere
+        # near what caused the problem.
+        self.declare_parameter("collision_log_max_bytes", 50_000_000)
+        self._collision_log_path = os.path.expanduser(
             self.get_parameter("collision_log_path").get_parameter_value().string_value
+        )
+        self._collision_log_max_bytes = (
+            self.get_parameter("collision_log_max_bytes").get_parameter_value().integer_value
         )
         self._collision_log_file = None
         self._collision_log_writer = None
@@ -379,24 +456,10 @@ class VirtualSpringNode(Node):
         # instead of the intended rate. A simple elapsed-time comparison
         # (same pattern as _collision_log_last_flush above) sidesteps that
         # cache altogether.
-        self._collision_error_log_last = -1.0
         self._collision_warn_log_last = -1.0
-        if collision_log_path:
-            try:
-                write_header = not os.path.isfile(collision_log_path)
-                self._collision_log_file = open(collision_log_path, "a", newline="")
-                self._collision_log_writer = csv.writer(self._collision_log_file)
-                if write_header:
-                    self._collision_log_writer.writerow([
-                        "elapsed_s", "kind", "in_collision", "in_danger",
-                        "link_a", "link_b", "min_distance", "scale_factor",
-                        "log_call_failed",
-                    ])
-                    self._collision_log_file.flush()
-            except OSError as e:
-                self.get_logger().error(f"Could not open collision log at {collision_log_path}: {e}")
-                self._collision_log_file = None
-                self._collision_log_writer = None
+        self._repulsion_warn_log_last = -1.0
+        if self._collision_log_path:
+            self._open_collision_log()
 
         # Check config file exists before doing anything else
         config_path = os.path.expanduser(
@@ -486,8 +549,24 @@ class VirtualSpringNode(Node):
             String, "~/springs_updated", springs_updated_qos
         )
 
+        # TRANSIENT_LOCAL for the same reason as springs_updated above --
+        # this is current state, not a stream, so a UI that connects (or
+        # reconnects/reloads) after the last enable/disable event should see
+        # the real current value immediately rather than showing "unknown"
+        # until the next state change happens to occur. Confirmed live
+        # 2026-08-20: the study UI's springs-state had no authoritative
+        # source at all before this -- it only ever showed whatever the
+        # browser's own last ~/enable call optimistically claimed, so a
+        # fresh page load (or one where that call was never made this
+        # session) just stayed "unknown" forever, even though the real
+        # springs were actively enabled or disabled the whole time.
+        self._springs_enabled_pub = self.create_publisher(
+            Bool, "~/springs_enabled", springs_updated_qos
+        )
+
         self._load_springs_from_params()
         self._publish_springs_updated()
+        self._publish_springs_enabled()
 
         # Maps a CollisionObject.id to [(internal_object_id, relative_pose), ...]
         # -- one entry per primitive -- so REMOVE/MOVE messages, which only
@@ -502,6 +581,17 @@ class VirtualSpringNode(Node):
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
         )
+        # Repulsion-only component, separate from the combined ~/joint_torques
+        # output -- there was previously no way to see this in a rosbag, only
+        # a throttled (0.5s) terminal WARN with just the total norm. Same
+        # JointState/effort shape as ~/joint_torques so existing tooling
+        # (PlotJuggler, etc.) handles it the same way. Always published
+        # (zeros when repulsion_enabled is off or nothing's within
+        # caution_threshold) for a continuous signal to plot against, rather
+        # than a sparse one that only appears while nonzero.
+        self._repulsion_torque_pub = self.create_publisher(
+            JointState, "~/repulsion_torques", 10
+        )
 
         # (~/springs_updated publisher created earlier, above the
         # SpringCollection/_load_springs_from_params setup -- see there.)
@@ -512,6 +602,17 @@ class VirtualSpringNode(Node):
         # published every _joint_state_cb regardless of torque-enable
         # state, same as the collision check itself.
         self._safety_status_pub = self.create_publisher(String, "~/safety_status", 10)
+        # World-frame witness points [ax,ay,az,bx,by,bz] for the same
+        # closest_pair ~/safety_status describes, for visualizing the actual
+        # detected closest distance/location (e.g. a line in armviz) instead
+        # of inferring it from geometry alone -- confirmed live 2026-08-20
+        # this was a real gap when a stale caution-halo size made a
+        # perfectly correct CAUTION reading look wrong at a glance. Empty
+        # data means no collision model loaded / nothing to report, same
+        # convention as ~/safety_status's "no collision pairs reported".
+        self._closest_points_pub = self.create_publisher(
+            Float64MultiArray, "~/closest_collision_points", 10
+        )
 
         # Per-spring ~/target/<name> publishers (broadcast side -- see the
         # subscription of the same name below for the input/override side).
@@ -758,6 +859,51 @@ class VirtualSpringNode(Node):
         self._grav_comp_srv = self.create_service(
             SetBool, "~/set_gravity_compensation", self._set_grav_comp_cb
         )
+        # Same reasoning as gravity comp above -- repulsion_enabled is read
+        # once into self._repulsion_enabled at startup like any other
+        # declare_parameter default, and this node has no
+        # add_on_set_parameters_callback anywhere, so a live
+        # `ros2 param set /virtual_spring_node repulsion_enabled true`
+        # reports success (the parameter server accepts it) but the running
+        # control loop never re-reads it -- confirmed live 2026-08-19 as the
+        # cause of repulsion silently never activating. A dedicated service
+        # is the only way to flip it without a full node restart.
+        self._repulsion_enable_srv = self.create_service(
+            SetBool, "~/set_repulsion_enabled", self._set_repulsion_enabled_cb
+        )
+        # Live status, same reasoning/QoS as ~/springs_enabled -- confirmed
+        # live 2026-08-20 that without this, there's no way for a UI (or
+        # anyone else) to tell whether repulsion is actually on short of
+        # remembering their own last ~/set_repulsion_enabled call. Directly
+        # caused a whole confused debugging session: repulsion was believed
+        # enabled (from an earlier session) but had never actually been
+        # turned on this run, and nothing surfaced that mismatch anywhere.
+        self._repulsion_enabled_pub = self.create_publisher(
+            Bool, "~/repulsion_enabled_status", springs_updated_qos
+        )
+        self._repulsion_enabled_pub.publish(Bool(data=self._repulsion_enabled))
+        # Live [danger_threshold, caution_threshold, repulsion_max_force_n],
+        # same TRANSIENT_LOCAL reasoning as the two publishers above --
+        # confirmed live 2026-08-20 that without this, armviz's caution-halo
+        # padding is set once from the --caution-threshold launch arg and
+        # never updates again, so live-tuning caution_threshold via the UI
+        # (e.g. to 0.73m) silently left the drawn halo at its stale launch
+        # value while the actual triggering distance was the new one --
+        # very confusing to look at (halo looked ~7cm larger than the
+        # object, but CAUTION was firing at 73cm).
+        self._collision_thresholds_pub = self.create_publisher(
+            Float64MultiArray, "~/collision_thresholds_status", springs_updated_qos
+        )
+        self._publish_collision_thresholds()
+        # danger_threshold lives on self._arm (baked in at URDF load time,
+        # see _load_arm below); caution_threshold is a plain node attribute
+        # like repulsion_max_force_n. Same "no add_on_set_parameters_callback
+        # anywhere" reasoning as set_repulsion_enabled above -- a live
+        # ros2 param set would report success and do nothing.
+        self._update_collision_thresholds_srv = self.create_service(
+            UpdateCollisionThresholds, "~/update_collision_thresholds",
+            self._update_collision_thresholds_cb,
+        )
     def _load_arm(self) -> URDFArmConfiguration:
         """
         Load URDF from /robot_description topic if available
@@ -805,7 +951,72 @@ class VirtualSpringNode(Node):
         response.success = True
         response.message = f"add_gravity_compensation = {request.data}"
         return response
-    
+
+    def _set_repulsion_enabled_cb(self, request, response):
+        self._repulsion_enabled = request.data
+        if not request.data:
+            self._last_repulsion_torques = None
+        self._repulsion_enabled_pub.publish(Bool(data=request.data))
+        self.get_logger().info(
+            f"Repulsion field {'enabled' if request.data else 'disabled'}"
+        )
+        response.success = True
+        response.message = f"repulsion_enabled = {request.data}"
+        return response
+
+    def _update_collision_thresholds_cb(self, request, response):
+        # caution_threshold must stay strictly greater than danger_threshold
+        # -- get_repulsion_torques() divides by (caution_threshold -
+        # danger_threshold) (guarded there against exactly 0, but a
+        # negative/inverted span would silently produce a nonsense ramp
+        # rather than an error, so reject it here instead).
+        if request.danger_threshold <= 0.0:
+            response.success = False
+            response.message = "danger_threshold must be > 0."
+            return response
+        if request.caution_threshold <= request.danger_threshold:
+            response.success = False
+            response.message = "caution_threshold must be > danger_threshold."
+            return response
+        if request.repulsion_max_force_n <= 0.0:
+            response.success = False
+            response.message = "repulsion_max_force_n must be > 0."
+            return response
+        self._arm.danger_threshold = request.danger_threshold
+        self._caution_threshold = request.caution_threshold
+        self._repulsion_max_force_n = request.repulsion_max_force_n
+        # Mirror into the parameter namespace, same as _update_spring_cb --
+        # all three names are already declared (see __init__), so no
+        # _declare_or_ignore needed here.
+        self.set_parameters([
+            rclpy.parameter.Parameter(
+                "danger_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.danger_threshold,
+            ),
+            rclpy.parameter.Parameter(
+                "caution_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.caution_threshold,
+            ),
+            rclpy.parameter.Parameter(
+                "repulsion_max_force_n", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.repulsion_max_force_n,
+            ),
+        ])
+        self._publish_collision_thresholds()
+        self.get_logger().info(
+            f"Collision thresholds updated: danger_threshold="
+            f"{request.danger_threshold:.4f}m, caution_threshold="
+            f"{request.caution_threshold:.4f}m, repulsion_max_force_n="
+            f"{request.repulsion_max_force_n:.2f}N"
+        )
+        response.success = True
+        response.message = (
+            f"danger_threshold={request.danger_threshold:.4f}m, "
+            f"caution_threshold={request.caution_threshold:.4f}m, "
+            f"repulsion_max_force_n={request.repulsion_max_force_n:.2f}N"
+        )
+        return response
+
     def _flatten_dict(self, d: dict, prefix: str = "") -> dict:
         """Flatten nested dict to dot-separated keys."""
         result = {}
@@ -1199,6 +1410,12 @@ class VirtualSpringNode(Node):
                     (now - self._last_collision_check_time).nanoseconds / 1e9
                     >= self._collision_check_interval):
                 self._last_collision_status = self._arm.get_collision_status()
+                self._last_repulsion_torques = (
+                    self._arm.get_repulsion_torques(
+                        self._caution_threshold, self._repulsion_max_force_n,
+                        self._repulsion_max_total_torque_nm,
+                    ) if self._repulsion_enabled else None
+                )
                 self._last_collision_check_time = now
             collision = self._last_collision_status
             self._publish_safety_status(collision)
@@ -1211,13 +1428,22 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    if elapsed - self._collision_error_log_last >= 1.0:
+                    # Latch, like _set_springs_enabled's own "Springs
+                    # disabled (...)" INFO log already does -- log once per
+                    # collision *episode*, not every throttled cycle for as
+                    # long as the arm sits in collision (confirmed live
+                    # 2026-08-20: this was spamming ERROR once/second even
+                    # with torque control disabled and nothing left to do
+                    # about it). _springs_auto_disabled only clears via an
+                    # explicit ~/enable (or ~/enable's own pre-flight
+                    # rejection re-evaluating this same collision state),
+                    # so this naturally reappears when the episode is
+                    # genuinely fresh, not just still ongoing.
+                    if not self._springs_auto_disabled:
                         self.get_logger().error(
                             f"{kind} detected between {a} and {b}! Zeroing spring torque "
                             f"(gravity comp held)."
                         )
-                        self._collision_error_log_last = elapsed
-                    if not self._springs_auto_disabled:
                         self._set_springs_enabled(
                             False,
                             reason=f"{kind} detected between {a} and {b}",
@@ -1267,6 +1493,30 @@ class VirtualSpringNode(Node):
                     if elapsed - self._collision_log_last_flush >= 0.5:
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
+                        self._rotate_collision_log_if_needed()
+
+            # Repulsion field: unconditionally additive, outside every
+            # branch above (in_collision / in_danger / clear) and
+            # independent of spring enable state -- see repulsion_enabled's
+            # declaration. Applied after gravity comp is already folded into
+            # `torques`, as a pure additional term, never a multiplier --
+            # keeps torque_ramp_gravity_comp_lesson's invariant intact.
+            if self._repulsion_enabled and self._last_repulsion_torques is not None:
+                torques = torques + self._last_repulsion_torques
+                repulsion_out = self._last_repulsion_torques
+                repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
+                if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
+                    self.get_logger().warn(
+                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
+                    )
+                    self._repulsion_warn_log_last = elapsed
+            else:
+                repulsion_out = np.zeros(self._arm.n_dof)
+            repulsion_msg = JointState()
+            repulsion_msg.header.stamp = self.get_clock().now().to_msg()
+            repulsion_msg.name = self._arm.joint_names
+            repulsion_msg.effort = repulsion_out.tolist()
+            self._repulsion_torque_pub.publish(repulsion_msg)
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
@@ -1687,10 +1937,29 @@ class VirtualSpringNode(Node):
         state = "enabled" if enabled else "disabled"
         suffix = f" ({reason})" if reason else ""
         self.get_logger().info(f"Springs {state}{suffix}.")
+        self._publish_springs_enabled()
 
     def _enable_cb(
         self, request: SetBool.Request, response: SetBool.Response
     ) -> SetBool.Response:
+        # Enabling while still in_collision is pointless -- _joint_state_cb's
+        # collision clamp will auto-disable again on its very next cycle
+        # (see _set_springs_enabled's auto=True path), so this call would
+        # otherwise report success and "All springs enabled." while the
+        # UI's live springs-state immediately flips back to disabled a
+        # moment later -- confusing/misleading (confirmed live 2026-08-20:
+        # the msg-box's stale "enabled" text sat there green while the
+        # status row correctly showed disabled-by-collision). Report the
+        # truth up front instead of a success that won't hold.
+        if request.data and self._last_collision_status is not None \
+                and self._last_collision_status.in_collision:
+            a, b = self._last_collision_status.closest_pair
+            response.success = False
+            response.message = (
+                f"Refusing to enable: still in collision ({a}/{b}) -- "
+                "would be immediately auto-disabled again. Move clear first."
+            )
+            return response
         self._set_springs_enabled(request.data, reason="via ~/enable service")
         state = "enabled" if request.data else "disabled"
         response.success = True
@@ -2291,13 +2560,41 @@ class VirtualSpringNode(Node):
         msg.data = json.dumps([s.name for s in self._springs])
         self._springs_updated_pub.publish(msg)
 
+    def _publish_springs_enabled(self) -> None:
+        # All springs are always enabled/disabled together (see
+        # _set_springs_enabled) -- any one of them reflects the aggregate
+        # state, defaulting True if there are no springs loaded at all yet.
+        # SpringCollection supports iteration/len but not indexing (no
+        # __getitem__) -- confirmed live 2026-08-20, self._springs[0]
+        # crashed the node on startup with "not subscriptable".
+        first = next(iter(self._springs), None)
+        enabled = first.enabled if first is not None else True
+        self._springs_enabled_pub.publish(Bool(data=enabled))
+
+    def _publish_collision_thresholds(self) -> None:
+        # [danger_threshold, caution_threshold, repulsion_max_force_n], in
+        # that fixed order -- consumed by armviz to keep the caution-halo
+        # padding in sync with live updates (see ~/collision_thresholds_status
+        # in __init__ for why this exists).
+        self._collision_thresholds_pub.publish(Float64MultiArray(data=[
+            self._arm.danger_threshold, self._caution_threshold,
+            self._repulsion_max_force_n,
+        ]))
+
     def _publish_safety_status(self, collision) -> None:
         """
         Broadcast the current self/scene-collision state on
-        ~/safety_status, prefixed "SAFE"/"DANGER"/"COLLISION" so a plain
-        prefix check is enough for a consumer (e.g.
-        wait_and_enable_torque.py's pre-flight check) to act on it without
-        parsing distances or link names.
+        ~/safety_status, prefixed "SAFE"/"CAUTION"/"DANGER"/"COLLISION" so a
+        plain prefix check is enough for a consumer (e.g.
+        wait_and_enable_torque.py's pre-flight check, which treats anything
+        not starting with "SAFE" as unsafe) to act on it without parsing
+        distances or link names.
+
+        CAUTION mirrors the repulsion field's caution_threshold (see
+        get_repulsion_torques) -- reported whenever the closest pair is
+        inside that radius but not yet in_danger, regardless of whether
+        repulsion_enabled is actually on, since it's useful early warning
+        either way.
         """
         msg = String()
         if collision is None:
@@ -2311,6 +2608,8 @@ class VirtualSpringNode(Node):
                     f"DANGER: {a}/{b} dist={collision.min_distance:.4f}m "
                     f"scale={collision.scale_factor:.2f}"
                 )
+            elif collision.min_distance < self._caution_threshold:
+                msg.data = f"CAUTION: {a}/{b} dist={collision.min_distance:.4f}m"
             else:
                 msg.data = f"SAFE (closest: {a}/{b} dist={collision.min_distance:.4f}m)"
         # Append, never prepend -- consumers (e.g. wait_and_enable_torque.py)
@@ -2325,6 +2624,63 @@ class VirtualSpringNode(Node):
                 "may be stale)"
             )
         self._safety_status_pub.publish(msg)
+
+        points_msg = Float64MultiArray()
+        if collision is not None:
+            points_msg.data = (
+                list(collision.closest_point_a) + list(collision.closest_point_b)
+            )
+        self._closest_points_pub.publish(points_msg)
+
+    def _open_collision_log(self) -> None:
+        """(Re)open self._collision_log_path in append mode, writing the
+        header row only if the file doesn't already exist -- used both at
+        startup and by _rotate_collision_log_if_needed() after a rotation
+        (where the old file has just been moved aside, so this always sees
+        a fresh, empty path and writes a new header)."""
+        try:
+            write_header = not os.path.isfile(self._collision_log_path)
+            self._collision_log_file = open(self._collision_log_path, "a", newline="")
+            self._collision_log_writer = csv.writer(self._collision_log_file)
+            if write_header:
+                self._collision_log_writer.writerow([
+                    "elapsed_s", "kind", "in_collision", "in_danger",
+                    "link_a", "link_b", "min_distance", "scale_factor",
+                    "log_call_failed",
+                ])
+                self._collision_log_file.flush()
+        except OSError as e:
+            self.get_logger().error(
+                f"Could not open collision log at {self._collision_log_path}: {e}"
+            )
+            self._collision_log_file = None
+            self._collision_log_writer = None
+
+    def _rotate_collision_log_if_needed(self) -> None:
+        """Single-generation rotation, checked at the same throttled cadence
+        as the flush that calls this -- accurate os.path.getsize() needs a
+        flush to have just happened, and checking on every single writerow()
+        call (up to ~100Hz) would be needless syscall overhead for a
+        condition that's only ever true a few times a day at most."""
+        if self._collision_log_max_bytes <= 0 or self._collision_log_file is None:
+            return
+        try:
+            size = os.path.getsize(self._collision_log_path)
+        except OSError:
+            return
+        if size < self._collision_log_max_bytes:
+            return
+        self._collision_log_file.close()
+        backup_path = self._collision_log_path + ".1"
+        try:
+            os.replace(self._collision_log_path, backup_path)
+        except OSError as e:
+            self.get_logger().error(f"Could not rotate collision log: {e}")
+        self._open_collision_log()
+        self.get_logger().info(
+            f"Collision log rotated ({size} bytes >= {self._collision_log_max_bytes} "
+            f"limit) -- previous file kept at {backup_path}."
+        )
 
     def destroy_node(self) -> None:
         if self._collision_log_file is not None:

@@ -76,12 +76,20 @@ class CollisionStatus:
         True when min_distance < danger_threshold.
     in_collision : bool
         True when min_distance <= 0.
+    closest_point_a, closest_point_b : np.ndarray, shape (3,)
+        World-frame witness points on each side of closest_pair (from coal's
+        getNearestPoint1()/2()) -- the same caveat as get_repulsion_torques()
+        applies once min_distance < 0 (interpenetrating): these can land on
+        the wrong side of the penetrating geometry, not a reliable
+        "shortest path between the two shapes" once they actually overlap.
     """
     min_distance: float
     closest_pair: tuple[str, str]
     scale_factor: float
     in_danger: bool
     in_collision: bool
+    closest_point_a: np.ndarray
+    closest_point_b: np.ndarray
 
 
 class URDFArmConfiguration:
@@ -352,6 +360,19 @@ class URDFArmConfiguration:
         """True if collision geometry was successfully loaded."""
         return self._collision_model is not None
 
+    @property
+    def danger_threshold(self) -> float:
+        """Distance (m) below which get_collision_status() reports in_danger
+        and get_repulsion_torques() saturates at max_force_n. Settable at
+        runtime (e.g. from virtual_spring_node's ~/update_collision_thresholds
+        service) -- takes effect on the next get_collision_status() call,
+        same as any other live tuning knob here."""
+        return self._danger_threshold
+
+    @danger_threshold.setter
+    def danger_threshold(self, value: float) -> None:
+        self._danger_threshold = value
+
     def _angles_to_q(self, angles: np.ndarray) -> np.ndarray:
         """Plain per-joint angles -> pinocchio's nq encoding (see update_from_angles)."""
         q = pin.neutral(self._model)
@@ -408,12 +429,15 @@ class URDFArmConfiguration:
         else:
             scale_factor = 1.0
 
+        closest_result = collision_data.distanceResults[closest_idx]
         return CollisionStatus(
             min_distance=min_dist,
             closest_pair=(name_a, name_b),
             scale_factor=scale_factor,
             in_danger=in_danger,
             in_collision=in_collision,
+            closest_point_a=np.asarray(closest_result.getNearestPoint1(), dtype=float),
+            closest_point_b=np.asarray(closest_result.getNearestPoint2(), dtype=float),
         )
 
     def get_collision_status(self) -> Optional[CollisionStatus]:
@@ -451,6 +475,150 @@ class URDFArmConfiguration:
         pin.forwardKinematics(self._model, data, q)
         pin.updateGeometryPlacements(self._model, data, self._collision_model, collision_data)
         return self._collision_status_from(q, data, collision_data)
+
+    def get_repulsion_torques(
+        self, caution_threshold: float, max_force_n: float,
+        max_total_torque_nm: float = float("inf"),
+    ) -> np.ndarray:
+        """
+        Joint torques from a low-strength repulsion field around scene
+        (environment) collision objects.
+
+        Distinct from get_collision_status()'s danger_threshold clamp: that
+        one only ever *removes* spring torque as the arm nears an obstacle;
+        this one *adds* an outward push, ramping from 0 at caution_threshold
+        to max_force_n at self._danger_threshold, then holding at
+        max_force_n for anything closer down to (but not including) actual
+        interpenetration -- unlike the clamp, this is meant to keep helping
+        while the arm is deep in the danger zone but still short of contact,
+        not cut out there.
+
+        max_force_n bounds each *pair*'s own Cartesian force, not the
+        resulting joint torque -- a single contact far out on the gripper
+        already has a large lever arm back to the shoulder, and several
+        simultaneous contacts (e.g. a multi-geometry gripper wrapping a
+        curved obstacle) sum on top of that. Confirmed live 2026-08-19: a
+        gripper closing around a cylinder produced several simultaneous
+        near-contact pairs whose summed |tau| reached 20-36 N*m, well past
+        "low-strength" and close to the wrist joints' torque_limit_nm. After
+        summing every pair's contribution, the *total* vector's norm is
+        clipped to max_total_torque_nm (direction preserved, same principle
+        as gradient-norm clipping) -- default float("inf") (no clipping) so
+        existing callers that don't care about this are unaffected; pass a
+        finite value to actually bound it.
+
+        Pairs that have actually started interpenetrating (min_distance < 0)
+        are skipped entirely rather than saturated: confirmed empirically
+        2026-08-19 that coal's witness points are not a reliable push-out
+        direction once shapes overlap (a test box driven deeper into a
+        cylinder kept getting a witness point on its FAR side, flipping the
+        resulting direction to push further in) -- get_collision_status()'s
+        hard clamp is the safety response for genuine interpenetration, not
+        this field.
+
+        Only pairs where one side is an environment object contribute
+        (is_environment_object()) -- self-collision pairs are out of scope
+        for this field. Reuses self._collision_data.distanceResults from
+        whatever pin.computeDistances call most recently populated it (i.e.
+        the same query get_collision_status() just ran) rather than
+        recomputing distances itself, so call get_collision_status() (or
+        update()) first in the same cycle.
+
+        Returns a zero vector if no collision model is loaded, either
+        threshold is non-positive, or nothing is within caution_threshold.
+        """
+        torques = np.zeros(self._model.nv)
+        if self._collision_model is None or self._collision_data is None:
+            return torques
+        if caution_threshold <= 0.0 or max_force_n <= 0.0:
+            return torques
+
+        # Guards against a misconfigured caution_threshold <= danger_threshold
+        # (no room for a ramp) rather than dividing by ~0 in that case.
+        span = max(caution_threshold - self._danger_threshold, 1e-9)
+
+        n_pairs = len(self._collision_model.collisionPairs)
+        for i in range(n_pairs):
+            pair = self._collision_model.collisionPairs[i]
+            geom_a = self._collision_model.geometryObjects[pair.first]
+            geom_b = self._collision_model.geometryObjects[pair.second]
+            a_is_env = geom_a.name in self._environment_object_ids
+            b_is_env = geom_b.name in self._environment_object_ids
+            if a_is_env == b_is_env:
+                # Neither is a scene object (self-collision, out of scope
+                # here) -- add_environment_object() never pairs two
+                # environment objects together, so both-True can't happen.
+                continue
+
+            result = self._collision_data.distanceResults[i]
+            d = result.min_distance
+            if d >= caution_threshold:
+                continue
+            if d < 0.0:
+                # Once a pair actually interpenetrates, coal's witness
+                # points are no longer a reliable push-out direction --
+                # confirmed empirically 2026-08-19 live on hardware (a
+                # gripper link embedded in a cylinder obstacle got pushed
+                # *deeper* in, not out) and reproduced offline: as a test
+                # box was driven further into a cylinder, getNearestPoint1()
+                # kept returning a point on the box's FAR side rather than
+                # its near side, flipping the resulting direction, and this
+                # didn't improve with DistanceRequest.enable_signed_distance
+                # either. get_collision_status()'s hard clamp (zero spring
+                # torque, auto-disable, escalate to a full torque disable
+                # after collision_disable_grace_sec) is already the safety
+                # response for actual interpenetration -- skip contributing
+                # a force here rather than trust a direction that can't be
+                # trusted. Saturation at max_force_n for 0 <= d <
+                # danger_threshold (below) is unaffected by this -- that
+                # band is still non-penetrating, where witness points are
+                # reliable.
+                continue
+
+            if b_is_env:
+                robot_geom, robot_point = geom_a, result.getNearestPoint1()
+                obstacle_point = result.getNearestPoint2()
+            else:
+                robot_geom, robot_point = geom_b, result.getNearestPoint2()
+                obstacle_point = result.getNearestPoint1()
+
+            # A geometry object's own .name is "{link}_{index}" (a link can
+            # have multiple <collision> elements), not the URDF/frame name
+            # get_jacobian()/get_link_transform() expect -- resolve via
+            # parentFrame instead, same as add_environment_object's
+            # exclude_links matching above.
+            robot_name = self._model.frames[robot_geom.parentFrame].name
+
+            robot_point = np.asarray(robot_point, dtype=float)
+            obstacle_point = np.asarray(obstacle_point, dtype=float)
+            direction = robot_point - obstacle_point
+            norm = np.linalg.norm(direction)
+            if norm < 1e-6:
+                # Deep penetration with coincident witness points -- no
+                # reliable push direction. Skip rather than divide by ~0;
+                # get_collision_status()'s hard clamp is already holding
+                # spring torque at zero in this regime.
+                continue
+            direction = direction / norm
+
+            if d < self._danger_threshold:
+                magnitude = max_force_n
+            else:
+                t = (caution_threshold - d) / span
+                magnitude = max_force_n * (t * t)
+
+            force_world = magnitude * direction
+
+            T = self.get_link_transform(robot_name)
+            local_point = T[:3, :3].T @ (robot_point - T[:3, 3])
+            J = self.get_jacobian(robot_name, local_point)
+            torques += J[:3, :].T @ force_world
+
+        total_norm = np.linalg.norm(torques)
+        if total_norm > max_total_torque_nm > 0.0:
+            torques *= max_total_torque_nm / total_norm
+
+        return torques
 
     # ------------------------------------------------------------------
     # Environment (scene) collision objects
