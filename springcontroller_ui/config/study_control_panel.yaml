@@ -44,10 +44,12 @@ study_control_panel_node:
     study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
     # Participant midline's pre-set seat position, world-frame meters (see
     # orchestration_node.py's declare_parameter comment). Measured live
-    # 2026-08-20: 45cm in from the table's -x edge, 30cm from the table's
-    # -y edge (see gen3_collision_scene.yaml's table pose for the edges).
-    workspace_seat_x: 0.3357
-    workspace_seat_y: -0.10005
+    # 2026-08-20: 45cm in from the table's -x edge, and a further 30cm out
+    # past the table's -y edge -- the participant sits off the end of the
+    # table, not under it (see gen3_collision_scene.yaml's table pose).
+    # Rounded to the nearest cm since nothing finer matters here.
+    workspace_seat_x: 0.34
+    workspace_seat_y: -0.70
     workspace_study_data_dir: "~/gen3_study_data"
     workspace_spring_name: tip_spring
     workspace_spring_stiffness: 50.0

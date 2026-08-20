@@ -20,7 +20,7 @@ objects:
 
   table:
     shape: box
-    dimensions: [1.524, 0.762, 0.05]
+    dimensions: [1.52, 0.76, 0.05]
     frame_id: "world"
     pose:
       # z = -half the box height so the *top* face lands at z=0, flush with
@@ -31,8 +31,9 @@ objects:
       # on links that were actually still clear of the real table.
       # x/y measured live 2026-08-20: table is 60in (x) x 30in (y), with the
       # robot base 4.5in from the -x edge and 15.75in from the -y edge.
-      # center = edge + half-dimension, in meters (1in = 0.0254m).
-      position: [0.6477, -0.01905, -0.025]
+      # center = edge + half-dimension; rounded to the nearest cm since
+      # nothing finer matters here.
+      position: [0.65, -0.02, -0.025]
       orientation: [0.0, 0.0, 0.0, 1.0]
     # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
     # URDF link names to exclude from collision pairs against this object,
@@ -54,7 +55,9 @@ objects:
       # x/y centered on the pre-set participant seat position (see
       # workspace_seat_x/workspace_seat_y in
       # springcontroller_ui/config/study_control_panel.yaml) -- measured
-      # live 2026-08-20: chair is 45cm in from the table's -x edge and
-      # 30cm from the table's -y edge (same table edges as above).
-      position: [0.3357, -0.10005, 0.0]
+      # live 2026-08-20: chair is 45cm in from the table's -x edge, and a
+      # further 30cm out past the table's -y edge (the participant sits
+      # off the end of the table, not under it). Rounded to the nearest
+      # cm since nothing finer matters here.
+      position: [0.34, -0.70, 0.0]
       orientation: [0.0, 0.0, 0.0, 1.0]
