@@ -440,7 +440,6 @@ class VirtualSpringNode(Node):
         # instead of the intended rate. A simple elapsed-time comparison
         # (same pattern as _collision_log_last_flush above) sidesteps that
         # cache altogether.
-        self._collision_error_log_last = -1.0
         self._collision_warn_log_last = -1.0
         self._repulsion_warn_log_last = -1.0
         if collision_log_path:
@@ -579,6 +578,17 @@ class VirtualSpringNode(Node):
         # Publishers
         self._torque_pub = self.create_publisher(
             JointState, "~/joint_torques", 10
+        )
+        # Repulsion-only component, separate from the combined ~/joint_torques
+        # output -- there was previously no way to see this in a rosbag, only
+        # a throttled (0.5s) terminal WARN with just the total norm. Same
+        # JointState/effort shape as ~/joint_torques so existing tooling
+        # (PlotJuggler, etc.) handles it the same way. Always published
+        # (zeros when repulsion_enabled is off or nothing's within
+        # caution_threshold) for a continuous signal to plot against, rather
+        # than a sparse one that only appears while nonzero.
+        self._repulsion_torque_pub = self.create_publisher(
+            JointState, "~/repulsion_torques", 10
         )
 
         # (~/springs_updated publisher created earlier, above the
@@ -930,10 +940,15 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = "caution_threshold must be > danger_threshold."
             return response
+        if request.repulsion_max_force_n <= 0.0:
+            response.success = False
+            response.message = "repulsion_max_force_n must be > 0."
+            return response
         self._arm.danger_threshold = request.danger_threshold
         self._caution_threshold = request.caution_threshold
+        self._repulsion_max_force_n = request.repulsion_max_force_n
         # Mirror into the parameter namespace, same as _update_spring_cb --
-        # both names are already declared (see __init__), so no
+        # all three names are already declared (see __init__), so no
         # _declare_or_ignore needed here.
         self.set_parameters([
             rclpy.parameter.Parameter(
@@ -944,16 +959,22 @@ class VirtualSpringNode(Node):
                 "caution_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
                 request.caution_threshold,
             ),
+            rclpy.parameter.Parameter(
+                "repulsion_max_force_n", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.repulsion_max_force_n,
+            ),
         ])
         self.get_logger().info(
             f"Collision thresholds updated: danger_threshold="
             f"{request.danger_threshold:.4f}m, caution_threshold="
-            f"{request.caution_threshold:.4f}m"
+            f"{request.caution_threshold:.4f}m, repulsion_max_force_n="
+            f"{request.repulsion_max_force_n:.2f}N"
         )
         response.success = True
         response.message = (
             f"danger_threshold={request.danger_threshold:.4f}m, "
-            f"caution_threshold={request.caution_threshold:.4f}m"
+            f"caution_threshold={request.caution_threshold:.4f}m, "
+            f"repulsion_max_force_n={request.repulsion_max_force_n:.2f}N"
         )
         return response
 
@@ -1368,13 +1389,22 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    if elapsed - self._collision_error_log_last >= 1.0:
+                    # Latch, like _set_springs_enabled's own "Springs
+                    # disabled (...)" INFO log already does -- log once per
+                    # collision *episode*, not every throttled cycle for as
+                    # long as the arm sits in collision (confirmed live
+                    # 2026-08-20: this was spamming ERROR once/second even
+                    # with torque control disabled and nothing left to do
+                    # about it). _springs_auto_disabled only clears via an
+                    # explicit ~/enable (or ~/enable's own pre-flight
+                    # rejection re-evaluating this same collision state),
+                    # so this naturally reappears when the episode is
+                    # genuinely fresh, not just still ongoing.
+                    if not self._springs_auto_disabled:
                         self.get_logger().error(
                             f"{kind} detected between {a} and {b}! Zeroing spring torque "
                             f"(gravity comp held)."
                         )
-                        self._collision_error_log_last = elapsed
-                    if not self._springs_auto_disabled:
                         self._set_springs_enabled(
                             False,
                             reason=f"{kind} detected between {a} and {b}",
@@ -1433,12 +1463,20 @@ class VirtualSpringNode(Node):
             # keeps torque_ramp_gravity_comp_lesson's invariant intact.
             if self._repulsion_enabled and self._last_repulsion_torques is not None:
                 torques = torques + self._last_repulsion_torques
+                repulsion_out = self._last_repulsion_torques
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
                 if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
                     self.get_logger().warn(
                         f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
                     )
                     self._repulsion_warn_log_last = elapsed
+            else:
+                repulsion_out = np.zeros(self._arm.n_dof)
+            repulsion_msg = JointState()
+            repulsion_msg.header.stamp = self.get_clock().now().to_msg()
+            repulsion_msg.name = self._arm.joint_names
+            repulsion_msg.effort = repulsion_out.tolist()
+            self._repulsion_torque_pub.publish(repulsion_msg)
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
