@@ -107,6 +107,21 @@ def generate_launch_description():
         ),
     )
 
+    caution_threshold_arg = DeclareLaunchArgument(
+        "caution_threshold",
+        default_value="0.05",
+        description=(
+            "Must stay in sync between virtual_spring_node (where it "
+            "actually gates get_repulsion_torques(), see "
+            "urdf_arm_configuration.py) and armviz (where it only sizes the "
+            "translucent gold halo drawn around each collision object) -- "
+            "a single launch arg for both, same reasoning as "
+            "joint_states_topic above. gen3_springs.yaml does not currently "
+            "override this key, so the launch-arg default here is what "
+            "actually applies unless overridden on the command line."
+        ),
+    )
+
     srdf_path_arg = DeclareLaunchArgument(
         "srdf_path",
         default_value=(
@@ -290,6 +305,7 @@ def generate_launch_description():
                 "torque_disable_service": LaunchConfiguration("torque_control_service"),
                 "torque_status_topic": LaunchConfiguration("torque_status_topic"),
                 "spring_ramp_duration_sec": LaunchConfiguration("spring_ramp_duration_sec"),
+                "caution_threshold": LaunchConfiguration("caution_threshold"),
             },
             LaunchConfiguration("config"),
         ],
@@ -390,6 +406,7 @@ def generate_launch_description():
                     "/home/katallen/sandbox/src/springcontroller/test/armviz.py",
                     "--urdf", LaunchConfiguration("urdf_path"),
                     "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
+                    "--caution-threshold", LaunchConfiguration("caution_threshold"),
                     "--ros-args",
                     # Same joint_states_topic argument virtual_spring_node's
                     # own remappings=[...] uses above -- a single source of
@@ -462,6 +479,7 @@ def generate_launch_description():
         urdf_path_arg,
         config_arg,
         joint_states_topic_arg,
+        caution_threshold_arg,
         srdf_path_arg,
         add_gravity_compensation_arg,
         torque_control_service_arg,

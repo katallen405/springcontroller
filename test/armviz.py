@@ -50,6 +50,13 @@ def parse_args():
              "Off by default when attaching to a pinned --zmq-url server "
              "(e.g. one already opened by a UI iframe or another viewer).",
     )
+    parser.add_argument(
+        "--caution-threshold", type=float, default=0.05,
+        help="Must match virtual_spring_node's caution_threshold param -- "
+             "draws a translucent gold halo this far outside each collision "
+             "object's own surface, showing the repulsion field's reach "
+             "(see get_repulsion_torques()). 0 or negative disables the halo.",
+    )
     # Strip ROS-specific args (--ros-args -r ... -p ... etc.) before parsing
     # our own, so this still works cleanly when launched via ros2 launch/run.
     return parser.parse_args(remove_ros_args(args=sys.argv)[1:])
@@ -58,6 +65,7 @@ def parse_args():
 _args = parse_args()
 
 URDF          = _args.urdf
+CAUTION_THRESHOLD = _args.caution_threshold
 JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
@@ -364,11 +372,31 @@ _COLLISION_OBJECT_MATERIAL = g.MeshLambertMaterial(
     color=0x808080, opacity=0.5, transparent=True
 )
 
+# Same gold as the study UI's .val.CAUTION (springcontroller_ui/web/index.html)
+# -- low opacity so overlapping halos from nearby objects don't wash the scene
+# out, and so the solid obstacle underneath stays clearly visible through it.
+_CAUTION_HALO_MATERIAL = g.MeshLambertMaterial(
+    color=0xd4a017, opacity=0.12, transparent=True, depthWrite=False
+)
+
 def draw_collision_object(obj_id):
     """(Re)draw every primitive of a tracked collision object at its current
     pose. Event-driven (called from collision_object_cb on ADD/MOVE), unlike
     draw_springs/draw_frames -- scene objects don't move with joint state,
-    so there's nothing to refresh in the main display loop."""
+    so there's nothing to refresh in the main display loop.
+
+    Also draws a translucent gold "halo" copy of each primitive, padded
+    outward by CAUTION_THRESHOLD -- get_repulsion_torques() (see
+    urdf_arm_configuration.py) isn't a spatial vector field sampled at many
+    points; at any instant it's a single force computed from whichever point
+    on the robot and obstacle are currently nearest each other, direction
+    away from the obstacle's nearest point, magnitude ramping from 0 at
+    caution_threshold up to full strength at danger_threshold. The one
+    stable *shape* in that picture is this offset shell -- the boundary
+    where the field can start acting at all -- so that's what's drawn,
+    rather than an arrow field that would imply forces exist at points the
+    math never actually evaluates.
+    """
     entry = collision_objects.get(obj_id)
     if entry is None:
         return
@@ -382,6 +410,20 @@ def draw_collision_object(obj_id):
             viz.viewer[path].set_object(g.Cylinder(height, radius), _COLLISION_OBJECT_MATERIAL)
             T = T @ _CYLINDER_AXIS_ALIGN
         viz.viewer[path].set_transform(T)
+
+        if CAUTION_THRESHOLD > 0.0:
+            halo_path = f"collision_objects/{obj_id}/{i}/halo"
+            pad = CAUTION_THRESHOLD
+            if shape == "box":
+                halo_dims = [d + 2 * pad for d in dims]
+                viz.viewer[halo_path].set_object(g.Box(halo_dims), _CAUTION_HALO_MATERIAL)
+            else:  # cylinder -- T already includes _CYLINDER_AXIS_ALIGN above
+                height, radius = dims
+                viz.viewer[halo_path].set_object(
+                    g.Cylinder(height + 2 * pad, radius + pad), _CAUTION_HALO_MATERIAL
+                )
+            # Child of the solid primitive's own path, so it inherits T
+            # automatically -- no separate set_transform needed.
 
 
 
