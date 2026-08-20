@@ -48,5 +48,9 @@ objects:
     dimensions: [1.0, 0.3]
     frame_id: "world"
     pose:
-      position: [0.5, -0.75, 0.0]
+      # x/y centered on the pre-set participant seat position (see
+      # workspace_seat_x/workspace_seat_y in
+      # springcontroller_ui/config/study_control_panel.yaml) -- x=+16in,
+      # y=-20in from the robot base.
+      position: [0.4064, -0.508, 0.0]
       orientation: [0.0, 0.0, 0.0, 1.0]

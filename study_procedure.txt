@@ -18,9 +18,10 @@ http://localhost:8090/
 2. Seat the participant so their midline is at the pre-set seat location.
 3. Adjust the chair height so their elbows are at table height.
 4. Measure seated eye height (meter stick, from the table surface) and
-   forearm length elbow-to-fingertips (tape laid out on the table).
+   forearm length elbow-to-fingertips (tape laid out on the table), both in
+   centimeters -- that's what the panel expects.
 5. In the "Study workspace calibration" panel: enter the participant ID and
-   both measurements, click "Preview workspace center" (places a live
+   both measurements in cm, click "Preview workspace center" (places a live
    0-deadband demo spring -- enable torque control to see/feel it).
 6. Push the arm around and/or retarget "workspace_demo" in the "Add /
    remove springs" list below until the location is approved.

@@ -10,8 +10,8 @@ imports, so this is testable without rclpy or a running node -- see
 study_start_preset.py's docstring for the same rationale.
 
 All lengths in this module are meters (matching the rest of this repo's
-spring configs, e.g. gen3_springs.yaml) except where a `_in` suffix marks
-an inch-denominated input straight from a tape measure/meter stick.
+spring configs, e.g. gen3_springs.yaml) except where a `_cm` suffix marks
+a centimeter-denominated input straight from a tape measure/meter stick.
 """
 from __future__ import annotations
 
@@ -22,39 +22,42 @@ import os
 
 import yaml
 
-INCH_TO_M = 0.0254
+CM_TO_M = 0.01
 
-# Elbow-height band above the table (world z=0, see gen3_live_table_scene.yaml).
-HEIGHT_BAND_IN = 8.0
-# Eye-level cone the workspace must stay within.
+# Elbow-height band above the table (world z=0, see gen3_live_table_scene.yaml),
+# and the eye-level cone the workspace must stay within -- both are fixed
+# ergonomic specs for this study, independent of what unit measurements are
+# entered in.
+HEIGHT_BAND_CM = 20.32  # 8 inches
 EYE_ANGLE_DEG = 30.0
 
 
-def _in(value_in: float) -> float:
-    return value_in * INCH_TO_M
+def _cm(value_cm: float) -> float:
+    return value_cm * CM_TO_M
 
 
 def compute_candidate_center(
-    seat_x: float, seat_y: float, eye_height_in: float, arm_length_in: float,
+    seat_x: float, seat_y: float, eye_height_cm: float, arm_length_cm: float,
 ) -> dict:
     """
     Initial candidate for the workspace center, before the human-in-the-loop
-    push/adjust step: forearm's length forward from the seat along the
-    participant's midline, at the midpoint of the confirmed 0-8" elbow-
-    height band. `seat_x`/`seat_y` are world-frame meters; `eye_height_in`
-    is unused here (kept in the signature for symmetry with
-    compute_condition_params and because a future reach formula may want
-    it) -- only `arm_length_in` drives this candidate.
+    push/adjust step: forearm's length across the table from the seat (+y,
+    the table's short axis -- the participant sits along its long edge and
+    reaches inward across it, not further along it), at the midpoint of the
+    confirmed 0-8" elbow-height band. `seat_x`/`seat_y` are world-frame
+    meters; `eye_height_cm` is unused here (kept in the signature for
+    symmetry with compute_condition_params and because a future reach
+    formula may want it) -- only `arm_length_cm` drives this candidate.
     """
     return {
-        "x": seat_x + _in(arm_length_in),
-        "y": seat_y,
-        "z": _in(HEIGHT_BAND_IN / 2.0),
+        "x": seat_x,
+        "y": seat_y + _cm(arm_length_cm),
+        "z": _cm(HEIGHT_BAND_CM / 2.0),
     }
 
 
 def compute_condition_params(
-    center: dict, eye_height_in: float, arm_length_in: float, ramp_margin_in: float = 1.0,
+    center: dict, eye_height_cm: float, arm_length_cm: float, ramp_margin_cm: float = 2.54,
 ) -> dict:
     """
     Derive the condition-1 dead-zone sphere from the *final, approved*
@@ -72,20 +75,20 @@ def compute_condition_params(
     warning strings (empty if none) -- these are advisory, not blocking,
     since a person always reviews the candidate live before finalizing.
     """
-    arm_length_m = _in(arm_length_in)
-    eye_height_m = _in(eye_height_in)
+    arm_length_m = _cm(arm_length_cm)
+    eye_height_m = _cm(eye_height_cm)
 
-    inner_radius = min(_in(HEIGHT_BAND_IN / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
-    outer_radius = inner_radius + _in(ramp_margin_in)
+    inner_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
+    outer_radius = inner_radius + _cm(ramp_margin_cm)
     rest_length = inner_radius
 
     warnings: list[str] = []
 
     height_above_table = center["z"]
-    if not (0.0 <= height_above_table <= _in(HEIGHT_BAND_IN)):
+    if not (0.0 <= height_above_table <= _cm(HEIGHT_BAND_CM)):
         warnings.append(
-            f"Center height {height_above_table / INCH_TO_M:.1f}\" above the table is "
-            f"outside the confirmed [0, {HEIGHT_BAND_IN:.0f}\"] elbow-height band."
+            f"Center height {height_above_table / CM_TO_M:.1f}cm above the table is "
+            f"outside the confirmed [0, {HEIGHT_BAND_CM:.1f}cm] elbow-height band."
         )
 
     elevation_deg = math.degrees(math.atan2(eye_height_m - height_above_table, arm_length_m))
@@ -144,8 +147,8 @@ def write_condition_yaml(
 def log_measurement(
     csv_path: str,
     participant_id: str,
-    eye_height_in: float,
-    arm_length_in: float,
+    eye_height_cm: float,
+    arm_length_cm: float,
     center: dict,
     condition_params: dict,
     orientation_target: dict,
@@ -165,8 +168,8 @@ def log_measurement(
     row = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "participant_id": participant_id,
-        "eye_height_in": eye_height_in,
-        "arm_length_in": arm_length_in,
+        "eye_height_cm": eye_height_cm,
+        "arm_length_cm": arm_length_cm,
         "center_x": center["x"],
         "center_y": center["y"],
         "center_z": center["z"],
