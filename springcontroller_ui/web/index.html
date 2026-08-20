@@ -223,6 +223,43 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
     <!-- ── Main column: add/remove springs + meshcat view ── -->
     <div class="main-col">
+    <details class="panel">
+      <summary>Study workspace calibration</summary>
+      <p class="hint">
+        Enter the two participant measurements and preview to place a live,
+        0-deadband "<code>workspace_demo</code>" spring at the computed
+        center -- enable torque control (see "Torque control" panel), then
+        push the arm around or retarget <code>workspace_demo</code> in the
+        "Add / remove springs" list below to approve or adjust the
+        location. Finalize writes condition1.yaml/condition2.yaml from
+        wherever it currently is and removes the demo spring.
+      </p>
+      <div class="spring-form">
+        <div class="row">
+          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
+          <label>Link
+            <select id="wc-link"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>Eye height, in (from table) <input type="number" step="0.1" id="wc-eye" value="28"></label>
+          <label>Arm length, in (elbow&rarr;fingertip) <input type="number" step="0.1" id="wc-arm" value="18"></label>
+          <label>Ramp margin (in) <input type="number" step="0.1" id="wc-ramp" value="1.0"></label>
+        </div>
+        <div class="row">
+          <label>local x <input type="number" step="0.01" id="wc-lx" value="0"></label>
+          <label>local y <input type="number" step="0.01" id="wc-ly" value="0"></label>
+          <label>local z <input type="number" step="0.01" id="wc-lz" value="0.1"></label>
+          <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
+        </div>
+        <div class="btn-row">
+          <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
+          <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
+        </div>
+      </div>
+      <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
+    </details>
+
     <details class="panel" open>
       <summary>Add / remove springs</summary>
 
@@ -298,6 +335,8 @@ const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
+const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
+const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
@@ -313,6 +352,7 @@ const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
 let currentSprings = [];
+const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
 
 // ---- generic ROS helpers -------------------------------------------------
 function showMsg(elId, ok, text) {
@@ -450,12 +490,14 @@ function updateSpringTypeFields() {
 
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
-    const sel = document.getElementById('sp-link');
-    sel.innerHTML = '';
-    (resp.link_names || []).forEach(function(name) {
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
-      sel.appendChild(opt);
+    ['sp-link', 'wc-link'].forEach(function(selId) {
+      const sel = document.getElementById(selId);
+      sel.innerHTML = '';
+      (resp.link_names || []).forEach(function(name) {
+        const opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        sel.appendChild(opt);
+      });
     });
   }, function(err) {
     showMsg('spring-msg', false, 'Could not list link names: ' + err);
@@ -637,6 +679,90 @@ function handleSpringsUpdated(msg) {
 
     fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
   });
+}
+
+// ---- study workspace calibration -----------------------------------------
+// Places a live, always-on (0-deadband) demo spring at the computed
+// candidate center. Approving/adjusting it happens through the existing
+// spring-list retarget control above (name "workspace_demo"), not a
+// separate control here -- see finalizeStudyConditions, which reads that
+// spring's live target back before writing the condition YAML files.
+function previewWorkspaceCenter() {
+  const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
+  const armLength = parseFloat(document.getElementById('wc-arm').value);
+  if (!isFinite(eyeHeight) || !isFinite(armLength)) {
+    showMsg('workspace-msg', false, 'Eye height and arm length must both be numbers.');
+    return;
+  }
+  callService(svcPreviewWorkspaceCenter, { eye_height_in: eyeHeight, arm_length_in: armLength }, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const c = resp.center;
+    const addReq = {
+      name: WORKSPACE_DEMO_SPRING_NAME,
+      link_name: document.getElementById('wc-link').value,
+      stiffness: 50.0,
+      damping: 5.0,
+      local_point: [parseFloat(document.getElementById('wc-lx').value),
+                    parseFloat(document.getElementById('wc-ly').value),
+                    parseFloat(document.getElementById('wc-lz').value)],
+      target: c,
+      rest_length: 0.0,
+      inner_radius: 0.0,
+      outer_radius: 0.0,
+    };
+    callService(svcAddSpring, addReq, function(addResp) {
+      const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+      showMsg('workspace-msg', addResp.success,
+        'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
+          (addResp.success
+            ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
+            : 'Failed to place demo spring.')));
+    }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+  }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
+}
+
+function finalizeStudyConditions() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
+  const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
+  const armLength = parseFloat(document.getElementById('wc-arm').value);
+  const rampMargin = parseFloat(document.getElementById('wc-ramp').value);
+  if (![eyeHeight, armLength, rampMargin].every(isFinite)) {
+    showMsg('workspace-msg', false, 'Eye height, arm length, and ramp margin must all be numbers.');
+    return;
+  }
+
+  // Read the demo spring's current (possibly retargeted) live position --
+  // same GetParameters approach fetchSpringValues uses for the spring list.
+  callService(svcGetSpringParams, { names: ['springs.' + WORKSPACE_DEMO_SPRING_NAME + '.target'] }, function(resp) {
+    const t = resp.values[0];
+    if (!t || t.type !== PARAM_TYPE_DOUBLE_ARRAY || t.double_array_value.length !== 3) {
+      showMsg('workspace-msg', false,
+        'No live "' + WORKSPACE_DEMO_SPRING_NAME + '" spring found -- click "Preview workspace center" first.');
+      return;
+    }
+    const target = t.double_array_value.slice(0, 3);
+
+    const req = {
+      participant_id: participantId,
+      target: target,
+      eye_height_in: eyeHeight,
+      arm_length_in: armLength,
+      ramp_margin_in: rampMargin,
+      link_name: document.getElementById('wc-link').value,
+      local_point: [parseFloat(document.getElementById('wc-lx').value),
+                    parseFloat(document.getElementById('wc-ly').value),
+                    parseFloat(document.getElementById('wc-lz').value)],
+      data_dir: document.getElementById('wc-datadir').value.trim(),
+    };
+    callService(svcFinalizeStudyConditions, req, function(fr) {
+      if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
+      let text = 'Wrote ' + fr.condition1_path + ' and ' + fr.condition2_path + '.';
+      if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
+      showMsg('workspace-msg', true, text);
+      removeSpring(WORKSPACE_DEMO_SPRING_NAME);
+    }, function(err) { showMsg('workspace-msg', false, 'finalize_study_conditions failed: ' + err); });
+  }, function(err) { showMsg('workspace-msg', false, 'Could not read current target: ' + err); });
 }
 
 function reloadMeshcat() {

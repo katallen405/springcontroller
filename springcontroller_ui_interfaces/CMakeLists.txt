@@ -6,9 +6,11 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/EnableTorqueControl.srv"
+  "srv/FinalizeStudyConditions.srv"
   "srv/GetLinkPose.srv"
   "srv/ListLinkNames.srv"
   "srv/MoveToJointAngles.srv"
+  "srv/PreviewWorkspaceCenter.srv"
 )
 
 ament_package()

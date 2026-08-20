@@ -1,0 +1,14 @@
+string participant_id
+float64[3] target
+float64 eye_height_in
+float64 arm_length_in
+float64 ramp_margin_in
+string link_name
+float64[3] local_point
+string data_dir
+---
+bool success
+string message
+string condition1_path
+string condition2_path
+string[] warnings
