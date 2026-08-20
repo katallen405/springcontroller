@@ -259,6 +259,29 @@ class VirtualSpringNode(Node):
         # memory) -- scaling starting a full 5cm out interfered with normal
         # spring operation well before anything was actually at risk.
         self.declare_parameter("danger_threshold", 0.01)
+        # Low-strength repulsion field around scene collision objects --
+        # separate from (and additive on top of) the danger_threshold clamp
+        # above, which only ever removes spring torque. Off by default until
+        # verified on hardware: this is a new autonomous force, and per
+        # collision_recovery_torque_ramp project memory, new autonomous
+        # collision-adjacent behavior on this arm goes through an explicit
+        # opt-in before it runs unattended.
+        self.declare_parameter("repulsion_enabled", False)
+        # Must be > danger_threshold -- the ramp runs from caution_threshold
+        # (force starts at 0) down to danger_threshold (force saturates at
+        # repulsion_max_force_n). 5cm was the project's old danger_threshold
+        # default before it was tightened to 1cm for close-quarters spring
+        # work (see gen3_collision_clamp_debug project memory) -- reused here
+        # as a reasonable "starting to notice an obstacle" radius for a much
+        # gentler force than the clamp ever applied.
+        self.declare_parameter("caution_threshold", 0.05)
+        # Small Cartesian force (N) applied at the near-collision point,
+        # mapped to joint torques via Jacobian-transpose -- see
+        # get_repulsion_torques(). Chosen to stay well under
+        # gen3_torque_control's torque_limit_nm even at the smallest (wrist)
+        # joints' typical lever arms; raise cautiously and re-check against
+        # that limit if this default proves too weak on hardware.
+        self.declare_parameter("repulsion_max_force_n", 5.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -300,6 +323,15 @@ class VirtualSpringNode(Node):
         )
         self._last_collision_check_time = None
         self._last_collision_status = None
+        self._repulsion_enabled = self.get_parameter("repulsion_enabled").get_parameter_value().bool_value
+        self._caution_threshold = self.get_parameter("caution_threshold").get_parameter_value().double_value
+        self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
+        # Cached alongside _last_collision_status -- recomputed at the same
+        # throttled cadence (collision_check_interval_sec) since it reuses
+        # the same pin.computeDistances results get_collision_status() just
+        # populated. None until repulsion_enabled and the first throttled
+        # check has run.
+        self._last_repulsion_torques = None
         # Whether springs are currently disabled *because the hard collision
         # clamp disabled them* (as opposed to an operator explicitly calling
         # ~/enable(false) themselves) -- an edge-trigger guard so the
@@ -1150,6 +1182,11 @@ class VirtualSpringNode(Node):
                     (now - self._last_collision_check_time).nanoseconds / 1e9
                     >= self._collision_check_interval):
                 self._last_collision_status = self._arm.get_collision_status()
+                self._last_repulsion_torques = (
+                    self._arm.get_repulsion_torques(
+                        self._caution_threshold, self._repulsion_max_force_n
+                    ) if self._repulsion_enabled else None
+                )
                 self._last_collision_check_time = now
             collision = self._last_collision_status
             self._publish_safety_status(collision)
@@ -1218,6 +1255,15 @@ class VirtualSpringNode(Node):
                     if elapsed - self._collision_log_last_flush >= 0.5:
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
+
+            # Repulsion field: unconditionally additive, outside every
+            # branch above (in_collision / in_danger / clear) and
+            # independent of spring enable state -- see repulsion_enabled's
+            # declaration. Applied after gravity comp is already folded into
+            # `torques`, as a pure additional term, never a multiplier --
+            # keeps torque_ramp_gravity_comp_lesson's invariant intact.
+            if self._repulsion_enabled and self._last_repulsion_torques is not None:
+                torques = torques + self._last_repulsion_torques
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
