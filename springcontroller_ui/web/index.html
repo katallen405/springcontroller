@@ -75,7 +75,7 @@ button.action.estop:hover { background: #a02020; }
 .status-line { font-size: 13px; color: #555; margin-top: 6px; }
 .status-line .val { font-weight: 700; }
 .val.SAFE, .val.active, .val.ENABLED.ok { color: #2E7A2E; }
-.val.CAUTION { color: #b8860b; }
+.val.CAUTION { color: #d4a017; }
 .val.DANGER, .val.unknown { color: #8a5300; }
 .val.COLLISION, .val.inactive { color: #a02020; }
 
@@ -165,6 +165,21 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <button class="action off" onclick="setSpringsEnabled(false)">Disable springs</button>
         </div>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Collision thresholds</h2>
+        <p class="hint">Distance (m) from an obstacle where the hard clamp/repulsion field kick in. caution_threshold must stay greater than danger_threshold. Per-object tuning is future work (after 2026-09-18).</p>
+        <div class="spring-form">
+          <div class="row">
+            <label>danger_threshold <input type="number" step="0.001" id="ct-danger" value="0.01"></label>
+            <label>caution_threshold <input type="number" step="0.001" id="ct-caution" value="0.05"></label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="updateCollisionThresholds()">Apply</button>
+          </div>
+        </div>
+        <div class="msg-box hidden" id="thresholds-msg" role="status" aria-live="polite"></div>
       </div>
 
       <div class="panel">
@@ -349,6 +364,7 @@ const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type
 const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
 const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
+const svcUpdateCollisionThresholds = { name: '/virtual_spring_node/update_collision_thresholds', type: 'springcontroller_interfaces/srv/UpdateCollisionThresholds' };
 const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
@@ -575,6 +591,18 @@ function updateSpring(name, kInput, bInput) {
   callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
+function updateCollisionThresholds() {
+  const danger = parseFloat(document.getElementById('ct-danger').value);
+  const caution = parseFloat(document.getElementById('ct-caution').value);
+  if (!isFinite(danger) || !isFinite(caution)) {
+    showMsg('thresholds-msg', false, 'danger_threshold and caution_threshold must both be numbers.');
+    return;
+  }
+  callService(svcUpdateCollisionThresholds, { danger_threshold: danger, caution_threshold: caution }, function(resp) {
+    showMsg('thresholds-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+  }, function(err) { showMsg('thresholds-msg', false, 'update_collision_thresholds failed: ' + err); });
 }
 
 // Batches a lookup of every field this spring could have across all three

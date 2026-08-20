@@ -352,6 +352,19 @@ class URDFArmConfiguration:
         """True if collision geometry was successfully loaded."""
         return self._collision_model is not None
 
+    @property
+    def danger_threshold(self) -> float:
+        """Distance (m) below which get_collision_status() reports in_danger
+        and get_repulsion_torques() saturates at max_force_n. Settable at
+        runtime (e.g. from virtual_spring_node's ~/update_collision_thresholds
+        service) -- takes effect on the next get_collision_status() call,
+        same as any other live tuning knob here."""
+        return self._danger_threshold
+
+    @danger_threshold.setter
+    def danger_threshold(self, value: float) -> None:
+        self._danger_threshold = value
+
     def _angles_to_q(self, angles: np.ndarray) -> np.ndarray:
         """Plain per-joint angles -> pinocchio's nq encoding (see update_from_angles)."""
         q = pin.neutral(self._model)

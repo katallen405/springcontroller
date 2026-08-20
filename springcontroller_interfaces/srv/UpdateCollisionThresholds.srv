@@ -1,0 +1,5 @@
+float64 danger_threshold
+float64 caution_threshold
+---
+bool success
+string message

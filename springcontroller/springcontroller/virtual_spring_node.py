@@ -72,6 +72,12 @@ Services
     runtime -- ros2 param set has no effect on it, same as every other
     parameter here; this is the only way to flip it without restarting.
 
+~/update_collision_thresholds  (springcontroller_interfaces/UpdateCollisionThresholds)
+    Live-tune danger_threshold and caution_threshold together (rejects the
+    request if caution_threshold isn't strictly greater than
+    danger_threshold). Same "ros2 param set has no effect" reasoning as
+    set_repulsion_enabled above.
+
 ~/add_spring  (springcontroller_interfaces/AddSpring)
     Add a Cartesian spring.
 
@@ -188,6 +194,7 @@ import yaml
 from springcontroller_interfaces.srv import (
     AddSpring, RemoveSpring, AddJointSpring, AddOrientationSpring,
     LoadCollisionScene, CheckCollisionAtAngles, UpdateSpring,
+    UpdateCollisionThresholds,
 )
 
 
@@ -825,6 +832,15 @@ class VirtualSpringNode(Node):
         self._repulsion_enable_srv = self.create_service(
             SetBool, "~/set_repulsion_enabled", self._set_repulsion_enabled_cb
         )
+        # danger_threshold lives on self._arm (baked in at URDF load time,
+        # see _load_arm below); caution_threshold is a plain node attribute
+        # like repulsion_max_force_n. Same "no add_on_set_parameters_callback
+        # anywhere" reasoning as set_repulsion_enabled above -- a live
+        # ros2 param set would report success and do nothing.
+        self._update_collision_thresholds_srv = self.create_service(
+            UpdateCollisionThresholds, "~/update_collision_thresholds",
+            self._update_collision_thresholds_cb,
+        )
     def _load_arm(self) -> URDFArmConfiguration:
         """
         Load URDF from /robot_description topic if available
@@ -882,6 +898,47 @@ class VirtualSpringNode(Node):
         )
         response.success = True
         response.message = f"repulsion_enabled = {request.data}"
+        return response
+
+    def _update_collision_thresholds_cb(self, request, response):
+        # caution_threshold must stay strictly greater than danger_threshold
+        # -- get_repulsion_torques() divides by (caution_threshold -
+        # danger_threshold) (guarded there against exactly 0, but a
+        # negative/inverted span would silently produce a nonsense ramp
+        # rather than an error, so reject it here instead).
+        if request.danger_threshold <= 0.0:
+            response.success = False
+            response.message = "danger_threshold must be > 0."
+            return response
+        if request.caution_threshold <= request.danger_threshold:
+            response.success = False
+            response.message = "caution_threshold must be > danger_threshold."
+            return response
+        self._arm.danger_threshold = request.danger_threshold
+        self._caution_threshold = request.caution_threshold
+        # Mirror into the parameter namespace, same as _update_spring_cb --
+        # both names are already declared (see __init__), so no
+        # _declare_or_ignore needed here.
+        self.set_parameters([
+            rclpy.parameter.Parameter(
+                "danger_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.danger_threshold,
+            ),
+            rclpy.parameter.Parameter(
+                "caution_threshold", rclpy.parameter.Parameter.Type.DOUBLE,
+                request.caution_threshold,
+            ),
+        ])
+        self.get_logger().info(
+            f"Collision thresholds updated: danger_threshold="
+            f"{request.danger_threshold:.4f}m, caution_threshold="
+            f"{request.caution_threshold:.4f}m"
+        )
+        response.success = True
+        response.message = (
+            f"danger_threshold={request.danger_threshold:.4f}m, "
+            f"caution_threshold={request.caution_threshold:.4f}m"
+        )
         return response
 
     def _flatten_dict(self, d: dict, prefix: str = "") -> dict:
