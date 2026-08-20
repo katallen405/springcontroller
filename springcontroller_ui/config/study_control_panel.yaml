@@ -42,6 +42,19 @@ study_control_panel_node:
     reset_spring_damping: 5.0
     reset_spring_local_point: [0.0, 0.0, 0.1]
     study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
+    # Participant midline's pre-set seat position, world-frame meters (see
+    # orchestration_node.py's declare_parameter comment). Measured as
+    # x=+16in, y=-20in from the robot base; 1in = 0.0254m.
+    workspace_seat_x: 0.4064
+    workspace_seat_y: -0.508
+    workspace_study_data_dir: "~/gen3_study_data"
+    workspace_spring_name: tip_spring
+    workspace_spring_stiffness: 50.0
+    workspace_spring_damping: 5.0
+    workspace_orientation_spring_name: face_participant
+    workspace_orientation_local_face_normal: [0.0, 0.0, 1.0]
+    workspace_orientation_stiffness: 2.0
+    workspace_orientation_damping: 0.2
     joint_state_freshness_sec: 1.0
     safety_status_freshness_sec: 3.0
     service_call_timeout_sec: 5.0

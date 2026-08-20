@@ -1,0 +1,189 @@
+"""
+study_workspace_config.py
+
+Pure geometry + YAML-writing helpers for the study control panel's
+workspace-calibration flow: turn two participant measurements (seated eye
+height, elbow-to-fingertip arm length) plus a live-approved target point
+into the two spring-config YAML files used by study conditions 1 and 2,
+and log the measurement session against the participant ID. No ROS
+imports, so this is testable without rclpy or a running node -- see
+study_start_preset.py's docstring for the same rationale.
+
+All lengths in this module are meters (matching the rest of this repo's
+spring configs, e.g. gen3_springs.yaml) except where a `_in` suffix marks
+an inch-denominated input straight from a tape measure/meter stick.
+"""
+from __future__ import annotations
+
+import csv
+import datetime
+import math
+import os
+
+import yaml
+
+INCH_TO_M = 0.0254
+
+# Elbow-height band above the table (world z=0, see gen3_live_table_scene.yaml).
+HEIGHT_BAND_IN = 8.0
+# Eye-level cone the workspace must stay within.
+EYE_ANGLE_DEG = 30.0
+
+
+def _in(value_in: float) -> float:
+    return value_in * INCH_TO_M
+
+
+def compute_candidate_center(
+    seat_x: float, seat_y: float, eye_height_in: float, arm_length_in: float,
+) -> dict:
+    """
+    Initial candidate for the workspace center, before the human-in-the-loop
+    push/adjust step: forearm's length forward from the seat along the
+    participant's midline, at the midpoint of the confirmed 0-8" elbow-
+    height band. `seat_x`/`seat_y` are world-frame meters; `eye_height_in`
+    is unused here (kept in the signature for symmetry with
+    compute_condition_params and because a future reach formula may want
+    it) -- only `arm_length_in` drives this candidate.
+    """
+    return {
+        "x": seat_x + _in(arm_length_in),
+        "y": seat_y,
+        "z": _in(HEIGHT_BAND_IN / 2.0),
+    }
+
+
+def compute_condition_params(
+    center: dict, eye_height_in: float, arm_length_in: float, ramp_margin_in: float = 1.0,
+) -> dict:
+    """
+    Derive the condition-1 dead-zone sphere from the *final, approved*
+    center point.
+
+    inner_radius = min(half the 8" height band, the +-30 deg eye-level cone
+    converted to linear distance at the measured arm length) -- whichever
+    bound is tighter. outer_radius adds a small ramp margin rather than a
+    hard on/off. rest_length == inner_radius keeps VirtualSpring's force
+    continuous at the dead-zone boundary instead of jumping by
+    stiffness*inner_radius the instant a target leaves the dead zone (see
+    virtual_spring.py's force computation).
+
+    Returns radii/rest_length in meters plus a list of human-readable
+    warning strings (empty if none) -- these are advisory, not blocking,
+    since a person always reviews the candidate live before finalizing.
+    """
+    arm_length_m = _in(arm_length_in)
+    eye_height_m = _in(eye_height_in)
+
+    inner_radius = min(_in(HEIGHT_BAND_IN / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
+    outer_radius = inner_radius + _in(ramp_margin_in)
+    rest_length = inner_radius
+
+    warnings: list[str] = []
+
+    height_above_table = center["z"]
+    if not (0.0 <= height_above_table <= _in(HEIGHT_BAND_IN)):
+        warnings.append(
+            f"Center height {height_above_table / INCH_TO_M:.1f}\" above the table is "
+            f"outside the confirmed [0, {HEIGHT_BAND_IN:.0f}\"] elbow-height band."
+        )
+
+    elevation_deg = math.degrees(math.atan2(eye_height_m - height_above_table, arm_length_m))
+    if abs(elevation_deg) > EYE_ANGLE_DEG:
+        warnings.append(
+            f"Center is {elevation_deg:.1f} deg from eye level, outside the "
+            f"confirmed +-{EYE_ANGLE_DEG:.0f} deg cone."
+        )
+
+    return {
+        "inner_radius": inner_radius,
+        "outer_radius": outer_radius,
+        "rest_length": rest_length,
+        "warnings": warnings,
+    }
+
+
+def _atomic_write_yaml(path: str, data: dict) -> None:
+    path = os.path.expanduser(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+    os.replace(tmp_path, path)
+
+
+def write_condition_yaml(
+    path: str,
+    spring_name: str,
+    spring_params: dict,
+    include_orientation: bool = False,
+    orientation_name: str = "",
+    orientation_params: dict | None = None,
+) -> None:
+    """
+    Write one condition's springs.yaml, matching the schema
+    virtual_spring_node._load_springs_from_params expects (see
+    gen3_springs.yaml / gen3_orientation_spring_test.yaml). `spring_params`
+    keys: link_name, local_point, target, stiffness, damping, rest_length,
+    inner_radius, outer_radius. `orientation_params` keys (condition 2
+    only): link_name, local_point, local_face_normal, target, stiffness,
+    damping.
+    """
+    params: dict = {
+        "spring_names": [spring_name],
+        "springs": {spring_name: dict(spring_params)},
+    }
+    if include_orientation:
+        params["orientation_spring_names"] = [orientation_name]
+        params["orientation_springs"] = {orientation_name: dict(orientation_params)}
+
+    data = {"/**": {"ros__parameters": params}}
+    _atomic_write_yaml(path, data)
+
+
+def log_measurement(
+    csv_path: str,
+    participant_id: str,
+    eye_height_in: float,
+    arm_length_in: float,
+    center: dict,
+    condition_params: dict,
+    orientation_target: dict,
+    condition1_path: str,
+    condition2_path: str,
+) -> None:
+    """
+    Append one row to the shared measurement log, for later comparison
+    against robot/rosbag data. Creates the file (with a header row) on
+    first use; every call after that only appends -- never truncates or
+    rewrites prior participants' rows.
+    """
+    csv_path = os.path.expanduser(csv_path)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    is_new = not os.path.isfile(csv_path)
+
+    row = {
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "participant_id": participant_id,
+        "eye_height_in": eye_height_in,
+        "arm_length_in": arm_length_in,
+        "center_x": center["x"],
+        "center_y": center["y"],
+        "center_z": center["z"],
+        "inner_radius": condition_params["inner_radius"],
+        "outer_radius": condition_params["outer_radius"],
+        "rest_length": condition_params["rest_length"],
+        "orientation_target_x": orientation_target["x"],
+        "orientation_target_y": orientation_target["y"],
+        "orientation_target_z": orientation_target["z"],
+        "warnings": "; ".join(condition_params["warnings"]),
+        "condition1_path": condition1_path,
+        "condition2_path": condition2_path,
+    }
+
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+        f.flush()

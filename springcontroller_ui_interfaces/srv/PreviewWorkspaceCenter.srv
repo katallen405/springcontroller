@@ -1,0 +1,6 @@
+float64 eye_height_in
+float64 arm_length_in
+---
+bool success
+string message
+float64[3] center
