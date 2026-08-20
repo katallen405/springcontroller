@@ -70,6 +70,7 @@ JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
 COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
+SAFETY_STATUS_TOPIC = "/virtual_spring_node/safety_status"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -426,16 +427,71 @@ def draw_collision_object(obj_id):
                     g.Cylinder(height + 2 * pad, radius + pad), _CAUTION_HALO_MATERIAL
                 )
             # Child of the solid primitive's own path, so it inherits T
-            # automatically -- no separate set_transform needed.
-            #
-            # A previous version of this tried to hide the halo except
-            # while ~/safety_status actually reported CAUTION/DANGER for
-            # this specific object (via set_property("visible", ...) driven
-            # by a new safety_status subscription) -- reverted 2026-08-20
-            # after it broke meshcat entirely live (collision objects and
-            # robot frames both stopped rendering), root cause not
-            # determined. Back to always-visible for now; revisit the
-            # visibility-gating idea separately if wanted.
+            # automatically -- no separate set_transform needed. Starts
+            # hidden -- safety_status_cb below shows it only while the arm
+            # is actually within caution_threshold of this object.
+            viz.viewer[halo_path].set_property("visible", False)
+
+
+def set_halo_visible(obj_id, visible):
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    for i in range(len(entry["primitives"])):
+        viz.viewer[f"collision_objects/{obj_id}/{i}/halo"].set_property("visible", visible)
+
+
+# Tracks which object's halo is currently shown (or None), so
+# safety_status_cb only sends a SetProperty command on an actual
+# transition -- see its docstring for why that matters.
+_active_halo_obj_id = None
+
+
+def safety_status_cb(msg):
+    """
+    Show the caution halo only for the object ~/safety_status currently
+    reports as the closest pair, and only while that's not SAFE.
+
+    A first version of this (2026-08-20) called set_property() from here
+    unconditionally on every message -- but virtual_spring_node republishes
+    ~/safety_status continuously (every joint_state cycle, ~100Hz), not
+    just on change, so that sent a fresh SetProperty command to the
+    browser about 100x/second on top of everything else armviz already
+    pushes at that same rate (frames, springs, robot pose). That flood is
+    the most likely cause of meshcat freezing entirely live (collision
+    objects and robot frames both stopped rendering) -- not a logic bug in
+    the halo code itself. Fixed by only sending a command on an actual
+    transition (entering/leaving caution, or the closest object changing),
+    via _active_halo_obj_id.
+
+    ~/safety_status only ever reports the single globally closest pair
+    (see virtual_spring_node's _publish_safety_status), so at most one
+    object's halo is ever shown here too -- consistent with that, not a
+    new limitation introduced by this visualizer. Format depended on:
+    "WORD: linkA/linkB dist=...m[ ...]" for CAUTION/DANGER/COLLISION,
+    "SAFE ..." (no parseable pair) otherwise.
+    """
+    global _active_halo_obj_id
+    text = msg.data or ""
+    active_obj_id = None
+    if not text.startswith("SAFE"):
+        try:
+            pair_part = text.split(": ", 1)[1].split(" dist=")[0]
+            a, b = pair_part.split("/")
+        except (IndexError, ValueError):
+            a = b = None
+        if a in collision_objects:
+            active_obj_id = a
+        elif b in collision_objects:
+            active_obj_id = b
+
+    if active_obj_id == _active_halo_obj_id:
+        return  # no state change -- don't send a redundant command
+    if _active_halo_obj_id is not None:
+        set_halo_visible(_active_halo_obj_id, False)
+    if active_obj_id is not None:
+        set_halo_visible(active_obj_id, True)
+    _active_halo_obj_id = active_obj_id
 
 
 def draw_springs(q):
@@ -555,6 +611,12 @@ node.create_subscription(String, SPRINGS_TOPIC, springs_updated_cb, _latched_qos
 node.create_subscription(
     CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _latched_qos
 )
+# Plain VOLATILE, unlike the two subscriptions above -- virtual_spring_node
+# republishes ~/safety_status continuously (every joint_state cycle, not
+# just on change), so there's no late-joiner gap to cover with latching.
+# safety_status_cb itself is what guards against reacting to every one of
+# those redundant republishes -- see its docstring.
+node.create_subscription(String, SAFETY_STATUS_TOPIC, safety_status_cb, 10)
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
