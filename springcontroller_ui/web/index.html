@@ -397,10 +397,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
-      <div class="meshcat-row">
-        <label class="status-line"><input type="checkbox" id="viz-show-frames" autocomplete="off"
-          onchange="toggleShowFrames()"> Show all link frames</label>
-      </div>
       <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
     </div>
     </div>
@@ -996,15 +992,6 @@ function finalizeStudyConditions() {
 function reloadMeshcat() {
   const f = document.getElementById('meshcat-frame');
   f.src = f.src;
-}
-
-// armviz.py owns this topic itself (not virtual_spring_node) -- it's a
-// pure display setting, and its own terminal 'f' keypress toggle doesn't
-// work when launched via ros2 launch (no TTY), so this is the only way to
-// reach it from a normal launch.
-function toggleShowFrames() {
-  const on = document.getElementById('viz-show-frames').checked;
-  pub('/armviz/show_frames', 'std_msgs/msg/Bool', { data: on });
 }
 
 // ---- torque / safety status displays ----------------------------------
