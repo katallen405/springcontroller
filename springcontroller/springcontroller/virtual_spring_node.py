@@ -834,6 +834,17 @@ class VirtualSpringNode(Node):
         self._repulsion_enable_srv = self.create_service(
             SetBool, "~/set_repulsion_enabled", self._set_repulsion_enabled_cb
         )
+        # Live status, same reasoning/QoS as ~/springs_enabled -- confirmed
+        # live 2026-08-20 that without this, there's no way for a UI (or
+        # anyone else) to tell whether repulsion is actually on short of
+        # remembering their own last ~/set_repulsion_enabled call. Directly
+        # caused a whole confused debugging session: repulsion was believed
+        # enabled (from an earlier session) but had never actually been
+        # turned on this run, and nothing surfaced that mismatch anywhere.
+        self._repulsion_enabled_pub = self.create_publisher(
+            Bool, "~/repulsion_enabled_status", springs_updated_qos
+        )
+        self._repulsion_enabled_pub.publish(Bool(data=self._repulsion_enabled))
         # danger_threshold lives on self._arm (baked in at URDF load time,
         # see _load_arm below); caution_threshold is a plain node attribute
         # like repulsion_max_force_n. Same "no add_on_set_parameters_callback
@@ -895,6 +906,7 @@ class VirtualSpringNode(Node):
         self._repulsion_enabled = request.data
         if not request.data:
             self._last_repulsion_torques = None
+        self._repulsion_enabled_pub.publish(Bool(data=request.data))
         self.get_logger().info(
             f"Repulsion field {'enabled' if request.data else 'disabled'}"
         )
