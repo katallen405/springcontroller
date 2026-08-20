@@ -1426,35 +1426,19 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                      # Latch, like _set_springs_enabled's own "Springs
-                      # disabled (...)" INFO log already does -- log once per
-                      # collision *episode*, not every throttled cycle for as
-                      # long as the arm sits in collision (confirmed live
-                      # 2026-08-20: this was spamming ERROR once/second even
-                      # with torque control disabled and nothing left to do
-                      # about it). _springs_auto_disabled only clears via an
-                      # explicit ~/enable (or ~/enable's own pre-flight
-                      # rejection re-evaluating this same collision state),
-                      # so this naturally reappears when the episode is
-                      # genuinely fresh, not just still ongoing.
-                      if not self._springs_auto_disabled:
-                          # Only worth alarming about while torque control is
-                          # actually enabled -- with it off (e.g. Kortex
-                          # position hold), nothing downstream consumes these
-                          # torques at all, so "zeroing spring torque" has no
-                          # real effect and logging it is just noise. The
-                          # auto-disable below still runs regardless, so
-                          # springs come up already disabled if torque
-                          # control gets enabled while still in/near collision.
-                          if self._last_torque_status == "ENABLED":
-                              self.get_logger().error(
-                                  f"{kind} detected between {a} and {b}! Zeroing spring torque "
-                                  f"(gravity comp held)."
-                          self._set_springs_enabled(
-                              False,
-                              reason=f"{kind} detected between {a} and {b}",
-                              auto=True,
-                          )
+                    #no spamming about collisions
+                    # irrelevant if springs are off
+                    if not self._springs_auto_disabled:
+                        #only if torque is enabled, irrelevant if off
+                        if self._last_torque_status == "ENABLED":
+                            self.get_logger().error(
+                                f"{kind} detected between {a} and {b}! Zeroing spring torque "
+                                f"(gravity comp held)."
+                        self._set_springs_enabled(
+                            False,
+                            reason=f"{kind} detected between {a} and {b}",
+                            auto=True,
+                        )
                     # Zero spring torque for *this* cycle too -- the
                     # disable above only takes effect on the next
                     # compute_total_torques() call. Never touch gravity
@@ -1462,6 +1446,7 @@ class VirtualSpringNode(Node):
                     # two links are closest would let the arm sag/fall at
                     # the worst possible moment instead of holding position.
                     torques = gravity_torques
+                                
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
                     if (self._last_torque_status == "ENABLED"
