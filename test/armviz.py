@@ -17,7 +17,7 @@ from rclpy.utilities import remove_ros_args
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64MultiArray
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
@@ -71,6 +71,8 @@ SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
 COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
 SAFETY_STATUS_TOPIC = "/virtual_spring_node/safety_status"
+COLLISION_THRESHOLDS_TOPIC = "/virtual_spring_node/collision_thresholds_status"
+CLOSEST_POINTS_TOPIC = "/virtual_spring_node/closest_collision_points"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -543,6 +545,55 @@ def safety_status_cb(msg):
         _active_collision_obj_id = collision_obj_id
 
 
+_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=3)
+
+
+def closest_points_cb(msg):
+    """
+    Draws a magenta line between the two witness points
+    ~/closest_collision_points reports (see virtual_spring_node's
+    _publish_safety_status) -- the actual detected closest pair's location,
+    not something inferred from geometry. Empty data (no collision model /
+    nothing to report) hides the line rather than leaving a stale one from
+    the last real reading.
+    """
+    if len(msg.data) < 6:
+        viz.viewer["debug/closest_collision_line"].set_property("visible", False)
+        return
+    point_a = np.array(msg.data[0:3])
+    point_b = np.array(msg.data[3:6])
+    vertices = np.column_stack([point_a, point_b])  # 3x2
+    viz.viewer["debug/closest_collision_line"].set_object(
+        g.Line(g.PointsGeometry(vertices), _CLOSEST_LINE_MATERIAL)
+    )
+    viz.viewer["debug/closest_collision_line"].set_property("visible", True)
+
+
+def collision_thresholds_cb(msg):
+    """
+    [danger_threshold, caution_threshold, repulsion_max_force_n] --
+    CAUTION_THRESHOLD only ever came from the --caution-threshold launch
+    arg before this, so live-tuning it via the study UI silently left the
+    drawn halo at its stale launch-time size while the real triggering
+    distance had changed -- confirmed live 2026-08-20 (halo looked ~7cm
+    padded, actual caution_threshold was 0.73m). Redraws every tracked
+    object's halo at the new size, then restores whichever one (if any)
+    safety_status_cb currently has shown -- draw_collision_object()
+    unconditionally hides the halo, so that state would otherwise be lost.
+    """
+    global CAUTION_THRESHOLD
+    if len(msg.data) < 2:
+        return
+    new_caution = msg.data[1]
+    if new_caution == CAUTION_THRESHOLD:
+        return
+    CAUTION_THRESHOLD = new_caution
+    for obj_id in list(collision_objects.keys()):
+        draw_collision_object(obj_id)
+        if obj_id == _active_halo_obj_id:
+            set_halo_visible(obj_id, True)
+
+
 def draw_springs(q):
     pin.forwardKinematics(model, data, q)
     pin.updateFramePlacements(model, data)
@@ -666,6 +717,17 @@ node.create_subscription(
 # safety_status_cb itself is what guards against reacting to every one of
 # those redundant republishes -- see its docstring.
 node.create_subscription(String, SAFETY_STATUS_TOPIC, safety_status_cb, 10)
+# Plain VOLATILE -- republished continuously alongside ~/safety_status,
+# same reasoning as that subscription above.
+node.create_subscription(
+    Float64MultiArray, CLOSEST_POINTS_TOPIC, closest_points_cb, 10
+)
+# TRANSIENT_LOCAL, matching springs/collision-object above -- this is
+# current state (the live threshold values), not a stream, so a
+# late-starting armviz should see the real current values immediately.
+node.create_subscription(
+    Float64MultiArray, COLLISION_THRESHOLDS_TOPIC, collision_thresholds_cb, _latched_qos
+)
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)

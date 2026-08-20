@@ -76,12 +76,20 @@ class CollisionStatus:
         True when min_distance < danger_threshold.
     in_collision : bool
         True when min_distance <= 0.
+    closest_point_a, closest_point_b : np.ndarray, shape (3,)
+        World-frame witness points on each side of closest_pair (from coal's
+        getNearestPoint1()/2()) -- the same caveat as get_repulsion_torques()
+        applies once min_distance < 0 (interpenetrating): these can land on
+        the wrong side of the penetrating geometry, not a reliable
+        "shortest path between the two shapes" once they actually overlap.
     """
     min_distance: float
     closest_pair: tuple[str, str]
     scale_factor: float
     in_danger: bool
     in_collision: bool
+    closest_point_a: np.ndarray
+    closest_point_b: np.ndarray
 
 
 class URDFArmConfiguration:
@@ -421,12 +429,15 @@ class URDFArmConfiguration:
         else:
             scale_factor = 1.0
 
+        closest_result = collision_data.distanceResults[closest_idx]
         return CollisionStatus(
             min_distance=min_dist,
             closest_pair=(name_a, name_b),
             scale_factor=scale_factor,
             in_danger=in_danger,
             in_collision=in_collision,
+            closest_point_a=np.asarray(closest_result.getNearestPoint1(), dtype=float),
+            closest_point_b=np.asarray(closest_result.getNearestPoint2(), dtype=float),
         )
 
     def get_collision_status(self) -> Optional[CollisionStatus]:

@@ -182,7 +182,7 @@ from geometry_msgs.msg import Pose, PointStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
-from std_msgs.msg import String, Float64, Bool
+from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
 import threading
 
@@ -600,6 +600,17 @@ class VirtualSpringNode(Node):
         # published every _joint_state_cb regardless of torque-enable
         # state, same as the collision check itself.
         self._safety_status_pub = self.create_publisher(String, "~/safety_status", 10)
+        # World-frame witness points [ax,ay,az,bx,by,bz] for the same
+        # closest_pair ~/safety_status describes, for visualizing the actual
+        # detected closest distance/location (e.g. a line in armviz) instead
+        # of inferring it from geometry alone -- confirmed live 2026-08-20
+        # this was a real gap when a stale caution-halo size made a
+        # perfectly correct CAUTION reading look wrong at a glance. Empty
+        # data means no collision model loaded / nothing to report, same
+        # convention as ~/safety_status's "no collision pairs reported".
+        self._closest_points_pub = self.create_publisher(
+            Float64MultiArray, "~/closest_collision_points", 10
+        )
 
         # Per-spring ~/target/<name> publishers (broadcast side -- see the
         # subscription of the same name below for the input/override side).
@@ -869,6 +880,19 @@ class VirtualSpringNode(Node):
             Bool, "~/repulsion_enabled_status", springs_updated_qos
         )
         self._repulsion_enabled_pub.publish(Bool(data=self._repulsion_enabled))
+        # Live [danger_threshold, caution_threshold, repulsion_max_force_n],
+        # same TRANSIENT_LOCAL reasoning as the two publishers above --
+        # confirmed live 2026-08-20 that without this, armviz's caution-halo
+        # padding is set once from the --caution-threshold launch arg and
+        # never updates again, so live-tuning caution_threshold via the UI
+        # (e.g. to 0.73m) silently left the drawn halo at its stale launch
+        # value while the actual triggering distance was the new one --
+        # very confusing to look at (halo looked ~7cm larger than the
+        # object, but CAUTION was firing at 73cm).
+        self._collision_thresholds_pub = self.create_publisher(
+            Float64MultiArray, "~/collision_thresholds_status", springs_updated_qos
+        )
+        self._publish_collision_thresholds()
         # danger_threshold lives on self._arm (baked in at URDF load time,
         # see _load_arm below); caution_threshold is a plain node attribute
         # like repulsion_max_force_n. Same "no add_on_set_parameters_callback
@@ -976,6 +1000,7 @@ class VirtualSpringNode(Node):
                 request.repulsion_max_force_n,
             ),
         ])
+        self._publish_collision_thresholds()
         self.get_logger().info(
             f"Collision thresholds updated: danger_threshold="
             f"{request.danger_threshold:.4f}m, caution_threshold="
@@ -2543,6 +2568,16 @@ class VirtualSpringNode(Node):
         enabled = first.enabled if first is not None else True
         self._springs_enabled_pub.publish(Bool(data=enabled))
 
+    def _publish_collision_thresholds(self) -> None:
+        # [danger_threshold, caution_threshold, repulsion_max_force_n], in
+        # that fixed order -- consumed by armviz to keep the caution-halo
+        # padding in sync with live updates (see ~/collision_thresholds_status
+        # in __init__ for why this exists).
+        self._collision_thresholds_pub.publish(Float64MultiArray(data=[
+            self._arm.danger_threshold, self._caution_threshold,
+            self._repulsion_max_force_n,
+        ]))
+
     def _publish_safety_status(self, collision) -> None:
         """
         Broadcast the current self/scene-collision state on
@@ -2586,6 +2621,13 @@ class VirtualSpringNode(Node):
                 "may be stale)"
             )
         self._safety_status_pub.publish(msg)
+
+        points_msg = Float64MultiArray()
+        if collision is not None:
+            points_msg.data = (
+                list(collision.closest_point_a) + list(collision.closest_point_b)
+            )
+        self._closest_points_pub.publish(points_msg)
 
     def destroy_node(self) -> None:
         if self._collision_log_file is not None:
