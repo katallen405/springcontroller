@@ -1,8 +1,8 @@
 string participant_id
 float64[3] target
-float64 eye_height_in
-float64 arm_length_in
-float64 ramp_margin_in
+float64 eye_height_cm
+float64 arm_length_cm
+float64 ramp_margin_cm
 string link_name
 float64[3] local_point
 string data_dir

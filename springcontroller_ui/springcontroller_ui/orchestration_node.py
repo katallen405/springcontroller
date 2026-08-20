@@ -73,7 +73,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_condition_params,
     log_measurement,
     write_condition_yaml,
-    INCH_TO_M,
+    CM_TO_M,
 )
 
 
@@ -843,7 +843,7 @@ class StudyControlPanelNode(Node):
     def _preview_workspace_center_cb(self, request, response):
         center = compute_candidate_center(
             self._workspace_seat_x, self._workspace_seat_y,
-            request.eye_height_in, request.arm_length_in,
+            request.eye_height_cm, request.arm_length_cm,
         )
         response.success = True
         response.message = "ok"
@@ -865,11 +865,11 @@ class StudyControlPanelNode(Node):
             "z": float(request.target[2]),
         }
         condition_params = compute_condition_params(
-            center, request.eye_height_in, request.arm_length_in, request.ramp_margin_in,
+            center, request.eye_height_cm, request.arm_length_cm, request.ramp_margin_cm,
         )
         # Straight above the final approved center, raised to eye height.
         orientation_target = {
-            "x": center["x"], "y": center["y"], "z": request.eye_height_in * INCH_TO_M,
+            "x": center["x"], "y": center["y"], "z": request.eye_height_cm * CM_TO_M,
         }
 
         local_point = [float(v) for v in request.local_point]
@@ -907,7 +907,7 @@ class StudyControlPanelNode(Node):
                 orientation_params=orientation_params,
             )
             log_measurement(
-                csv_path, request.participant_id, request.eye_height_in, request.arm_length_in,
+                csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
                 center, condition_params, orientation_target, condition1_path, condition2_path,
             )
         except OSError as e:
