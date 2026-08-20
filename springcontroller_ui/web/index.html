@@ -903,14 +903,21 @@ function previewWorkspaceCenter() {
       inner_radius: 0.0,
       outer_radius: 0.0,
     };
-    callService(svcAddSpring, addReq, function(addResp) {
-      const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
-      showMsg('workspace-msg', addResp.success,
-        'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
-          (addResp.success
-            ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
-            : 'Failed to place demo spring.')));
-    }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    const placeSpring = function() {
+      callService(svcAddSpring, addReq, function(addResp) {
+        const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+        showMsg('workspace-msg', addResp.success,
+          'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
+            (addResp.success
+              ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
+              : 'Failed to place demo spring.')));
+      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    };
+    // add_spring refuses if the name already exists, so re-previewing with
+    // different numbers would otherwise silently fail instead of replacing
+    // the old demo spring. Remove it first -- ignore the result either way,
+    // "doesn't exist yet" (first preview) isn't an error here.
+    callService(svcRemoveSpring, { name: WORKSPACE_DEMO_SPRING_NAME }, placeSpring, placeSpring);
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
