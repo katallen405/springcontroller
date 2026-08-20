@@ -63,6 +63,24 @@ button.action {
 button.action:hover { background: #f4f4f4; }
 button.action:disabled { opacity: 0.4; cursor: not-allowed; background: #fff; }
 button.action:disabled:hover { background: #fff; }
+
+.toggle-row { display: flex; align-items: center; gap: 10px; }
+.toggle-row .toggle-label { font-size: 13.5px; font-weight: 600; color: #333; }
+.switch { position: relative; display: inline-block; width: 46px; height: 25px; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; inset: 0; background: #ccc; border-radius: 25px;
+  cursor: pointer; transition: background .15s;
+}
+.switch .slider::before {
+  content: ""; position: absolute; height: 19px; width: 19px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform .15s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+.switch input:checked + .slider { background: #2E7A2E; }
+.switch input:checked + .slider::before { transform: translateX(21px); }
+.switch input:focus-visible + .slider { outline: 3px solid #2563eb; outline-offset: 2px; }
+.toggle-row .toggle-state { font-size: 12.5px; font-weight: 700; min-width: 30px; }
 button.action.on   { border-color: #2E7A2E; color: #1e5a1e; }
 button.action.on:hover { background: #f0faf0; }
 button.action.off  { border-color: #767676; color: #444; }
@@ -91,11 +109,26 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
 
-.layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+.layout { display: grid; grid-template-columns: minmax(300px, max-content) 1fr; gap: 16px; align-items: start; }
 @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 
 .hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
+
+.field-glossary { margin-bottom: 10px; }
+.field-glossary > summary {
+  font-size: 12.5px; color: #2563eb; cursor: pointer; list-style: none;
+}
+.field-glossary > summary::-webkit-details-marker { display: none; }
+.field-glossary > summary::before { content: '▸ '; display: inline-block; }
+.field-glossary[open] > summary::before { content: '▾ '; }
+.field-glossary dl {
+  margin-top: 6px; padding: 8px 12px; background: #fafafa; border: 1px solid #eee;
+  border-radius: 8px; font-size: 12px; color: #444;
+}
+.field-glossary dt { font-weight: 700; margin-top: 6px; }
+.field-glossary dt:first-child { margin-top: 0; }
+.field-glossary dd { margin-left: 0; color: #666; }
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -104,6 +137,7 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
   padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
 }
 .spring-form input[type=text], .spring-form input[type=number] { width: 88px; }
+.spring-form input.joint-angle-input[type=number] { width: 52px; }
 
 ul.spring-list { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 ul.spring-list li {
@@ -153,16 +187,31 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <aside class="sidebar" aria-label="Quick controls">
       <div class="panel">
         <h2>Torque control</h2>
-        <div class="btn-row">
-          <button class="action on" id="torque-toggle-btn" onclick="toggleTorqueControl()">Turn on torque control</button>
-          <button class="action on" id="springs-toggle-btn" onclick="toggleSprings()">Enable springs</button>
+        <div class="btn-row" style="gap:24px">
+          <div class="toggle-row">
+            <span class="toggle-label">Torque control</span>
+            <label class="switch">
+              <input type="checkbox" id="torque-toggle-switch" onchange="toggleTorqueControl()">
+              <span class="slider"></span>
+            </label>
+            <span class="toggle-state val inactive" id="torque-toggle-state">OFF</span>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Springs</span>
+            <label class="switch">
+              <input type="checkbox" id="springs-toggle-switch" onchange="toggleSprings()">
+              <span class="slider"></span>
+            </label>
+            <span class="toggle-state val inactive" id="springs-toggle-state">OFF</span>
+          </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
         </div>
-        <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
+        <label class="chk" style="margin-top:8px">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
+        <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps in those two states (see README:224).</p>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
 
@@ -193,17 +242,18 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
         <p class="hint" style="margin-top:12px">Move to joint angles (radians, joint_1..joint_7). Requires torque control off; checked for collision before moving.</p>
         <div class="spring-form">
-          <div class="row">
-            <label>j1 <input type="number" step="0.01" id="mv-j1" value="0"></label>
-            <label>j2 <input type="number" step="0.01" id="mv-j2" value="0"></label>
-            <label>j3 <input type="number" step="0.01" id="mv-j3" value="0"></label>
-            <label>j4 <input type="number" step="0.01" id="mv-j4" value="0"></label>
-            <label>j5 <input type="number" step="0.01" id="mv-j5" value="0"></label>
-            <label>j6 <input type="number" step="0.01" id="mv-j6" value="0"></label>
-            <label>j7 <input type="number" step="0.01" id="mv-j7" value="0"></label>
+          <div class="row" style="flex-wrap:nowrap">
+            <label>j1 <input class="joint-angle-input" type="number" step="0.01" id="mv-j1" value="0"></label>
+            <label>j2 <input class="joint-angle-input" type="number" step="0.01" id="mv-j2" value="0"></label>
+            <label>j3 <input class="joint-angle-input" type="number" step="0.01" id="mv-j3" value="0"></label>
+            <label>j4 <input class="joint-angle-input" type="number" step="0.01" id="mv-j4" value="0"></label>
+            <label>j5 <input class="joint-angle-input" type="number" step="0.01" id="mv-j5" value="0"></label>
+            <label>j6 <input class="joint-angle-input" type="number" step="0.01" id="mv-j6" value="0"></label>
+            <label>j7 <input class="joint-angle-input" type="number" step="0.01" id="mv-j7" value="0"></label>
           </div>
           <div class="btn-row">
             <button class="action on" id="btn-move-joint-angles" onclick="moveToJointAngles()">Move</button>
+            <button class="action off" id="btn-use-current-angles" onclick="fetchCurrentJointAngles()">Use current joint angles</button>
           </div>
         </div>
         <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
@@ -260,6 +310,21 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <details class="panel" open>
       <summary>Add / remove springs</summary>
 
+      <details class="field-glossary">
+        <summary>What do these fields mean?</summary>
+        <dl>
+          <dt>Link</dt><dd>The robot link the spring attaches to.</dd>
+          <dt>name</dt><dd>Identifier used to remove/update this spring later -- must be unique.</dd>
+          <dt>target x/y/z</dt><dd>World-frame point (m) the spring pulls the attachment point toward (position springs only).</dd>
+          <dt>local x/y/z</dt><dd>Attachment point (m), in the link's own local frame -- e.g. (0,0,0) is the link origin.</dd>
+          <dt>stiffness</dt><dd>Spring constant k (N/m). Force grows linearly with distance from target/rest length.</dd>
+          <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
+          <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
+          <dt>inner/outer radius</dt><dd>Dead-zone/ramp band (m) around rest length -- no force inside inner radius, full stiffness beyond outer radius, ramped in between (position springs only).</dd>
+          <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (orientation springs only).</dd>
+        </dl>
+      </details>
+
       <div class="spring-form">
         <div class="row">
           <span role="radiogroup" aria-label="Spring type" style="display:flex;gap:12px;align-items:center">
@@ -307,7 +372,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
       <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
       <div class="btn-row" style="margin-top:8px">
-        <button class="action off" onclick="resetSprings()">Reset to single tip anchor</button>
+        <button class="action off" onclick="resetSprings()">Reset to single tip anchor at current position</button>
       </div>
       <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
     </details>
@@ -355,6 +420,7 @@ const svcUpdateCollisionThresholds = { name: '/virtual_spring_node/update_collis
 const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
+let lastJointState = null;
 let currentSprings = [];
 const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
 
@@ -412,18 +478,24 @@ function enableTorque() {
 // actually next. "Turn on torque control with springs deactivated" was
 // dropped as a separate button 2026-08-20 -- same effect as disabling
 // springs via the springs toggle first, then this one.
+// The checkbox's own .checked already reflects the NEW state the user just
+// switched to (native checkbox click behavior, before this handler runs) --
+// so this just carries out whichever action that implies. If the call
+// fails or torque flips for some other reason, the next
+// /gen3_torque_control/status message (handleTorqueStatus) re-syncs the
+// switch to ground truth regardless of what this optimistic click assumed.
 function toggleTorqueControl() {
-  const isEnabled = document.getElementById('torque-state').textContent.trim() === 'ENABLED';
-  if (isEnabled) {
-    callTrigger(svcEnablePosition, 'Idle');
-  } else {
+  if (document.getElementById('torque-toggle-switch').checked) {
     enableTorque();
+  } else {
+    callTrigger(svcEnablePosition, 'Idle');
   }
 }
-function updateTorqueToggleButton(isEnabled) {
-  const btn = document.getElementById('torque-toggle-btn');
-  btn.textContent = isEnabled ? 'Turn off torque control' : 'Turn on torque control';
-  btn.className = 'action ' + (isEnabled ? 'off' : 'on');
+function updateTorqueToggleSwitch(isEnabled) {
+  document.getElementById('torque-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('torque-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
 }
 
 // Direct call to virtual_spring_node's ~/enable, same pattern as
@@ -435,18 +507,18 @@ function setSpringsEnabled(enabled) {
       const el = document.getElementById('springs-state');
       el.textContent = enabled ? 'enabled' : 'disabled';
       el.className = 'val ' + (enabled ? 'active' : 'inactive');
-      updateSpringsToggleButton(enabled);
+      updateSpringsToggleSwitch(enabled);
     }
   }, function(err) { showMsg('mode-msg', false, 'Springs enable/disable failed: ' + err); });
 }
 function toggleSprings() {
-  const isEnabled = document.getElementById('springs-state').textContent.trim() === 'enabled';
-  setSpringsEnabled(!isEnabled);
+  setSpringsEnabled(document.getElementById('springs-toggle-switch').checked);
 }
-function updateSpringsToggleButton(isEnabled) {
-  const btn = document.getElementById('springs-toggle-btn');
-  btn.textContent = isEnabled ? 'Disable springs' : 'Enable springs';
-  btn.className = 'action ' + (isEnabled ? 'off' : 'on');
+function updateSpringsToggleSwitch(isEnabled) {
+  document.getElementById('springs-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('springs-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
 }
 
 function softEstop() {
@@ -482,6 +554,27 @@ function moveToJointAngles() {
   callService(svcMoveToJointAngles, { joint_angles_rad: angles },
     function(resp) { showMsg('move-to-angles-msg', resp.success, resp.message); },
     function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
+}
+
+// Fills the 7 boxes from the latest /kinova/joint_states_lowlevel message
+// (see lastJointState, set by the raw subscription in connectRos) purely
+// for reference/as a starting point to edit from -- deliberately explicit
+// (a button, not a live-updating readout) so values can't shift under the
+// user mid-edit right before a Move.
+function fetchCurrentJointAngles() {
+  if (!lastJointState) {
+    showMsg('move-to-angles-msg', false, 'No joint state received yet -- is the robot/torque node running?');
+    return;
+  }
+  for (let i = 1; i <= 7; i++) {
+    const idx = lastJointState.name.indexOf('joint_' + i);
+    if (idx === -1) {
+      showMsg('move-to-angles-msg', false, "joint_" + i + " not found in the latest joint state.");
+      return;
+    }
+    document.getElementById('mv-j' + i).value = lastJointState.position[idx].toFixed(4);
+  }
+  showMsg('move-to-angles-msg', true, 'Filled with current joint angles.');
 }
 
 // ---- gripper -----------------------------------------------------
@@ -824,7 +917,7 @@ function handleTorqueStatus(msg) {
   el.textContent = msg.data;
   el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
   const isEnabled = msg.data === 'ENABLED';
-  updateTorqueToggleButton(isEnabled);
+  updateTorqueToggleSwitch(isEnabled);
   // Position-mode-only actions -- moving to a pose or the gripper -- can't
   // run while torque control is on, so grey them out instead of letting
   // them fail silently against the robot.
@@ -845,7 +938,7 @@ function handleSafetyStatus(msg) {
     const sEl = document.getElementById('springs-state');
     sEl.textContent = 'disabled by collision -- re-enable to resume';
     sEl.className = 'val inactive';
-    updateSpringsToggleButton(false);
+    updateSpringsToggleSwitch(false);
   }
 
   // virtual_spring_node appends this once it notices gen3_torque_control's
@@ -879,6 +972,14 @@ function connectRos() {
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
     sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
+    // Raw joint state, subscribed directly (rosbridge doesn't apply any
+    // node's remaps -- it subscribes to exactly the topic name given, same
+    // as `ros2 topic echo`) -- only consumer is fetchCurrentJointAngles's
+    // "Use current joint angles" button, so this doesn't need its own
+    // handler beyond stashing the latest message.
+    sub('/kinova/joint_states_lowlevel', 'sensor_msgs/msg/JointState', function(msg) {
+      lastJointState = msg;
+    });
 
     populateLinkDropdown();
 
