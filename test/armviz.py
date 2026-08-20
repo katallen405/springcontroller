@@ -17,7 +17,7 @@ from rclpy.utilities import remove_ros_args
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import String, Float64MultiArray
+from std_msgs.msg import String, Float64MultiArray, Bool
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
@@ -73,6 +73,9 @@ COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
 SAFETY_STATUS_TOPIC = "/virtual_spring_node/safety_status"
 COLLISION_THRESHOLDS_TOPIC = "/virtual_spring_node/collision_thresholds_status"
 CLOSEST_POINTS_TOPIC = "/virtual_spring_node/closest_collision_points"
+# Viz-owned, not virtual_spring_node's -- this only controls what armviz
+# draws, the spring node has no notion of it.
+SHOW_FRAMES_TOPIC = "/armviz/show_frames"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -120,7 +123,10 @@ _unknown_frame_warned = set()
 # id -> {"object_pose": 4x4 np.ndarray, "primitives": [(shape, dims, relative_pose 4x4)]}
 collision_objects = {}
 
-show_frames = False  # toggled via 'f' keypress in the terminal
+show_frames = False  # toggled via 'f' keypress in the terminal, or the
+                      # SHOW_FRAMES_TOPIC subscription below (stdin isn't a
+                      # TTY when launched via ros2 launch, so the keypress
+                      # doesn't work there -- see show_frames_cb).
 
 def get_all_frames():
     """Return list of (frame_name, frame_id) for every non-joint frame."""
@@ -129,6 +135,11 @@ def get_all_frames():
         for i in range(model.nframes)
         if model.frames[i].type != pin.FrameType.JOINT
     ]
+
+
+def show_frames_cb(msg):
+    global show_frames
+    show_frames = msg.data
 
 # ---------------------------------------------------------------------------
 # Parameter helpers
@@ -728,6 +739,11 @@ node.create_subscription(
 node.create_subscription(
     Float64MultiArray, COLLISION_THRESHOLDS_TOPIC, collision_thresholds_cb, _latched_qos
 )
+# Plain VOLATILE -- armviz is already subscribed by the time a user could
+# possibly click the web UI's checkbox, so there's no late-joiner gap to
+# cover here (unlike the TRANSIENT_LOCAL topics above, which replay state
+# published before armviz connected).
+node.create_subscription(Bool, SHOW_FRAMES_TOPIC, show_frames_cb, 10)
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)

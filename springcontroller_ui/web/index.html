@@ -397,6 +397,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
+      <div class="meshcat-row">
+        <label><input type="checkbox" id="viz-show-frames" autocomplete="off"
+          onchange="toggleShowFrames()"> Show all link frames (dots + labels) --
+          handy for picking a link_name/local_point when the name alone
+          doesn't tell you where the frame actually is.</label>
+      </div>
       <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
     </div>
     </div>
@@ -666,16 +672,40 @@ function updateSpringTypeFields() {
   document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
 }
 
+// Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
+// under a different name (gen3: end_effector_link; ur3e: something with
+// "tool" in it) -- keeps the dropdown usable without hardcoding a specific
+// robot's link names.
+const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
+    const names = resp.link_names || [];
+    const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
+    const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
+    const addOption = function(parent, name) {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      parent.appendChild(opt);
+    };
     ['sp-link', 'wc-link'].forEach(function(selId) {
       const sel = document.getElementById(selId);
       sel.innerHTML = '';
-      (resp.link_names || []).forEach(function(name) {
-        const opt = document.createElement('option');
-        opt.value = name; opt.textContent = name;
-        sel.appendChild(opt);
-      });
+      if (favorites.length > 0 && rest.length > 0) {
+        const favGroup = document.createElement('optgroup');
+        favGroup.label = 'Likely tool/end-effector links';
+        favorites.forEach(function(n) { addOption(favGroup, n); });
+        sel.appendChild(favGroup);
+        const allGroup = document.createElement('optgroup');
+        allGroup.label = 'All links';
+        rest.forEach(function(n) { addOption(allGroup, n); });
+        sel.appendChild(allGroup);
+      } else {
+        // Heuristic matched nothing (or everything) -- just show the flat
+        // full list, no point grouping a single group.
+        names.forEach(function(n) { addOption(sel, n); });
+      }
+      if (favorites.length > 0) sel.value = favorites[0];
     });
   }, function(err) {
     showMsg('spring-msg', false, 'Could not list link names: ' + err);
@@ -968,6 +998,15 @@ function finalizeStudyConditions() {
 function reloadMeshcat() {
   const f = document.getElementById('meshcat-frame');
   f.src = f.src;
+}
+
+// armviz.py owns this topic itself (not virtual_spring_node) -- it's a
+// pure display setting, and its own terminal 'f' keypress toggle doesn't
+// work when launched via ros2 launch (no TTY), so this is the only way to
+// reach it from a normal launch.
+function toggleShowFrames() {
+  const on = document.getElementById('viz-show-frames').checked;
+  pub('/armviz/show_frames', 'std_msgs/msg/Bool', { data: on });
 }
 
 // ---- torque / safety status displays ----------------------------------
