@@ -149,6 +149,10 @@ collision_check_interval_sec : double
 collision_log_path : str
     CSV log of collision-check events, flushed incrementally. Empty
     disables logging.
+collision_log_max_bytes : int
+    Once collision_log_path would exceed this size, it's rotated to
+    <path>.1 (overwriting any previous one) and a fresh file starts.
+    Default 50_000_000 (50MB). <= 0 disables rotation.
 spring_names, springs.<n>.* : per-VirtualSpring config (see
     config/springs.yaml) -- link_name, local_point, target, stiffness,
     damping, rest_length, inner_radius, outer_radius. `target` left
@@ -425,8 +429,20 @@ class VirtualSpringNode(Node):
         self.declare_parameter(
             "collision_log_path", os.path.expanduser("~/springcontroller_collision_log.csv")
         )
-        collision_log_path = os.path.expanduser(
+        # Opened in append mode across every launch with no cap -- confirmed
+        # live 2026-08-20 this had grown to 251MB / 2.5M rows over a couple
+        # days of repulsion-field testing. Single-generation rotation (like
+        # the simplest logrotate config): once the file would exceed this
+        # size, the current one becomes <path>.1 (overwriting any previous
+        # <path>.1) and a fresh one starts. 50MB is a few hundred thousand
+        # rows at this row width -- generous for a day's testing, nowhere
+        # near what caused the problem.
+        self.declare_parameter("collision_log_max_bytes", 50_000_000)
+        self._collision_log_path = os.path.expanduser(
             self.get_parameter("collision_log_path").get_parameter_value().string_value
+        )
+        self._collision_log_max_bytes = (
+            self.get_parameter("collision_log_max_bytes").get_parameter_value().integer_value
         )
         self._collision_log_file = None
         self._collision_log_writer = None
@@ -442,22 +458,8 @@ class VirtualSpringNode(Node):
         # cache altogether.
         self._collision_warn_log_last = -1.0
         self._repulsion_warn_log_last = -1.0
-        if collision_log_path:
-            try:
-                write_header = not os.path.isfile(collision_log_path)
-                self._collision_log_file = open(collision_log_path, "a", newline="")
-                self._collision_log_writer = csv.writer(self._collision_log_file)
-                if write_header:
-                    self._collision_log_writer.writerow([
-                        "elapsed_s", "kind", "in_collision", "in_danger",
-                        "link_a", "link_b", "min_distance", "scale_factor",
-                        "log_call_failed",
-                    ])
-                    self._collision_log_file.flush()
-            except OSError as e:
-                self.get_logger().error(f"Could not open collision log at {collision_log_path}: {e}")
-                self._collision_log_file = None
-                self._collision_log_writer = None
+        if self._collision_log_path:
+            self._open_collision_log()
 
         # Check config file exists before doing anything else
         config_path = os.path.expanduser(
@@ -1487,6 +1489,7 @@ class VirtualSpringNode(Node):
                     if elapsed - self._collision_log_last_flush >= 0.5:
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
+                        self._rotate_collision_log_if_needed()
 
             # Repulsion field: unconditionally additive, outside every
             # branch above (in_collision / in_danger / clear) and
@@ -2625,6 +2628,56 @@ class VirtualSpringNode(Node):
                 list(collision.closest_point_a) + list(collision.closest_point_b)
             )
         self._closest_points_pub.publish(points_msg)
+
+    def _open_collision_log(self) -> None:
+        """(Re)open self._collision_log_path in append mode, writing the
+        header row only if the file doesn't already exist -- used both at
+        startup and by _rotate_collision_log_if_needed() after a rotation
+        (where the old file has just been moved aside, so this always sees
+        a fresh, empty path and writes a new header)."""
+        try:
+            write_header = not os.path.isfile(self._collision_log_path)
+            self._collision_log_file = open(self._collision_log_path, "a", newline="")
+            self._collision_log_writer = csv.writer(self._collision_log_file)
+            if write_header:
+                self._collision_log_writer.writerow([
+                    "elapsed_s", "kind", "in_collision", "in_danger",
+                    "link_a", "link_b", "min_distance", "scale_factor",
+                    "log_call_failed",
+                ])
+                self._collision_log_file.flush()
+        except OSError as e:
+            self.get_logger().error(
+                f"Could not open collision log at {self._collision_log_path}: {e}"
+            )
+            self._collision_log_file = None
+            self._collision_log_writer = None
+
+    def _rotate_collision_log_if_needed(self) -> None:
+        """Single-generation rotation, checked at the same throttled cadence
+        as the flush that calls this -- accurate os.path.getsize() needs a
+        flush to have just happened, and checking on every single writerow()
+        call (up to ~100Hz) would be needless syscall overhead for a
+        condition that's only ever true a few times a day at most."""
+        if self._collision_log_max_bytes <= 0 or self._collision_log_file is None:
+            return
+        try:
+            size = os.path.getsize(self._collision_log_path)
+        except OSError:
+            return
+        if size < self._collision_log_max_bytes:
+            return
+        self._collision_log_file.close()
+        backup_path = self._collision_log_path + ".1"
+        try:
+            os.replace(self._collision_log_path, backup_path)
+        except OSError as e:
+            self.get_logger().error(f"Could not rotate collision log: {e}")
+        self._open_collision_log()
+        self.get_logger().info(
+            f"Collision log rotated ({size} bytes >= {self._collision_log_max_bytes} "
+            f"limit) -- previous file kept at {backup_path}."
+        )
 
     def destroy_node(self) -> None:
         if self._collision_log_file is not None:
