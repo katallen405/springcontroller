@@ -165,6 +165,40 @@ def test_interpenetrating_pairs_contribute_nothing():
     np.testing.assert_array_equal(torques, np.zeros(2))
 
 
+def test_total_torque_clipped_to_cap_preserving_direction():
+    # Two simultaneous near-max-force contacts on opposite links -- see
+    # test_multiple_objects_sum_independently for the summing behavior this
+    # builds on. Uncapped, their sum should exceed a small cap; capped, the
+    # norm should land exactly at the cap with direction unchanged.
+    arm_uncapped = make_arm()
+    add_object_at_gap(arm_uncapped, gap=0.01, object_id="a", side=1)
+    add_object_at_gap(arm_uncapped, gap=0.01, object_id="b", side=1)
+    torques_uncapped = arm_uncapped.get_repulsion_torques(CAUTION, MAX_FORCE)
+    uncapped_norm = np.linalg.norm(torques_uncapped)
+    assert uncapped_norm > 0.5  # comfortably above the cap used below
+
+    cap = 0.1
+    arm_capped = make_arm()
+    add_object_at_gap(arm_capped, gap=0.01, object_id="a", side=1)
+    add_object_at_gap(arm_capped, gap=0.01, object_id="b", side=1)
+    torques_capped = arm_capped.get_repulsion_torques(CAUTION, MAX_FORCE, cap)
+
+    assert np.linalg.norm(torques_capped) == pytest.approx(cap, rel=1e-6)
+    np.testing.assert_allclose(
+        torques_capped / np.linalg.norm(torques_capped),
+        torques_uncapped / uncapped_norm,
+        rtol=1e-6,
+    )
+
+
+def test_cap_above_actual_norm_has_no_effect():
+    arm = make_arm()
+    add_object_at_gap(arm, gap=0.05)
+    torques_uncapped = arm.get_repulsion_torques(CAUTION, MAX_FORCE)
+    torques_with_high_cap = arm.get_repulsion_torques(CAUTION, MAX_FORCE, 1000.0)
+    np.testing.assert_allclose(torques_with_high_cap, torques_uncapped, rtol=1e-6)
+
+
 def test_multiple_objects_sum_independently():
     gap_symmetric = 0.05
 

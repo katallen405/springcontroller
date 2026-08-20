@@ -454,6 +454,7 @@ class URDFArmConfiguration:
 
     def get_repulsion_torques(
         self, caution_threshold: float, max_force_n: float,
+        max_total_torque_nm: float = float("inf"),
     ) -> np.ndarray:
         """
         Joint torques from a low-strength repulsion field around scene
@@ -467,6 +468,20 @@ class URDFArmConfiguration:
         interpenetration -- unlike the clamp, this is meant to keep helping
         while the arm is deep in the danger zone but still short of contact,
         not cut out there.
+
+        max_force_n bounds each *pair*'s own Cartesian force, not the
+        resulting joint torque -- a single contact far out on the gripper
+        already has a large lever arm back to the shoulder, and several
+        simultaneous contacts (e.g. a multi-geometry gripper wrapping a
+        curved obstacle) sum on top of that. Confirmed live 2026-08-19: a
+        gripper closing around a cylinder produced several simultaneous
+        near-contact pairs whose summed |tau| reached 20-36 N*m, well past
+        "low-strength" and close to the wrist joints' torque_limit_nm. After
+        summing every pair's contribution, the *total* vector's norm is
+        clipped to max_total_torque_nm (direction preserved, same principle
+        as gradient-norm clipping) -- default float("inf") (no clipping) so
+        existing callers that don't care about this are unaffected; pass a
+        finite value to actually bound it.
 
         Pairs that have actually started interpenetrating (min_distance < 0)
         are skipped entirely rather than saturated: confirmed empirically
@@ -574,6 +589,10 @@ class URDFArmConfiguration:
             local_point = T[:3, :3].T @ (robot_point - T[:3, 3])
             J = self.get_jacobian(robot_name, local_point)
             torques += J[:3, :].T @ force_world
+
+        total_norm = np.linalg.norm(torques)
+        if total_norm > max_total_torque_nm > 0.0:
+            torques *= max_total_torque_nm / total_norm
 
         return torques
 
