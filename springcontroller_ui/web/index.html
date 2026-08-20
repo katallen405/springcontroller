@@ -398,10 +398,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
       <div class="meshcat-row">
-        <label><input type="checkbox" id="viz-show-frames" autocomplete="off"
-          onchange="toggleShowFrames()"> Show all link frames (dots + labels) --
-          handy for picking a link_name/local_point when the name alone
-          doesn't tell you where the frame actually is.</label>
+        <label class="status-line"><input type="checkbox" id="viz-show-frames" autocomplete="off"
+          onchange="toggleShowFrames()"> Show all link frames</label>
       </div>
       <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
     </div>
