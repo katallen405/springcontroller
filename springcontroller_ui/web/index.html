@@ -138,6 +138,12 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 }
 .spring-form input[type=text], .spring-form input[type=number] { width: 88px; }
 .spring-form input.joint-angle-input[type=number] { width: 52px; }
+/* Hide the native spinner arrows -- at 52px wide they ate a large chunk
+   of the box, and typing a value directly is the normal way these get
+   filled anyway (or via "Use current joint angles"). */
+.joint-angle-input::-webkit-inner-spin-button,
+.joint-angle-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.joint-angle-input { -moz-appearance: textfield; }
 
 ul.spring-list { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 ul.spring-list li {
