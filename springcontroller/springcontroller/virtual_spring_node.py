@@ -1432,8 +1432,10 @@ class VirtualSpringNode(Node):
                         #only if torque is enabled, irrelevant if off
                         if self._last_torque_status == "ENABLED":
                             self.get_logger().error(
-                                f"{kind} detected between {a} and {b}! Zeroing spring torque "
+                                f"{kind} detected between {a} and {b}!"
+                                f"(Zeroing spring torque )"
                                 f"(gravity comp held)."
+                            )
                         self._set_springs_enabled(
                             False,
                             reason=f"{kind} detected between {a} and {b}",
