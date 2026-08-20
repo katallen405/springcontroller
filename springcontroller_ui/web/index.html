@@ -299,19 +299,19 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       <div class="spring-form">
         <div class="row">
           <label>Participant ID <input type="text" id="wc-pid" value=""></label>
+          <label>Eye height, cm (from table) <input type="number" step="0.5" id="wc-eye" value="71"></label>
+          <label>Arm length, cm (elbow&rarr;fingertip) <input type="number" step="0.5" id="wc-arm" value="46"></label>
+          <label>Ramp margin (cm) <input type="number" step="0.5" id="wc-ramp" value="2.54"></label>
+        </div>
+        <div class="row">
           <label>Link
             <select id="wc-link"></select>
           </label>
-        </div>
-        <div class="row">
-          <label>Eye height, in (from table) <input type="number" step="0.1" id="wc-eye" value="28"></label>
-          <label>Arm length, in (elbow&rarr;fingertip) <input type="number" step="0.1" id="wc-arm" value="18"></label>
-          <label>Ramp margin (in) <input type="number" step="0.1" id="wc-ramp" value="1.0"></label>
-        </div>
-        <div class="row">
           <label>local x <input type="number" step="0.01" id="wc-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="wc-ly" value="0"></label>
           <label>local z <input type="number" step="0.01" id="wc-lz" value="0.1"></label>
+        </div>
+        <div class="row">
           <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
         </div>
         <div class="btn-row">
@@ -666,16 +666,40 @@ function updateSpringTypeFields() {
   document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
 }
 
+// Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
+// under a different name (gen3: end_effector_link; ur3e: something with
+// "tool" in it) -- keeps the dropdown usable without hardcoding a specific
+// robot's link names.
+const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
+    const names = resp.link_names || [];
+    const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
+    const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
+    const addOption = function(parent, name) {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      parent.appendChild(opt);
+    };
     ['sp-link', 'wc-link'].forEach(function(selId) {
       const sel = document.getElementById(selId);
       sel.innerHTML = '';
-      (resp.link_names || []).forEach(function(name) {
-        const opt = document.createElement('option');
-        opt.value = name; opt.textContent = name;
-        sel.appendChild(opt);
-      });
+      if (favorites.length > 0 && rest.length > 0) {
+        const favGroup = document.createElement('optgroup');
+        favGroup.label = 'Likely tool/end-effector links';
+        favorites.forEach(function(n) { addOption(favGroup, n); });
+        sel.appendChild(favGroup);
+        const allGroup = document.createElement('optgroup');
+        allGroup.label = 'All links';
+        rest.forEach(function(n) { addOption(allGroup, n); });
+        sel.appendChild(allGroup);
+      } else {
+        // Heuristic matched nothing (or everything) -- just show the flat
+        // full list, no point grouping a single group.
+        names.forEach(function(n) { addOption(sel, n); });
+      }
+      if (favorites.length > 0) sel.value = favorites[0];
     });
   }, function(err) {
     showMsg('spring-msg', false, 'Could not list link names: ' + err);
@@ -887,7 +911,7 @@ function previewWorkspaceCenter() {
     showMsg('workspace-msg', false, 'Eye height and arm length must both be numbers.');
     return;
   }
-  callService(svcPreviewWorkspaceCenter, { eye_height_in: eyeHeight, arm_length_in: armLength }, function(resp) {
+  callService(svcPreviewWorkspaceCenter, { eye_height_cm: eyeHeight, arm_length_cm: armLength }, function(resp) {
     if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
     const c = resp.center;
     const addReq = {
@@ -903,14 +927,21 @@ function previewWorkspaceCenter() {
       inner_radius: 0.0,
       outer_radius: 0.0,
     };
-    callService(svcAddSpring, addReq, function(addResp) {
-      const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
-      showMsg('workspace-msg', addResp.success,
-        'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
-          (addResp.success
-            ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
-            : 'Failed to place demo spring.')));
-    }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    const placeSpring = function() {
+      callService(svcAddSpring, addReq, function(addResp) {
+        const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+        showMsg('workspace-msg', addResp.success,
+          'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
+            (addResp.success
+              ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
+              : 'Failed to place demo spring.')));
+      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    };
+    // add_spring refuses if the name already exists, so re-previewing with
+    // different numbers would otherwise silently fail instead of replacing
+    // the old demo spring. Remove it first -- ignore the result either way,
+    // "doesn't exist yet" (first preview) isn't an error here.
+    callService(svcRemoveSpring, { name: WORKSPACE_DEMO_SPRING_NAME }, placeSpring, placeSpring);
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
@@ -939,9 +970,9 @@ function finalizeStudyConditions() {
     const req = {
       participant_id: participantId,
       target: target,
-      eye_height_in: eyeHeight,
-      arm_length_in: armLength,
-      ramp_margin_in: rampMargin,
+      eye_height_cm: eyeHeight,
+      arm_length_cm: armLength,
+      ramp_margin_cm: rampMargin,
       link_name: document.getElementById('wc-link').value,
       local_point: [parseFloat(document.getElementById('wc-lx').value),
                     parseFloat(document.getElementById('wc-ly').value),

@@ -277,12 +277,12 @@ class VirtualSpringNode(Node):
         self.declare_parameter("danger_threshold", 0.01)
         # Low-strength repulsion field around scene collision objects --
         # separate from (and additive on top of) the danger_threshold clamp
-        # above, which only ever removes spring torque. Off by default until
-        # verified on hardware: this is a new autonomous force, and per
-        # collision_recovery_torque_ramp project memory, new autonomous
-        # collision-adjacent behavior on this arm goes through an explicit
-        # opt-in before it runs unattended.
-        self.declare_parameter("repulsion_enabled", False)
+        # above, which only ever removes spring torque. Was off by default
+        # pending hardware verification (per collision_recovery_torque_ramp
+        # project memory's explicit-opt-in policy for new autonomous
+        # collision-adjacent behavior) -- verified live 2026-08-20, now on
+        # by default. ~/set_repulsion_enabled still overrides it either way.
+        self.declare_parameter("repulsion_enabled", True)
         # Must be > danger_threshold -- the ramp runs from caution_threshold
         # (force starts at 0) down to danger_threshold (force saturates at
         # repulsion_max_force_n). 5cm was the project's old danger_threshold
@@ -1428,22 +1428,16 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    # Latch, like _set_springs_enabled's own "Springs
-                    # disabled (...)" INFO log already does -- log once per
-                    # collision *episode*, not every throttled cycle for as
-                    # long as the arm sits in collision (confirmed live
-                    # 2026-08-20: this was spamming ERROR once/second even
-                    # with torque control disabled and nothing left to do
-                    # about it). _springs_auto_disabled only clears via an
-                    # explicit ~/enable (or ~/enable's own pre-flight
-                    # rejection re-evaluating this same collision state),
-                    # so this naturally reappears when the episode is
-                    # genuinely fresh, not just still ongoing.
+                    #no spamming about collisions
+                    # irrelevant if springs are off
                     if not self._springs_auto_disabled:
-                        self.get_logger().error(
-                            f"{kind} detected between {a} and {b}! Zeroing spring torque "
-                            f"(gravity comp held)."
-                        )
+                        #only if torque is enabled, irrelevant if off
+                        if self._last_torque_status == "ENABLED":
+                            self.get_logger().error(
+                                f"{kind} detected between {a} and {b}!"
+                                f"(Zeroing spring torque )"
+                                f"(gravity comp held)."
+                            )
                         self._set_springs_enabled(
                             False,
                             reason=f"{kind} detected between {a} and {b}",
@@ -1456,9 +1450,11 @@ class VirtualSpringNode(Node):
                     # two links are closest would let the arm sag/fall at
                     # the worst possible moment instead of holding position.
                     torques = gravity_torques
+                                
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
-                    if elapsed - self._collision_warn_log_last >= 0.5:
+                    if (self._last_torque_status == "ENABLED"
+                            and elapsed - self._collision_warn_log_last >= 0.5):
                         self.get_logger().warn(
                             f"{label}: {a} / {b}, "
                             f"dist={collision.min_distance:.3f}m, "
@@ -1505,7 +1501,8 @@ class VirtualSpringNode(Node):
                 torques = torques + self._last_repulsion_torques
                 repulsion_out = self._last_repulsion_torques
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
-                if repulsion_norm > 1e-6 and elapsed - self._repulsion_warn_log_last >= 0.5:
+                if (repulsion_norm > 1e-6 and self._last_torque_status == "ENABLED"
+                        and elapsed - self._repulsion_warn_log_last >= 0.5):
                     self.get_logger().warn(
                         f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
                     )
