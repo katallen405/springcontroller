@@ -38,6 +38,7 @@ response that future is waiting on.
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Optional
 
@@ -59,12 +60,21 @@ from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring, CheckCollisionAtAngles
 from springcontroller_ui_interfaces.srv import (
     EnableTorqueControl,
+    FinalizeStudyConditions,
     GetLinkPose,
     ListLinkNames,
     MoveToJointAngles,
+    PreviewWorkspaceCenter,
 )
 
 from springcontroller_ui.study_start_preset import load_preset, save_preset
+from springcontroller_ui.study_workspace_config import (
+    compute_candidate_center,
+    compute_condition_params,
+    log_measurement,
+    write_condition_yaml,
+    CM_TO_M,
+)
 
 
 class _Freshness:
@@ -151,6 +161,22 @@ class StudyControlPanelNode(Node):
         # without removing/recreating it, unlike reset_springs which does.
         self.declare_parameter("spring_target_topic_prefix", "/virtual_spring_node/target")
         self.declare_parameter("study_start_preset_path", "~/springcontroller_ui_study_start.yaml")
+        # Workspace-calibration flow (preview_workspace_center /
+        # finalize_study_conditions): seat_x/seat_y are the participant
+        # midline's pre-set world-frame position (meters) -- a physical
+        # constant of this setup, not derivable from anything else in the
+        # repo, so it lives here as a param rather than hardcoded in
+        # study_workspace_config.py. Update it if the seat mark ever moves.
+        self.declare_parameter("workspace_seat_x", 0.0)
+        self.declare_parameter("workspace_seat_y", 0.0)
+        self.declare_parameter("workspace_study_data_dir", "~/gen3_study_data")
+        self.declare_parameter("workspace_spring_name", "tip_spring")
+        self.declare_parameter("workspace_spring_stiffness", 50.0)
+        self.declare_parameter("workspace_spring_damping", 5.0)
+        self.declare_parameter("workspace_orientation_spring_name", "face_participant")
+        self.declare_parameter("workspace_orientation_local_face_normal", [0.0, 0.0, 1.0])
+        self.declare_parameter("workspace_orientation_stiffness", 2.0)
+        self.declare_parameter("workspace_orientation_damping", 0.2)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -178,6 +204,16 @@ class StudyControlPanelNode(Node):
         self._reset_spring_local_point = np.array(gp("reset_spring_local_point"), dtype=float)
         self._spring_target_topic_prefix = gp("spring_target_topic_prefix")
         self._study_start_preset_path = gp("study_start_preset_path")
+        self._workspace_seat_x = float(gp("workspace_seat_x"))
+        self._workspace_seat_y = float(gp("workspace_seat_y"))
+        self._workspace_study_data_dir = gp("workspace_study_data_dir")
+        self._workspace_spring_name = gp("workspace_spring_name")
+        self._workspace_spring_stiffness = float(gp("workspace_spring_stiffness"))
+        self._workspace_spring_damping = float(gp("workspace_spring_damping"))
+        self._workspace_orientation_spring_name = gp("workspace_orientation_spring_name")
+        self._workspace_orientation_local_face_normal = list(gp("workspace_orientation_local_face_normal"))
+        self._workspace_orientation_stiffness = float(gp("workspace_orientation_stiffness"))
+        self._workspace_orientation_damping = float(gp("workspace_orientation_damping"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -279,6 +315,10 @@ class StudyControlPanelNode(Node):
                              self._get_link_pose_cb, callback_group=cb_group)
         self.create_service(ListLinkNames, "~/list_link_names",
                              self._list_link_names_cb, callback_group=cb_group)
+        self.create_service(PreviewWorkspaceCenter, "~/preview_workspace_center",
+                             self._preview_workspace_center_cb, callback_group=cb_group)
+        self.create_service(FinalizeStudyConditions, "~/finalize_study_conditions",
+                             self._finalize_study_conditions_cb, callback_group=cb_group)
 
         self.get_logger().info("study_control_panel_node ready.")
 
@@ -505,7 +545,7 @@ class StudyControlPanelNode(Node):
             response.success = False
             response.message = (
                 f"safety_status reports '{status}' -- refusing to enable torque "
-                "control (check 'allow danger' to override)."
+                "control (check 'Override safety interlock' to override)."
             )
             return response
 
@@ -791,6 +831,98 @@ class StudyControlPanelNode(Node):
         response.success = True
         response.message = "ok"
         response.link_names = sorted(self._arm.link_names)
+        return response
+
+    # ------------------------------------------------------------
+    # Workspace calibration (participant measurements -> study condition
+    # YAML files). See study_workspace_config.py for the underlying
+    # geometry/YAML-writing logic -- these two handlers just adapt it to
+    # ROS request/response messages.
+    # ------------------------------------------------------------
+
+    def _preview_workspace_center_cb(self, request, response):
+        center = compute_candidate_center(
+            self._workspace_seat_x, self._workspace_seat_y,
+            request.eye_height_cm, request.arm_length_cm,
+        )
+        response.success = True
+        response.message = "ok"
+        response.center = [float(center["x"]), float(center["y"]), float(center["z"])]
+        return response
+
+    def _finalize_study_conditions_cb(self, request, response):
+        if not request.participant_id.strip():
+            response.success = False
+            response.message = "participant_id is required."
+            response.condition1_path = ""
+            response.condition2_path = ""
+            response.warnings = []
+            return response
+
+        center = {
+            "x": float(request.target[0]),
+            "y": float(request.target[1]),
+            "z": float(request.target[2]),
+        }
+        condition_params = compute_condition_params(
+            center, request.eye_height_cm, request.arm_length_cm, request.ramp_margin_cm,
+        )
+        # Straight above the final approved center, raised to eye height.
+        orientation_target = {
+            "x": center["x"], "y": center["y"], "z": request.eye_height_cm * CM_TO_M,
+        }
+
+        local_point = [float(v) for v in request.local_point]
+        spring_params = {
+            "link_name": request.link_name,
+            "local_point": local_point,
+            "target": [center["x"], center["y"], center["z"]],
+            "stiffness": self._workspace_spring_stiffness,
+            "damping": self._workspace_spring_damping,
+            "rest_length": condition_params["rest_length"],
+            "inner_radius": condition_params["inner_radius"],
+            "outer_radius": condition_params["outer_radius"],
+        }
+        orientation_params = {
+            "link_name": request.link_name,
+            "local_point": local_point,
+            "local_face_normal": list(self._workspace_orientation_local_face_normal),
+            "target": [orientation_target["x"], orientation_target["y"], orientation_target["z"]],
+            "stiffness": self._workspace_orientation_stiffness,
+            "damping": self._workspace_orientation_damping,
+        }
+
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        participant_dir = os.path.join(data_dir, request.participant_id)
+        condition1_path = os.path.join(participant_dir, "condition1.yaml")
+        condition2_path = os.path.join(participant_dir, "condition2.yaml")
+        csv_path = os.path.join(data_dir, "measurements.csv")
+
+        try:
+            write_condition_yaml(condition1_path, self._workspace_spring_name, spring_params)
+            write_condition_yaml(
+                condition2_path, self._workspace_spring_name, spring_params,
+                include_orientation=True,
+                orientation_name=self._workspace_orientation_spring_name,
+                orientation_params=orientation_params,
+            )
+            log_measurement(
+                csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
+                center, condition_params, orientation_target, condition1_path, condition2_path,
+            )
+        except OSError as e:
+            response.success = False
+            response.message = f"Failed writing study condition files: {e}"
+            response.condition1_path = ""
+            response.condition2_path = ""
+            response.warnings = []
+            return response
+
+        response.success = True
+        response.message = "ok"
+        response.condition1_path = condition1_path
+        response.condition2_path = condition2_path
+        response.warnings = condition_params["warnings"]
         return response
 
 

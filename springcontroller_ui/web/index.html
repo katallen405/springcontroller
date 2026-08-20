@@ -36,7 +36,7 @@ summary:focus-visible, [tabindex]:focus-visible {
 .conn-bar button { padding: 5px 12px; border: 1px solid #ccc; border-radius: 7px; background: #fff; cursor: pointer; font-size: 13px; font-family: inherit; }
 .conn-bar button:hover { background: #f0f0f0; }
 
-.wrap { max-width: 1080px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 
 .panel { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 14px 18px; }
 .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #666; margin-bottom: 10px; }
@@ -61,6 +61,26 @@ button.action {
   transition: background .12s, border-color .12s;
 }
 button.action:hover { background: #f4f4f4; }
+button.action:disabled { opacity: 0.4; cursor: not-allowed; background: #fff; }
+button.action:disabled:hover { background: #fff; }
+
+.toggle-row { display: flex; align-items: center; gap: 10px; }
+.toggle-row .toggle-label { font-size: 13.5px; font-weight: 600; color: #333; }
+.switch { position: relative; display: inline-block; width: 46px; height: 25px; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; inset: 0; background: #ccc; border-radius: 25px;
+  cursor: pointer; transition: background .15s;
+}
+.switch .slider::before {
+  content: ""; position: absolute; height: 19px; width: 19px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform .15s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+.switch input:checked + .slider { background: #2E7A2E; }
+.switch input:checked + .slider::before { transform: translateX(21px); }
+.switch input:focus-visible + .slider { outline: 3px solid #2563eb; outline-offset: 2px; }
+.toggle-row .toggle-state { font-size: 12.5px; font-weight: 700; min-width: 30px; }
 button.action.on   { border-color: #2E7A2E; color: #1e5a1e; }
 button.action.on:hover { background: #f0faf0; }
 button.action.off  { border-color: #767676; color: #444; }
@@ -75,6 +95,7 @@ button.action.estop:hover { background: #a02020; }
 .status-line { font-size: 13px; color: #555; margin-top: 6px; }
 .status-line .val { font-weight: 700; }
 .val.SAFE, .val.active, .val.ENABLED.ok { color: #2E7A2E; }
+.val.CAUTION { color: #d4a017; }
 .val.DANGER, .val.unknown { color: #8a5300; }
 .val.COLLISION, .val.inactive { color: #a02020; }
 
@@ -88,11 +109,26 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
 
-.layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+.layout { display: grid; grid-template-columns: 440px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 
 .hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
+
+.field-glossary { margin-bottom: 10px; }
+.field-glossary > summary {
+  font-size: 12.5px; color: #2563eb; cursor: pointer; list-style: none;
+}
+.field-glossary > summary::-webkit-details-marker { display: none; }
+.field-glossary > summary::before { content: '▸ '; display: inline-block; }
+.field-glossary[open] > summary::before { content: '▾ '; }
+.field-glossary dl {
+  margin-top: 6px; padding: 8px 12px; background: #fafafa; border: 1px solid #eee;
+  border-radius: 8px; font-size: 12px; color: #444;
+}
+.field-glossary dt { font-weight: 700; margin-top: 6px; }
+.field-glossary dt:first-child { margin-top: 0; }
+.field-glossary dd { margin-left: 0; color: #666; }
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -101,6 +137,13 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
   padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
 }
 .spring-form input[type=text], .spring-form input[type=number] { width: 88px; }
+.spring-form input.joint-angle-input[type=number] { width: 52px; }
+/* Hide the native spinner arrows -- at 52px wide they ate a large chunk
+   of the box, and typing a value directly is the normal way these get
+   filled anyway (or via "Use current joint angles"). */
+.joint-angle-input::-webkit-inner-spin-button,
+.joint-angle-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.joint-angle-input { -moz-appearance: textfield; }
 
 ul.spring-list { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 ul.spring-list li {
@@ -124,6 +167,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 <body>
 
 <header class="conn-bar">
+  <button class="action estop" onclick="softEstop()" style="padding:8px 16px;font-size:14px">ABORT MOVE/DISABLE TORQUE</button>
   <h1 class="app-title">Study Control Panel</h1>
   <span class="dot" id="dot" aria-hidden="true"></span>
   <span class="status-text" id="conn-label" role="status" aria-live="polite">Disconnected</span>
@@ -133,6 +177,13 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
   <button id="btn-disconnect">Disconnect</button>
   <label for="robot-ip" style="font-size:13px;color:#666;margin-left:10px;padding-left:10px;border-left:1px solid #ddd">Robot IP:</label>
   <input type="text" id="robot-ip" value="192.168.1.10" style="width:120px">
+  <div class="status-line" style="margin-top:0;flex-basis:100%;display:flex;gap:16px;flex-wrap:wrap">
+    <span>torque control: <span class="val" id="torque-state">unknown</span></span>
+    <span>move status: <span class="val" id="move-state">unknown</span></span>
+    <span>safety status: <span class="val" id="safety-state">unknown</span></span>
+    <span>springs: <span class="val" id="springs-state">unknown</span></span>
+  </div>
+  <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite" style="margin-top:0;flex-basis:100%"></div>
 </header>
 
 <main class="wrap">
@@ -142,89 +193,152 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <aside class="sidebar" aria-label="Quick controls">
       <div class="panel">
         <h2>Torque control</h2>
-        <div class="btn-row">
-          <button class="action on" onclick="enableTorque()">Turn on torque control</button>
-          <button class="action off" onclick="callTrigger(svcEnablePosition, 'Idle')">Turn off torque control</button>
-          <button class="action off" onclick="enableTorqueSpringsOff()">Turn on torque control with springs deactivated</button>
+        <div class="btn-row" style="gap:24px">
+          <div class="toggle-row">
+            <span class="toggle-label">Torque control</span>
+            <label class="switch">
+              <input type="checkbox" id="torque-toggle-switch" autocomplete="off" onchange="toggleTorqueControl()">
+              <span class="slider"></span>
+            </label>
+            <span class="toggle-state val unknown" id="torque-toggle-state">?</span>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Springs</span>
+            <label class="switch">
+              <input type="checkbox" id="springs-toggle-switch" autocomplete="off" onchange="toggleSprings()">
+              <span class="slider"></span>
+            </label>
+            <span class="toggle-state val unknown" id="springs-toggle-state">?</span>
+          </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
         </div>
-        <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
-          <input type="checkbox" id="allow-danger"> Override safety interlock
+        <label class="chk" style="margin-top:8px">
+          <input type="checkbox" id="allow-danger" autocomplete="off"> Override safety interlock
         </label>
-        <div class="status-line">
-          torque control: <span class="val" id="torque-state">unknown</span><br>
-          move status: <span class="val" id="move-state">unknown</span><br>
-          safety status: <span class="val" id="safety-state">unknown</span><br>
-          springs: <span class="val" id="springs-state">unknown</span>
-        </div>
-        <div class="btn-row" style="margin-top:8px">
-          <button class="action on" onclick="setSpringsEnabled(true)">Enable springs</button>
-          <button class="action off" onclick="setSpringsEnabled(false)">Disable springs</button>
-        </div>
+        <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps in those two states (see README:224).</p>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
 
       <div class="panel">
-        <h2>Emergency stop</h2>
-        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; abort any move + disable torque</button>
-        <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite"></div>
+        <h2>Collision thresholds</h2>
+        <div class="toggle-row" style="margin-bottom:8px">
+          <span class="toggle-label">Repulsion field</span>
+          <label class="switch">
+            <input type="checkbox" id="repulsion-toggle-switch" autocomplete="off" onchange="toggleRepulsion()">
+            <span class="slider"></span>
+          </label>
+          <span class="toggle-state val unknown" id="repulsion-toggle-state">?</span>
+        </div>
+        <p class="hint">Distance (m) from an obstacle where the hard clamp/repulsion field kick in, and how hard the repulsion field pushes at danger_threshold. caution_threshold must stay greater than danger_threshold. Per-object tuning is future work (after 2026-09-18).</p>
+        <div class="spring-form">
+          <div class="row">
+            <label>danger_threshold <input type="number" step="0.01" id="ct-danger" value="0.01"></label>
+            <label>caution_threshold <input type="number" step="0.01" id="ct-caution" value="0.05"></label>
+            <label>repulsion_max_force_n <input type="number" step="0.5" id="ct-max-force" value="5.0"></label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="updateCollisionThresholds()">Apply</button>
+          </div>
+        </div>
+        <div class="msg-box hidden" id="thresholds-msg" role="status" aria-live="polite"></div>
       </div>
 
       <div class="panel">
-        <h2>Study start location</h2>
-        <p class="status-line">Preset: <span class="val" id="start-defined">unknown</span></p>
+        <h2>Position mode controls</h2>
+
+        <p class="status-line">Study start preset: <span class="val" id="start-defined">unknown</span></p>
         <div class="btn-row" style="margin-top:8px">
-          <button class="action on" onclick="moveToStudyStart()">Move to study start</button>
+          <button class="action on" id="btn-move-study-start" onclick="moveToStudyStart()">Move to study start</button>
           <button class="action off" onclick="setCurrentAsStudyStart()">Set current position as study start</button>
         </div>
         <div class="msg-box hidden" id="start-msg" role="status" aria-live="polite"></div>
-      </div>
 
-      <div class="panel">
-        <h2>Move to position</h2>
-        <p class="hint">Joint angles in radians, joint_1..joint_7. Requires torque control off; checked for collision before moving (see "Torque control" panel above).</p>
+        <p class="hint" style="margin-top:12px">Move to joint angles (radians, joint_1..joint_7). Requires torque control off; checked for collision before moving.</p>
         <div class="spring-form">
-          <div class="row">
-            <label>j1 <input type="number" step="0.01" id="mv-j1" value="0"></label>
-            <label>j2 <input type="number" step="0.01" id="mv-j2" value="0"></label>
-            <label>j3 <input type="number" step="0.01" id="mv-j3" value="0"></label>
-            <label>j4 <input type="number" step="0.01" id="mv-j4" value="0"></label>
-            <label>j5 <input type="number" step="0.01" id="mv-j5" value="0"></label>
-            <label>j6 <input type="number" step="0.01" id="mv-j6" value="0"></label>
-            <label>j7 <input type="number" step="0.01" id="mv-j7" value="0"></label>
+          <div class="row" style="flex-wrap:nowrap">
+            <label>j1 <input class="joint-angle-input" type="number" step="0.01" id="mv-j1" value="0"></label>
+            <label>j2 <input class="joint-angle-input" type="number" step="0.01" id="mv-j2" value="0"></label>
+            <label>j3 <input class="joint-angle-input" type="number" step="0.01" id="mv-j3" value="0"></label>
+            <label>j4 <input class="joint-angle-input" type="number" step="0.01" id="mv-j4" value="0"></label>
+            <label>j5 <input class="joint-angle-input" type="number" step="0.01" id="mv-j5" value="0"></label>
+            <label>j6 <input class="joint-angle-input" type="number" step="0.01" id="mv-j6" value="0"></label>
+            <label>j7 <input class="joint-angle-input" type="number" step="0.01" id="mv-j7" value="0"></label>
           </div>
           <div class="btn-row">
-            <button class="action on" onclick="moveToJointAngles()">Move</button>
+            <button class="action on" id="btn-move-joint-angles" onclick="moveToJointAngles()">Move</button>
+            <button class="action off" id="btn-use-current-angles" onclick="fetchCurrentJointAngles()">Use current joint angles</button>
           </div>
         </div>
         <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
-      </div>
 
-      <div class="panel">
-        <h2>Gripper</h2>
-        <div class="btn-row">
-          <button class="action on" onclick="gripperCommand(false)">Open</button>
-          <button class="action off" onclick="gripperCommand(true)">Close</button>
+        <p class="hint" style="margin-top:12px" id="gripper-hint">Gripper can't move while torque control is on.</p>
+        <div class="btn-row" style="margin-top:4px">
+          <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
+          <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
         </div>
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </div>
 
-      <div class="panel">
-        <h2>Reset springs</h2>
-        <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
-        <div class="btn-row" style="margin-top:8px">
-          <button class="action off" onclick="resetSprings()">Reset to single tip anchor</button>
-        </div>
-        <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
-      </div>
     </aside>
 
     <!-- ── Main column: add/remove springs + meshcat view ── -->
     <div class="main-col">
+    <details class="panel">
+      <summary>Study workspace calibration</summary>
+      <p class="hint">
+        Enter the two participant measurements and preview to place a live,
+        0-deadband "<code>workspace_demo</code>" spring at the computed
+        center -- enable torque control (see "Torque control" panel), then
+        push the arm around or retarget <code>workspace_demo</code> in the
+        "Add / remove springs" list below to approve or adjust the
+        location. Finalize writes condition1.yaml/condition2.yaml from
+        wherever it currently is and removes the demo spring.
+      </p>
+      <div class="spring-form">
+        <div class="row">
+          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
+          <label>Eye height, cm (from table) <input type="number" step="0.5" id="wc-eye" value="71"></label>
+          <label>Arm length, cm (elbow&rarr;fingertip) <input type="number" step="0.5" id="wc-arm" value="46"></label>
+          <label>Ramp margin (cm) <input type="number" step="0.5" id="wc-ramp" value="2.54"></label>
+        </div>
+        <div class="row">
+          <label>Link
+            <select id="wc-link"></select>
+          </label>
+          <label>local x <input type="number" step="0.01" id="wc-lx" value="0"></label>
+          <label>local y <input type="number" step="0.01" id="wc-ly" value="0"></label>
+          <label>local z <input type="number" step="0.01" id="wc-lz" value="0.1"></label>
+        </div>
+        <div class="row">
+          <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
+        </div>
+        <div class="btn-row">
+          <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
+          <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
+        </div>
+      </div>
+      <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
+    </details>
+
     <details class="panel" open>
       <summary>Add / remove springs</summary>
+
+      <details class="field-glossary">
+        <summary>What do these fields mean?</summary>
+        <dl>
+          <dt>Link</dt><dd>The robot link the spring attaches to.</dd>
+          <dt>name</dt><dd>Identifier used to remove/update this spring later -- must be unique.</dd>
+          <dt>target x/y/z</dt><dd>World-frame point (m) the spring pulls the attachment point toward (position springs only).</dd>
+          <dt>local x/y/z</dt><dd>Attachment point (m), in the link's own local frame -- e.g. (0,0,0) is the link origin.</dd>
+          <dt>stiffness</dt><dd>Spring constant k (N/m). Force grows linearly with distance from target/rest length.</dd>
+          <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
+          <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
+          <dt>inner/outer radius</dt><dd>Dead-zone/ramp band (m) around rest length -- no force inside inner radius, full stiffness beyond outer radius, ramped in between (position springs only).</dd>
+          <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (orientation springs only).</dd>
+        </dl>
+      </details>
 
       <div class="spring-form">
         <div class="row">
@@ -270,6 +384,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       <div class="msg-box hidden" id="spring-msg" role="status" aria-live="polite"></div>
 
       <ul class="spring-list" id="spring-list"></ul>
+
+      <p class="status-line">Current springs: <span id="springs-list-inline">unknown</span></p>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="action off" onclick="resetSprings()">Reset to single tip anchor at current position</button>
+      </div>
+      <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
     </details>
 
     <div class="panel">
@@ -298,21 +418,54 @@ const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
+const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
+const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
 const svcClearFaults      = { name: '/gen3_torque_control/clear_faults',    type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
+const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
 const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
 const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
+const svcUpdateCollisionThresholds = { name: '/virtual_spring_node/update_collision_thresholds', type: 'springcontroller_interfaces/srv/UpdateCollisionThresholds' };
 const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
+let lastJointState = null;
 let currentSprings = [];
+const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
+
+// Browsers restore form control state (checkboxes included) across a
+// same-tab reload independent of anything in this page's own HTML/JS --
+// confirmed live 2026-08-20: "Override safety interlock" and both toggle
+// switches came back checked/ON on a fresh page load despite never being
+// declared `checked` here. autocomplete="off" on these inputs helps but
+// isn't reliably honored for checkbox restore in every browser, so force
+// the real defaults here instead of trusting markup or attributes alone.
+// allow-danger has no live server-side state to reflect, so plain false is
+// correct; the two toggle switches instead go to an explicit "unknown"
+// state (not a false "OFF" claim) until a real status arrives post-connect.
+function resetPersistedFormState() {
+  document.getElementById('allow-danger').checked = false;
+  document.getElementById('torque-toggle-switch').checked = false;
+  document.getElementById('springs-toggle-switch').checked = false;
+  document.getElementById('repulsion-toggle-switch').checked = false;
+}
+resetPersistedFormState();
+// A bfcache restore (browser back/forward, some tab-freeze/resume cases)
+// re-shows the page's existing DOM -- checkbox state included -- WITHOUT
+// re-running this top-level script, so the call above alone doesn't cover
+// it. Confirmed live 2026-08-20: allow-danger came back checked again
+// despite the above, moments after a normal page load with no visible
+// reload. `pageshow` (event.persisted true on a bfcache restore, false on
+// a genuine fresh load, where this is just a harmless redundant reset)
+// is the standard way to catch both.
+window.addEventListener('pageshow', resetPersistedFormState);
 
 // ---- generic ROS helpers -------------------------------------------------
 function showMsg(elId, ok, text) {
@@ -362,26 +515,70 @@ function enableTorque() {
     function(err) { showMsg('mode-msg', false, 'Torque control on failed: ' + err); });
 }
 
-// Disables springs first so the arm can be freely repositioned under
-// gravity-comp-only torque, then enables torque control the normal way.
-function enableTorqueSpringsOff() {
-  setSpringsEnabled(false, function() { enableTorque(); });
+// Single button standing in for "turn on"/"turn off" -- reads the live
+// torque-state span (kept current by handleTorqueStatus's subscription,
+// not just this button's own optimistic guess) to decide which action is
+// actually next. "Turn on torque control with springs deactivated" was
+// dropped as a separate button 2026-08-20 -- same effect as disabling
+// springs via the springs toggle first, then this one.
+// The checkbox's own .checked already reflects the NEW state the user just
+// switched to (native checkbox click behavior, before this handler runs) --
+// so this just carries out whichever action that implies. If the call
+// fails or torque flips for some other reason, the next
+// /gen3_torque_control/status message (handleTorqueStatus) re-syncs the
+// switch to ground truth regardless of what this optimistic click assumed.
+function toggleTorqueControl() {
+  if (document.getElementById('torque-toggle-switch').checked) {
+    enableTorque();
+  } else {
+    callTrigger(svcEnablePosition, 'Idle');
+  }
+}
+function updateTorqueToggleSwitch(isEnabled) {
+  document.getElementById('torque-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('torque-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
 }
 
 // Direct call to virtual_spring_node's ~/enable, same pattern as
-// svcAddSpring/svcUpdateSpring below. onSuccess (optional) runs only if
-// the call succeeds -- used by enableTorqueSpringsOff() to sequence the
-// two calls.
-function setSpringsEnabled(enabled, onSuccess) {
+// svcAddSpring/svcUpdateSpring below.
+function setSpringsEnabled(enabled) {
   callService(svcSpringsEnable, { data: enabled }, function(resp) {
     showMsg('mode-msg', resp.success, resp.message);
     if (resp.success) {
       const el = document.getElementById('springs-state');
       el.textContent = enabled ? 'enabled' : 'disabled';
       el.className = 'val ' + (enabled ? 'active' : 'inactive');
-      if (onSuccess) onSuccess();
+      updateSpringsToggleSwitch(enabled);
     }
   }, function(err) { showMsg('mode-msg', false, 'Springs enable/disable failed: ' + err); });
+}
+function toggleSprings() {
+  setSpringsEnabled(document.getElementById('springs-toggle-switch').checked);
+}
+function updateSpringsToggleSwitch(isEnabled) {
+  document.getElementById('springs-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('springs-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
+}
+
+function toggleRepulsion() {
+  const enabled = document.getElementById('repulsion-toggle-switch').checked;
+  callService(svcRepulsionEnable, { data: enabled }, function(resp) {
+    showMsg('thresholds-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+    // Live ~/repulsion_enabled_status subscription is authoritative and
+    // will correct this shortly regardless -- same optimistic-then-synced
+    // pattern as the torque/springs toggles.
+    if (resp.success) updateRepulsionToggleSwitch(enabled);
+  }, function(err) { showMsg('thresholds-msg', false, 'set_repulsion_enabled failed: ' + err); });
+}
+function updateRepulsionToggleSwitch(isEnabled) {
+  document.getElementById('repulsion-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('repulsion-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
 }
 
 function softEstop() {
@@ -419,6 +616,27 @@ function moveToJointAngles() {
     function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
 }
 
+// Fills the 7 boxes from the latest /kinova/joint_states_lowlevel message
+// (see lastJointState, set by the raw subscription in connectRos) purely
+// for reference/as a starting point to edit from -- deliberately explicit
+// (a button, not a live-updating readout) so values can't shift under the
+// user mid-edit right before a Move.
+function fetchCurrentJointAngles() {
+  if (!lastJointState) {
+    showMsg('move-to-angles-msg', false, 'No joint state received yet -- is the robot/torque node running?');
+    return;
+  }
+  for (let i = 1; i <= 7; i++) {
+    const idx = lastJointState.name.indexOf('joint_' + i);
+    if (idx === -1) {
+      showMsg('move-to-angles-msg', false, "joint_" + i + " not found in the latest joint state.");
+      return;
+    }
+    document.getElementById('mv-j' + i).value = lastJointState.position[idx].toFixed(4);
+  }
+  showMsg('move-to-angles-msg', true, 'Filled with current joint angles.');
+}
+
 // ---- gripper -----------------------------------------------------
 // close=true closes the gripper, close=false opens it -- fire-and-forget,
 // same as gen3_torque_control's own gripper_command service (no completion
@@ -448,14 +666,40 @@ function updateSpringTypeFields() {
   document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
 }
 
+// Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
+// under a different name (gen3: end_effector_link; ur3e: something with
+// "tool" in it) -- keeps the dropdown usable without hardcoding a specific
+// robot's link names.
+const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
-    const sel = document.getElementById('sp-link');
-    sel.innerHTML = '';
-    (resp.link_names || []).forEach(function(name) {
+    const names = resp.link_names || [];
+    const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
+    const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
+    const addOption = function(parent, name) {
       const opt = document.createElement('option');
       opt.value = name; opt.textContent = name;
-      sel.appendChild(opt);
+      parent.appendChild(opt);
+    };
+    ['sp-link', 'wc-link'].forEach(function(selId) {
+      const sel = document.getElementById(selId);
+      sel.innerHTML = '';
+      if (favorites.length > 0 && rest.length > 0) {
+        const favGroup = document.createElement('optgroup');
+        favGroup.label = 'Likely tool/end-effector links';
+        favorites.forEach(function(n) { addOption(favGroup, n); });
+        sel.appendChild(favGroup);
+        const allGroup = document.createElement('optgroup');
+        allGroup.label = 'All links';
+        rest.forEach(function(n) { addOption(allGroup, n); });
+        sel.appendChild(allGroup);
+      } else {
+        // Heuristic matched nothing (or everything) -- just show the flat
+        // full list, no point grouping a single group.
+        names.forEach(function(n) { addOption(sel, n); });
+      }
+      if (favorites.length > 0) sel.value = favorites[0];
     });
   }, function(err) {
     showMsg('spring-msg', false, 'Could not list link names: ' + err);
@@ -532,6 +776,21 @@ function updateSpring(name, kInput, bInput) {
   callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
+}
+
+function updateCollisionThresholds() {
+  const danger = parseFloat(document.getElementById('ct-danger').value);
+  const caution = parseFloat(document.getElementById('ct-caution').value);
+  const maxForce = parseFloat(document.getElementById('ct-max-force').value);
+  if (!isFinite(danger) || !isFinite(caution) || !isFinite(maxForce)) {
+    showMsg('thresholds-msg', false, 'danger_threshold, caution_threshold, and repulsion_max_force_n must all be numbers.');
+    return;
+  }
+  callService(svcUpdateCollisionThresholds, {
+    danger_threshold: danger, caution_threshold: caution, repulsion_max_force_n: maxForce,
+  }, function(resp) {
+    showMsg('thresholds-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+  }, function(err) { showMsg('thresholds-msg', false, 'update_collision_thresholds failed: ' + err); });
 }
 
 // Batches a lookup of every field this spring could have across all three
@@ -639,16 +898,125 @@ function handleSpringsUpdated(msg) {
   });
 }
 
+// ---- study workspace calibration -----------------------------------------
+// Places a live, always-on (0-deadband) demo spring at the computed
+// candidate center. Approving/adjusting it happens through the existing
+// spring-list retarget control above (name "workspace_demo"), not a
+// separate control here -- see finalizeStudyConditions, which reads that
+// spring's live target back before writing the condition YAML files.
+function previewWorkspaceCenter() {
+  const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
+  const armLength = parseFloat(document.getElementById('wc-arm').value);
+  if (!isFinite(eyeHeight) || !isFinite(armLength)) {
+    showMsg('workspace-msg', false, 'Eye height and arm length must both be numbers.');
+    return;
+  }
+  callService(svcPreviewWorkspaceCenter, { eye_height_cm: eyeHeight, arm_length_cm: armLength }, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const c = resp.center;
+    const addReq = {
+      name: WORKSPACE_DEMO_SPRING_NAME,
+      link_name: document.getElementById('wc-link').value,
+      stiffness: 50.0,
+      damping: 5.0,
+      local_point: [parseFloat(document.getElementById('wc-lx').value),
+                    parseFloat(document.getElementById('wc-ly').value),
+                    parseFloat(document.getElementById('wc-lz').value)],
+      target: c,
+      rest_length: 0.0,
+      inner_radius: 0.0,
+      outer_radius: 0.0,
+    };
+    const placeSpring = function() {
+      callService(svcAddSpring, addReq, function(addResp) {
+        const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+        showMsg('workspace-msg', addResp.success,
+          'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
+            (addResp.success
+              ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
+              : 'Failed to place demo spring.')));
+      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    };
+    // add_spring refuses if the name already exists, so re-previewing with
+    // different numbers would otherwise silently fail instead of replacing
+    // the old demo spring. Remove it first -- ignore the result either way,
+    // "doesn't exist yet" (first preview) isn't an error here.
+    callService(svcRemoveSpring, { name: WORKSPACE_DEMO_SPRING_NAME }, placeSpring, placeSpring);
+  }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
+}
+
+function finalizeStudyConditions() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
+  const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
+  const armLength = parseFloat(document.getElementById('wc-arm').value);
+  const rampMargin = parseFloat(document.getElementById('wc-ramp').value);
+  if (![eyeHeight, armLength, rampMargin].every(isFinite)) {
+    showMsg('workspace-msg', false, 'Eye height, arm length, and ramp margin must all be numbers.');
+    return;
+  }
+
+  // Read the demo spring's current (possibly retargeted) live position --
+  // same GetParameters approach fetchSpringValues uses for the spring list.
+  callService(svcGetSpringParams, { names: ['springs.' + WORKSPACE_DEMO_SPRING_NAME + '.target'] }, function(resp) {
+    const t = resp.values[0];
+    if (!t || t.type !== PARAM_TYPE_DOUBLE_ARRAY || t.double_array_value.length !== 3) {
+      showMsg('workspace-msg', false,
+        'No live "' + WORKSPACE_DEMO_SPRING_NAME + '" spring found -- click "Preview workspace center" first.');
+      return;
+    }
+    const target = t.double_array_value.slice(0, 3);
+
+    const req = {
+      participant_id: participantId,
+      target: target,
+      eye_height_cm: eyeHeight,
+      arm_length_cm: armLength,
+      ramp_margin_cm: rampMargin,
+      link_name: document.getElementById('wc-link').value,
+      local_point: [parseFloat(document.getElementById('wc-lx').value),
+                    parseFloat(document.getElementById('wc-ly').value),
+                    parseFloat(document.getElementById('wc-lz').value)],
+      data_dir: document.getElementById('wc-datadir').value.trim(),
+    };
+    callService(svcFinalizeStudyConditions, req, function(fr) {
+      if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
+      let text = 'Wrote ' + fr.condition1_path + ' and ' + fr.condition2_path + '.';
+      if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
+      showMsg('workspace-msg', true, text);
+      removeSpring(WORKSPACE_DEMO_SPRING_NAME);
+    }, function(err) { showMsg('workspace-msg', false, 'finalize_study_conditions failed: ' + err); });
+  }, function(err) { showMsg('workspace-msg', false, 'Could not read current target: ' + err); });
+}
+
 function reloadMeshcat() {
   const f = document.getElementById('meshcat-frame');
   f.src = f.src;
 }
 
 // ---- torque / safety status displays ----------------------------------
+// gen3_torque_control only publishes /status on an ENABLED/DISABLED
+// *transition*, not periodically -- so if the node dies, this badge would
+// otherwise freeze on whatever it last said (e.g. a stale "ENABLED")
+// forever, with nothing here to say so. lastTorqueStatusRaw backs the
+// "UNREACHABLE (last seen: ...)" override below, which comes from
+// virtual_spring_node's safety_status once it notices the node is gone
+// (see handleSafetyStatus) -- kept separate from the badge's own
+// textContent so that repeated safety_status ticks while unreachable
+// don't compound into "UNREACHABLE (last seen: UNREACHABLE (last seen: ...".
+let lastTorqueStatusRaw = 'unknown';
 function handleTorqueStatus(msg) {
+  lastTorqueStatusRaw = msg.data;
   const el = document.getElementById('torque-state');
   el.textContent = msg.data;
   el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
+  const isEnabled = msg.data === 'ENABLED';
+  updateTorqueToggleSwitch(isEnabled);
+  // Position-mode-only actions -- moving to a pose or the gripper -- can't
+  // run while torque control is on, so grey them out instead of letting
+  // them fail silently against the robot.
+  ['btn-move-study-start', 'btn-move-joint-angles', 'btn-gripper-open', 'btn-gripper-close']
+    .forEach(function(id) { document.getElementById(id).disabled = isEnabled; });
 }
 function handleSafetyStatus(msg) {
   const el = document.getElementById('safety-state');
@@ -664,6 +1032,17 @@ function handleSafetyStatus(msg) {
     const sEl = document.getElementById('springs-state');
     sEl.textContent = 'disabled by collision -- re-enable to resume';
     sEl.className = 'val inactive';
+    updateSpringsToggleSwitch(false);
+  }
+
+  // virtual_spring_node appends this once it notices gen3_torque_control's
+  // own status-topic publisher has disappeared from the DDS graph (node
+  // crashed/killed). Overrides the torque-state badge so it can't keep
+  // showing a stale "ENABLED" while nothing is actually applying torque.
+  const tEl = document.getElementById('torque-state');
+  if ((msg.data || '').includes('gen3_torque_control UNREACHABLE')) {
+    tEl.textContent = 'UNREACHABLE (last seen: ' + lastTorqueStatusRaw + ')';
+    tEl.className = 'val inactive';
   }
 }
 function handleMoveStatus(msg) {
@@ -684,9 +1063,34 @@ function connectRos() {
 
     sub(NODE + '/study_start_status', 'std_msgs/msg/String', handleStudyStartStatus);
     sub('/virtual_spring_node/springs_updated', 'std_msgs/msg/String', handleSpringsUpdated);
+    // Authoritative springs-enabled state (TRANSIENT_LOCAL -- delivered
+    // immediately on connect, not just on the next change) -- supersedes
+    // the optimistic update setSpringsEnabled() does on its own success,
+    // which had no way to reflect true state on a fresh page load/reconnect.
+    sub('/virtual_spring_node/springs_enabled', 'std_msgs/msg/Bool', function(msg) {
+      const el = document.getElementById('springs-state');
+      el.textContent = msg.data ? 'enabled' : 'disabled';
+      el.className = 'val ' + (msg.data ? 'active' : 'inactive');
+      updateSpringsToggleSwitch(msg.data);
+    });
+    // Same reasoning as springs_enabled above -- confirmed live 2026-08-20
+    // this was the actual gap behind a whole confused debugging session:
+    // repulsion was believed on (from an earlier session) but had never
+    // been enabled this run, and nothing in the UI could have caught that.
+    sub('/virtual_spring_node/repulsion_enabled_status', 'std_msgs/msg/Bool', function(msg) {
+      updateRepulsionToggleSwitch(msg.data);
+    });
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
     sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
+    // Raw joint state, subscribed directly (rosbridge doesn't apply any
+    // node's remaps -- it subscribes to exactly the topic name given, same
+    // as `ros2 topic echo`) -- only consumer is fetchCurrentJointAngles's
+    // "Use current joint angles" button, so this doesn't need its own
+    // handler beyond stashing the latest message.
+    sub('/kinova/joint_states_lowlevel', 'sensor_msgs/msg/JointState', function(msg) {
+      lastJointState = msg;
+    });
 
     populateLinkDropdown();
 

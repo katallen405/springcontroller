@@ -1,0 +1,6 @@
+float64 danger_threshold
+float64 caution_threshold
+float64 repulsion_max_force_n
+---
+bool success
+string message

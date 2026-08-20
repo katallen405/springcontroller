@@ -878,6 +878,24 @@ only controls how far the ramp extends, not the dead-zone size. Also set
 `rest_length: R` (i.e. `rest_length == inner_radius`) so the force is
 continuous at the zone boundary instead of jumping by `stiffness * R` the
 instant the target exits the dead zone.
+#### Generating study-condition YAML from participant measurements
+
+For the ergonomics study, `springcontroller_ui`'s "Study workspace
+calibration" panel turns two measurements (seated eye height, elbow-to-
+fingertip arm length) into `condition1.yaml` (a dead-zone `VirtualSpring`
+sized from those measurements) and `condition2.yaml` (the same spring plus
+a gaze `OrientationSpring`), rather than hand-authoring them. Workflow:
+"Preview workspace center" computes a candidate and places it as a live,
+always-on `workspace_demo` spring so the experimenter can enable torque
+control and push the arm / retarget it (via the existing spring-list
+controls above) before approving; "Finalize study conditions" then writes
+both YAML files from wherever `workspace_demo` currently sits and removes
+it. Files land under `<data directory>/<participant ID>/` (default
+`~/gen3_study_data`, not the git-tracked `config/` directory, since this is
+per-participant data), alongside a shared `measurements.csv` logging every
+session's raw inputs and derived spring parameters for later comparison
+against robot/rosbag data. See `springcontroller_ui/springcontroller_ui/
+study_workspace_config.py` for the underlying geometry.
 
 #### Adding a joint spring (e.g. Gen3 wrist)
 

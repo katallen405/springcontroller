@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<!--
+  Minimal fixture for test_repulsion.py -- a single revolute joint (about
+  world Z, at the origin) with one link extending 0.5m along its own local
+  +X, carrying collision geometry (unlike simple_2dof_arm.urdf, which is
+  visual-only and deliberately has no <collision> elements so it can double
+  as the "no collision model loaded" regression case).
+
+  At q=0 the link frame coincides with the world frame, so its collision
+  box spans world x:[0,0.5], y:[-0.05,0.05], z:[-0.05,0.05] -- test fixtures
+  place environment objects near this box's +Y face (a fixed, well-known
+  face) so witness-point geometry stays predictable across test cases.
+-->
+<robot name="repulsion_test_arm">
+
+  <link name="world"/>
+
+  <link name="base_link">
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Link 1: 0.5m long, extends along +X at zero config. -->
+  <link name="link_1">
+    <collision>
+      <geometry><box size="0.5 0.1 0.1"/></geometry>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+    </collision>
+    <visual>
+      <geometry><box size="0.5 0.1 0.1"/></geometry>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+    </visual>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.25 0 0"/>
+      <inertia ixx="0.001" iyy="0.02" izz="0.02" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- Joint 1: revolute around Z axis at the origin. -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="100" velocity="10"/>
+  </joint>
+
+  <!-- Link 2: no collision geometry -- exists only so the model has
+       nv=2. get_jacobian()'s pin.getFrameJacobian() return value gets
+       squeezed to a 1-D array by eigenpy when nv==1, an existing edge case
+       unrelated to the repulsion field being tested here; every other
+       fixture URDF in this test suite already has >=2 DOF, so this one
+       matches rather than being the first to hit it. -->
+  <link name="link_2">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0.05 0 0"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="100" velocity="10"/>
+  </joint>
+
+</robot>

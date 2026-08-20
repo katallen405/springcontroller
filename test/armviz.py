@@ -17,7 +17,7 @@ from rclpy.utilities import remove_ros_args
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64MultiArray
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
@@ -50,6 +50,13 @@ def parse_args():
              "Off by default when attaching to a pinned --zmq-url server "
              "(e.g. one already opened by a UI iframe or another viewer).",
     )
+    parser.add_argument(
+        "--caution-threshold", type=float, default=0.05,
+        help="Must match virtual_spring_node's caution_threshold param -- "
+             "draws a translucent gold halo this far outside each collision "
+             "object's own surface, showing the repulsion field's reach "
+             "(see get_repulsion_torques()). 0 or negative disables the halo.",
+    )
     # Strip ROS-specific args (--ros-args -r ... -p ... etc.) before parsing
     # our own, so this still works cleanly when launched via ros2 launch/run.
     return parser.parse_args(remove_ros_args(args=sys.argv)[1:])
@@ -58,10 +65,14 @@ def parse_args():
 _args = parse_args()
 
 URDF          = _args.urdf
+CAUTION_THRESHOLD = _args.caution_threshold
 JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
 COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
+SAFETY_STATUS_TOPIC = "/virtual_spring_node/safety_status"
+COLLISION_THRESHOLDS_TOPIC = "/virtual_spring_node/collision_thresholds_status"
+CLOSEST_POINTS_TOPIC = "/virtual_spring_node/closest_collision_points"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -364,25 +375,223 @@ _COLLISION_OBJECT_MATERIAL = g.MeshLambertMaterial(
     color=0x808080, opacity=0.5, transparent=True
 )
 
+# Same gold as the study UI's .val.CAUTION (springcontroller_ui/web/index.html).
+# Wireframe, not a filled translucent volume -- two overlapping transparent
+# meshes (this halo and the solid object's own semi-transparent material)
+# don't reliably depth-sort in WebGL, so a low-opacity filled halo could
+# render behind/be swallowed by the solid object depending on draw order.
+# A wireframe has no fill to fight over, so it stays visible regardless.
+_CAUTION_HALO_MATERIAL = g.MeshBasicMaterial(
+    color=0xd4a017, wireframe=True, opacity=0.7, transparent=True
+)
+
+# Same red as the study UI's .val.COLLISION (#a02020).
+_COLLISION_OBJECT_MATERIAL_RED = g.MeshLambertMaterial(
+    color=0xa02020, opacity=0.5, transparent=True
+)
+
+
+def _draw_solid_primitive(obj_id, i, material):
+    """Draw/recolor primitive `i` of `obj_id` with the given material,
+    recomputing its transform from scratch each time -- shared by
+    draw_collision_object (initial draw/move, always _COLLISION_OBJECT_MATERIAL)
+    and set_object_collision_color (recolor only, red<->grey, no move
+    involved) so the geometry/transform logic can't drift between the two
+    call sites. Does not touch the halo child path."""
+    entry = collision_objects.get(obj_id)
+    shape, dims, relative_pose = entry["primitives"][i]
+    path = f"collision_objects/{obj_id}/{i}"
+    T = entry["object_pose"] @ relative_pose
+    if shape == "box":
+        viz.viewer[path].set_object(g.Box(dims), material)
+    else:  # cylinder
+        height, radius = dims
+        viz.viewer[path].set_object(g.Cylinder(height, radius), material)
+        T = T @ _CYLINDER_AXIS_ALIGN
+    viz.viewer[path].set_transform(T)
+
+
+def set_object_collision_color(obj_id, in_collision):
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    material = _COLLISION_OBJECT_MATERIAL_RED if in_collision else _COLLISION_OBJECT_MATERIAL
+    for i in range(len(entry["primitives"])):
+        _draw_solid_primitive(obj_id, i, material)
+
+
 def draw_collision_object(obj_id):
     """(Re)draw every primitive of a tracked collision object at its current
     pose. Event-driven (called from collision_object_cb on ADD/MOVE), unlike
     draw_springs/draw_frames -- scene objects don't move with joint state,
-    so there's nothing to refresh in the main display loop."""
+    so there's nothing to refresh in the main display loop.
+
+    Also draws a translucent gold "halo" copy of each primitive, padded
+    outward by CAUTION_THRESHOLD -- get_repulsion_torques() (see
+    urdf_arm_configuration.py) isn't a spatial vector field sampled at many
+    points; at any instant it's a single force computed from whichever point
+    on the robot and obstacle are currently nearest each other, direction
+    away from the obstacle's nearest point, magnitude ramping from 0 at
+    caution_threshold up to full strength at danger_threshold. The one
+    stable *shape* in that picture is this offset shell -- the boundary
+    where the field can start acting at all -- so that's what's drawn,
+    rather than an arrow field that would imply forces exist at points the
+    math never actually evaluates.
+
+    Always redraws in the default (grey) material, even if this object's
+    solid color is currently red from set_object_collision_color -- an
+    ADD/MOVE while already in collision is an edge case (moving objects
+    don't currently get recolored), not worth the extra state tracking to
+    preserve red through a redraw.
+    """
     entry = collision_objects.get(obj_id)
     if entry is None:
         return
     for i, (shape, dims, relative_pose) in enumerate(entry["primitives"]):
-        path = f"collision_objects/{obj_id}/{i}"
-        T = entry["object_pose"] @ relative_pose
-        if shape == "box":
-            viz.viewer[path].set_object(g.Box(dims), _COLLISION_OBJECT_MATERIAL)
-        else:  # cylinder
-            height, radius = dims
-            viz.viewer[path].set_object(g.Cylinder(height, radius), _COLLISION_OBJECT_MATERIAL)
-            T = T @ _CYLINDER_AXIS_ALIGN
-        viz.viewer[path].set_transform(T)
+        _draw_solid_primitive(obj_id, i, _COLLISION_OBJECT_MATERIAL)
 
+        if CAUTION_THRESHOLD > 0.0:
+            halo_path = f"collision_objects/{obj_id}/{i}/halo"
+            pad = CAUTION_THRESHOLD
+            if shape == "box":
+                halo_dims = [d + 2 * pad for d in dims]
+                viz.viewer[halo_path].set_object(g.Box(halo_dims), _CAUTION_HALO_MATERIAL)
+            else:  # cylinder -- T already includes _CYLINDER_AXIS_ALIGN above
+                height, radius = dims
+                viz.viewer[halo_path].set_object(
+                    g.Cylinder(height + 2 * pad, radius + pad), _CAUTION_HALO_MATERIAL
+                )
+            # Child of the solid primitive's own path, so it inherits T
+            # automatically -- no separate set_transform needed. Starts
+            # hidden -- safety_status_cb below shows it only while the arm
+            # is actually within caution_threshold of this object.
+            viz.viewer[halo_path].set_property("visible", False)
+
+
+def set_halo_visible(obj_id, visible):
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    for i in range(len(entry["primitives"])):
+        viz.viewer[f"collision_objects/{obj_id}/{i}/halo"].set_property("visible", visible)
+
+
+# Tracks which object's halo is currently shown / which object is
+# currently recolored red (or None each), so safety_status_cb only sends
+# a command on an actual transition -- see its docstring for why that
+# matters.
+_active_halo_obj_id = None
+_active_collision_obj_id = None
+
+
+def safety_status_cb(msg):
+    """
+    Show the caution halo only for the object ~/safety_status currently
+    reports as the closest pair, and only while that's not SAFE.
+
+    A first version of this (2026-08-20) called set_property() from here
+    unconditionally on every message -- but virtual_spring_node republishes
+    ~/safety_status continuously (every joint_state cycle, ~100Hz), not
+    just on change, so that sent a fresh SetProperty command to the
+    browser about 100x/second on top of everything else armviz already
+    pushes at that same rate (frames, springs, robot pose). That flood is
+    the most likely cause of meshcat freezing entirely live (collision
+    objects and robot frames both stopped rendering) -- not a logic bug in
+    the halo code itself. Fixed by only sending a command on an actual
+    transition (entering/leaving caution, or the closest object changing),
+    via _active_halo_obj_id.
+
+    ~/safety_status only ever reports the single globally closest pair
+    (see virtual_spring_node's _publish_safety_status), so at most one
+    object's halo is ever shown here too -- consistent with that, not a
+    new limitation introduced by this visualizer. Format depended on:
+    "WORD: linkA/linkB dist=...m[ ...]" for CAUTION/DANGER/COLLISION,
+    "SAFE ..." (no parseable pair) otherwise.
+
+    Also recolors the object red (via set_object_collision_color) for
+    exactly the same reason and the same flood-avoidance fix, but gated
+    stricter -- only while the status word is specifically COLLISION, not
+    just any non-SAFE state -- tracked independently in
+    _active_collision_obj_id so the halo and color transitions don't
+    interfere with each other's redundant-command guard.
+    """
+    global _active_halo_obj_id, _active_collision_obj_id
+    text = msg.data or ""
+    pair_obj_id = None
+    if not text.startswith("SAFE"):
+        try:
+            pair_part = text.split(": ", 1)[1].split(" dist=")[0]
+            a, b = pair_part.split("/")
+        except (IndexError, ValueError):
+            a = b = None
+        if a in collision_objects:
+            pair_obj_id = a
+        elif b in collision_objects:
+            pair_obj_id = b
+
+    if pair_obj_id != _active_halo_obj_id:
+        if _active_halo_obj_id is not None:
+            set_halo_visible(_active_halo_obj_id, False)
+        if pair_obj_id is not None:
+            set_halo_visible(pair_obj_id, True)
+        _active_halo_obj_id = pair_obj_id
+
+    collision_obj_id = pair_obj_id if text.startswith("COLLISION") else None
+    if collision_obj_id != _active_collision_obj_id:
+        if _active_collision_obj_id is not None:
+            set_object_collision_color(_active_collision_obj_id, False)
+        if collision_obj_id is not None:
+            set_object_collision_color(collision_obj_id, True)
+        _active_collision_obj_id = collision_obj_id
+
+
+_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=3)
+
+
+def closest_points_cb(msg):
+    """
+    Draws a magenta line between the two witness points
+    ~/closest_collision_points reports (see virtual_spring_node's
+    _publish_safety_status) -- the actual detected closest pair's location,
+    not something inferred from geometry. Empty data (no collision model /
+    nothing to report) hides the line rather than leaving a stale one from
+    the last real reading.
+    """
+    if len(msg.data) < 6:
+        viz.viewer["debug/closest_collision_line"].set_property("visible", False)
+        return
+    point_a = np.array(msg.data[0:3])
+    point_b = np.array(msg.data[3:6])
+    vertices = np.column_stack([point_a, point_b])  # 3x2
+    viz.viewer["debug/closest_collision_line"].set_object(
+        g.Line(g.PointsGeometry(vertices), _CLOSEST_LINE_MATERIAL)
+    )
+    viz.viewer["debug/closest_collision_line"].set_property("visible", True)
+
+
+def collision_thresholds_cb(msg):
+    """
+    [danger_threshold, caution_threshold, repulsion_max_force_n] --
+    CAUTION_THRESHOLD only ever came from the --caution-threshold launch
+    arg before this, so live-tuning it via the study UI silently left the
+    drawn halo at its stale launch-time size while the real triggering
+    distance had changed -- confirmed live 2026-08-20 (halo looked ~7cm
+    padded, actual caution_threshold was 0.73m). Redraws every tracked
+    object's halo at the new size, then restores whichever one (if any)
+    safety_status_cb currently has shown -- draw_collision_object()
+    unconditionally hides the halo, so that state would otherwise be lost.
+    """
+    global CAUTION_THRESHOLD
+    if len(msg.data) < 2:
+        return
+    new_caution = msg.data[1]
+    if new_caution == CAUTION_THRESHOLD:
+        return
+    CAUTION_THRESHOLD = new_caution
+    for obj_id in list(collision_objects.keys()):
+        draw_collision_object(obj_id)
+        if obj_id == _active_halo_obj_id:
+            set_halo_visible(obj_id, True)
 
 
 def draw_springs(q):
@@ -501,6 +710,23 @@ _latched_qos = QoSProfile(
 node.create_subscription(String, SPRINGS_TOPIC, springs_updated_cb, _latched_qos)
 node.create_subscription(
     CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _latched_qos
+)
+# Plain VOLATILE, unlike the two subscriptions above -- virtual_spring_node
+# republishes ~/safety_status continuously (every joint_state cycle, not
+# just on change), so there's no late-joiner gap to cover with latching.
+# safety_status_cb itself is what guards against reacting to every one of
+# those redundant republishes -- see its docstring.
+node.create_subscription(String, SAFETY_STATUS_TOPIC, safety_status_cb, 10)
+# Plain VOLATILE -- republished continuously alongside ~/safety_status,
+# same reasoning as that subscription above.
+node.create_subscription(
+    Float64MultiArray, CLOSEST_POINTS_TOPIC, closest_points_cb, 10
+)
+# TRANSIENT_LOCAL, matching springs/collision-object above -- this is
+# current state (the live threshold values), not a stream, so a
+# late-starting armviz should see the real current values immediately.
+node.create_subscription(
+    Float64MultiArray, COLLISION_THRESHOLDS_TOPIC, collision_thresholds_cb, _latched_qos
 )
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
