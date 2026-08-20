@@ -125,6 +125,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 <body>
 
 <header class="conn-bar">
+  <button class="action estop" onclick="softEstop()" style="padding:8px 16px;font-size:14px">SOFT E-STOP &mdash; abort any move + disable torque</button>
   <h1 class="app-title">Study Control Panel</h1>
   <span class="dot" id="dot" aria-hidden="true"></span>
   <span class="status-text" id="conn-label" role="status" aria-live="polite">Disconnected</span>
@@ -134,6 +135,13 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
   <button id="btn-disconnect">Disconnect</button>
   <label for="robot-ip" style="font-size:13px;color:#666;margin-left:10px;padding-left:10px;border-left:1px solid #ddd">Robot IP:</label>
   <input type="text" id="robot-ip" value="192.168.1.10" style="width:120px">
+  <div class="status-line" style="margin-top:0;flex-basis:100%;display:flex;gap:16px;flex-wrap:wrap">
+    <span>torque control: <span class="val" id="torque-state">unknown</span></span>
+    <span>move status: <span class="val" id="move-state">unknown</span></span>
+    <span>safety status: <span class="val" id="safety-state">unknown</span></span>
+    <span>springs: <span class="val" id="springs-state">unknown</span></span>
+  </div>
+  <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite" style="margin-top:0;flex-basis:100%"></div>
 </header>
 
 <main class="wrap">
@@ -154,12 +162,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <label class="chk" style="margin-top:8px" title="Allows torque control to start even if the collision checker is &quot;DANGER&quot; or &quot;COLLISION&quot;. Does not change the behavior of the torque clamps of those two states (see README:224).">
           <input type="checkbox" id="allow-danger"> Override safety interlock
         </label>
-        <div class="status-line">
-          torque control: <span class="val" id="torque-state">unknown</span><br>
-          move status: <span class="val" id="move-state">unknown</span><br>
-          safety status: <span class="val" id="safety-state">unknown</span><br>
-          springs: <span class="val" id="springs-state">unknown</span>
-        </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="action on" onclick="setSpringsEnabled(true)">Enable springs</button>
           <button class="action off" onclick="setSpringsEnabled(false)">Disable springs</button>
@@ -180,12 +182,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="msg-box hidden" id="thresholds-msg" role="status" aria-live="polite"></div>
-      </div>
-
-      <div class="panel">
-        <h2>Emergency stop</h2>
-        <button class="action estop" onclick="softEstop()">SOFT E-STOP &mdash; abort any move + disable torque</button>
-        <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite"></div>
       </div>
 
       <div class="panel">
