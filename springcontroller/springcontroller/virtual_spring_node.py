@@ -2486,7 +2486,11 @@ class VirtualSpringNode(Node):
         # All springs are always enabled/disabled together (see
         # _set_springs_enabled) -- any one of them reflects the aggregate
         # state, defaulting True if there are no springs loaded at all yet.
-        enabled = self._springs[0].enabled if self._springs else True
+        # SpringCollection supports iteration/len but not indexing (no
+        # __getitem__) -- confirmed live 2026-08-20, self._springs[0]
+        # crashed the node on startup with "not subscriptable".
+        first = next(iter(self._springs), None)
+        enabled = first.enabled if first is not None else True
         self._springs_enabled_pub.publish(Bool(data=enabled))
 
     def _publish_safety_status(self, collision) -> None:
