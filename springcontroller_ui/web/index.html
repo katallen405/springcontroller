@@ -223,6 +223,14 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
       <div class="panel">
         <h2>Collision thresholds</h2>
+        <div class="toggle-row" style="margin-bottom:8px">
+          <span class="toggle-label">Repulsion field</span>
+          <label class="switch">
+            <input type="checkbox" id="repulsion-toggle-switch" autocomplete="off" onchange="toggleRepulsion()">
+            <span class="slider"></span>
+          </label>
+          <span class="toggle-state val unknown" id="repulsion-toggle-state">?</span>
+        </div>
         <p class="hint">Distance (m) from an obstacle where the hard clamp/repulsion field kick in, and how hard the repulsion field pushes at danger_threshold. caution_threshold must stay greater than danger_threshold. Per-object tuning is future work (after 2026-09-18).</p>
         <div class="spring-form">
           <div class="row">
@@ -418,6 +426,7 @@ const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type
 const svcClearFaults      = { name: '/gen3_torque_control/clear_faults',    type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
+const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
 const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
 const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
@@ -445,6 +454,7 @@ function resetPersistedFormState() {
   document.getElementById('allow-danger').checked = false;
   document.getElementById('torque-toggle-switch').checked = false;
   document.getElementById('springs-toggle-switch').checked = false;
+  document.getElementById('repulsion-toggle-switch').checked = false;
 }
 resetPersistedFormState();
 // A bfcache restore (browser back/forward, some tab-freeze/resume cases)
@@ -550,6 +560,23 @@ function toggleSprings() {
 function updateSpringsToggleSwitch(isEnabled) {
   document.getElementById('springs-toggle-switch').checked = isEnabled;
   const stateEl = document.getElementById('springs-toggle-state');
+  stateEl.textContent = isEnabled ? 'ON' : 'OFF';
+  stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
+}
+
+function toggleRepulsion() {
+  const enabled = document.getElementById('repulsion-toggle-switch').checked;
+  callService(svcRepulsionEnable, { data: enabled }, function(resp) {
+    showMsg('thresholds-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+    // Live ~/repulsion_enabled_status subscription is authoritative and
+    // will correct this shortly regardless -- same optimistic-then-synced
+    // pattern as the torque/springs toggles.
+    if (resp.success) updateRepulsionToggleSwitch(enabled);
+  }, function(err) { showMsg('thresholds-msg', false, 'set_repulsion_enabled failed: ' + err); });
+}
+function updateRepulsionToggleSwitch(isEnabled) {
+  document.getElementById('repulsion-toggle-switch').checked = isEnabled;
+  const stateEl = document.getElementById('repulsion-toggle-state');
   stateEl.textContent = isEnabled ? 'ON' : 'OFF';
   stateEl.className = 'toggle-state val ' + (isEnabled ? 'active' : 'inactive');
 }
@@ -1014,6 +1041,13 @@ function connectRos() {
       el.textContent = msg.data ? 'enabled' : 'disabled';
       el.className = 'val ' + (msg.data ? 'active' : 'inactive');
       updateSpringsToggleSwitch(msg.data);
+    });
+    // Same reasoning as springs_enabled above -- confirmed live 2026-08-20
+    // this was the actual gap behind a whole confused debugging session:
+    // repulsion was believed on (from an earlier session) but had never
+    // been enabled this run, and nothing in the UI could have caught that.
+    sub('/virtual_spring_node/repulsion_enabled_status', 'std_msgs/msg/Bool', function(msg) {
+      updateRepulsionToggleSwitch(msg.data);
     });
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
