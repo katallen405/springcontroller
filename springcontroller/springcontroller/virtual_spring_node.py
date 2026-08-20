@@ -1798,6 +1798,24 @@ class VirtualSpringNode(Node):
     def _enable_cb(
         self, request: SetBool.Request, response: SetBool.Response
     ) -> SetBool.Response:
+        # Enabling while still in_collision is pointless -- _joint_state_cb's
+        # collision clamp will auto-disable again on its very next cycle
+        # (see _set_springs_enabled's auto=True path), so this call would
+        # otherwise report success and "All springs enabled." while the
+        # UI's live springs-state immediately flips back to disabled a
+        # moment later -- confusing/misleading (confirmed live 2026-08-20:
+        # the msg-box's stale "enabled" text sat there green while the
+        # status row correctly showed disabled-by-collision). Report the
+        # truth up front instead of a success that won't hold.
+        if request.data and self._last_collision_status is not None \
+                and self._last_collision_status.in_collision:
+            a, b = self._last_collision_status.closest_pair
+            response.success = False
+            response.message = (
+                f"Refusing to enable: still in collision ({a}/{b}) -- "
+                "would be immediately auto-disabled again. Move clear first."
+            )
+            return response
         self._set_springs_enabled(request.data, reason="via ~/enable service")
         state = "enabled" if request.data else "disabled"
         response.success = True
