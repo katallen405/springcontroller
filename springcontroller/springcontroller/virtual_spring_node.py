@@ -1162,7 +1162,16 @@ class VirtualSpringNode(Node):
                 kind = "COLLISION WITH SCENE OBJECT" if involves_scene_object else "SELF-COLLISION"
                 log_call_failed = False
                 if collision.in_collision:
-                    if elapsed - self._collision_error_log_last >= 1.0:
+                    # Only worth alarming about while torque control is
+                    # actually enabled -- with it off (e.g. Kortex position
+                    # hold), nothing downstream consumes these torques at
+                    # all, so "zeroing spring torque" has no real effect and
+                    # logging it every second while idle/setup is just noise.
+                    # The auto-disable below still runs regardless, so
+                    # springs come up already disabled if torque control
+                    # gets enabled while still in/near collision.
+                    if (self._last_torque_status == "ENABLED"
+                            and elapsed - self._collision_error_log_last >= 1.0):
                         self.get_logger().error(
                             f"{kind} detected between {a} and {b}! Zeroing spring torque "
                             f"(gravity comp held)."
@@ -1183,7 +1192,8 @@ class VirtualSpringNode(Node):
                     torques = gravity_torques
                 elif collision.in_danger:
                     label = "Near scene-object collision" if involves_scene_object else "Near self-collision"
-                    if elapsed - self._collision_warn_log_last >= 0.5:
+                    if (self._last_torque_status == "ENABLED"
+                            and elapsed - self._collision_warn_log_last >= 0.5):
                         self.get_logger().warn(
                             f"{label}: {a} / {b}, "
                             f"dist={collision.min_distance:.3f}m, "
