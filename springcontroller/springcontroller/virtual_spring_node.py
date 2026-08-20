@@ -287,6 +287,20 @@ class VirtualSpringNode(Node):
         # joints' typical lever arms; raise cautiously and re-check against
         # that limit if this default proves too weak on hardware.
         self.declare_parameter("repulsion_max_force_n", 5.0)
+        # repulsion_max_force_n bounds each *pair*'s own Cartesian force,
+        # not the resulting joint torque -- a contact far out on the
+        # gripper already has a large lever arm, and several simultaneous
+        # contacts (e.g. a multi-geometry gripper wrapping a curved
+        # obstacle) sum on top of that. Confirmed live 2026-08-19: a
+        # gripper closing around a cylinder scene object produced summed
+        # |tau| of 20-36 N*m, well past "low-strength" and close to the
+        # wrist joints' torque_limit_nm=9. 5.0 sits a bit above what a
+        # single max-force contact alone typically produces near the
+        # shoulder (so a normal single-contact case isn't neutered) while
+        # strongly bounding the multi-contact pileup that caused that --
+        # tune down further if it still feels strong with several
+        # simultaneous contacts.
+        self.declare_parameter("repulsion_max_total_torque_nm", 5.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -331,6 +345,9 @@ class VirtualSpringNode(Node):
         self._repulsion_enabled = self.get_parameter("repulsion_enabled").get_parameter_value().bool_value
         self._caution_threshold = self.get_parameter("caution_threshold").get_parameter_value().double_value
         self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
+        self._repulsion_max_total_torque_nm = (
+            self.get_parameter("repulsion_max_total_torque_nm").get_parameter_value().double_value
+        )
         # Cached alongside _last_collision_status -- recomputed at the same
         # throttled cadence (collision_check_interval_sec) since it reuses
         # the same pin.computeDistances results get_collision_status() just
@@ -1262,7 +1279,8 @@ class VirtualSpringNode(Node):
                 self._last_collision_status = self._arm.get_collision_status()
                 self._last_repulsion_torques = (
                     self._arm.get_repulsion_torques(
-                        self._caution_threshold, self._repulsion_max_force_n
+                        self._caution_threshold, self._repulsion_max_force_n,
+                        self._repulsion_max_total_torque_nm,
                     ) if self._repulsion_enabled else None
                 )
                 self._last_collision_check_time = now
@@ -2375,10 +2393,17 @@ class VirtualSpringNode(Node):
     def _publish_safety_status(self, collision) -> None:
         """
         Broadcast the current self/scene-collision state on
-        ~/safety_status, prefixed "SAFE"/"DANGER"/"COLLISION" so a plain
-        prefix check is enough for a consumer (e.g.
-        wait_and_enable_torque.py's pre-flight check) to act on it without
-        parsing distances or link names.
+        ~/safety_status, prefixed "SAFE"/"CAUTION"/"DANGER"/"COLLISION" so a
+        plain prefix check is enough for a consumer (e.g.
+        wait_and_enable_torque.py's pre-flight check, which treats anything
+        not starting with "SAFE" as unsafe) to act on it without parsing
+        distances or link names.
+
+        CAUTION mirrors the repulsion field's caution_threshold (see
+        get_repulsion_torques) -- reported whenever the closest pair is
+        inside that radius but not yet in_danger, regardless of whether
+        repulsion_enabled is actually on, since it's useful early warning
+        either way.
         """
         msg = String()
         if collision is None:
@@ -2392,6 +2417,8 @@ class VirtualSpringNode(Node):
                     f"DANGER: {a}/{b} dist={collision.min_distance:.4f}m "
                     f"scale={collision.scale_factor:.2f}"
                 )
+            elif collision.min_distance < self._caution_threshold:
+                msg.data = f"CAUTION: {a}/{b} dist={collision.min_distance:.4f}m"
             else:
                 msg.data = f"SAFE (closest: {a}/{b} dist={collision.min_distance:.4f}m)"
         # Append, never prepend -- consumers (e.g. wait_and_enable_torque.py)
