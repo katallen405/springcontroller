@@ -41,18 +41,23 @@ def compute_candidate_center(
 ) -> dict:
     """
     Initial candidate for the workspace center, before the human-in-the-loop
-    push/adjust step: forearm's length across the table from the seat (+y,
-    the table's short axis -- the participant sits along its long edge and
-    reaches inward across it, not further along it), at the midpoint of the
-    confirmed 0-8" elbow-height band. `seat_x`/`seat_y` are world-frame
-    meters; `eye_height_cm` is unused here (kept in the signature for
-    symmetry with compute_condition_params and because a future reach
-    formula may want it) -- only `arm_length_cm` drives this candidate.
+    push/adjust step. x/y: forearm's length across the table from the seat
+    (+y, the table's short axis -- the participant sits along its long edge
+    and reaches inward across it, not further along it). z: halfway from
+    the table (world z=0) to eye height, unless that's more than 30 deg
+    below eye level at the measured arm length (reach distance), in which
+    case it's raised to exactly the 30 deg cutoff instead -- half-eye-height
+    is always below eye level, never above, so this is a one-sided clamp.
     """
+    eye_height_m = _cm(eye_height_cm)
+    arm_length_m = _cm(arm_length_cm)
+    z = eye_height_m / 2.0
+    min_z = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
+    z = max(z, min_z)
     return {
         "x": seat_x,
-        "y": seat_y + _cm(arm_length_cm),
-        "z": _cm(HEIGHT_BAND_CM / 2.0),
+        "y": seat_y + arm_length_m,
+        "z": z,
     }
 
 

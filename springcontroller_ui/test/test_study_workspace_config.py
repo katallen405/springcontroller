@@ -25,8 +25,26 @@ def test_candidate_center_reaches_across_table_by_arm_length():
     center = compute_candidate_center(seat_x=0.5, seat_y=-0.1, eye_height_cm=71.0, arm_length_cm=46.0)
     assert center["x"] == pytest.approx(0.5)
     assert center["y"] == pytest.approx(-0.1 + 46.0 * CM_TO_M)
-    # Midpoint of the confirmed 0-8" (20.32cm) elbow-height band.
-    assert center["z"] == pytest.approx(10.16 * CM_TO_M)
+
+
+def test_candidate_center_z_is_half_eye_height_when_within_cone():
+    # Long arm -> half-eye-height isn't more than 30 deg below eye level,
+    # so it's used unclamped.
+    center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=40.0, arm_length_cm=100.0)
+    assert center["z"] == pytest.approx(20.0 * CM_TO_M)
+
+
+def test_candidate_center_z_clamped_to_30deg_cone_when_half_eye_height_too_steep():
+    # Typical measurements -- half-eye-height would be a >30 deg look-down
+    # at this reach, so z gets raised to exactly the 30 deg cutoff instead.
+    eye_height_cm, arm_length_cm = 71.0, 46.0
+    center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
+    half_eye_height_m = (eye_height_cm * CM_TO_M) / 2.0
+    expected_z = (eye_height_cm * CM_TO_M) - (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
+    assert center["z"] == pytest.approx(expected_z)
+    assert center["z"] > half_eye_height_m  # raised above the naive half-height point
+    elevation_deg = math.degrees(math.atan2((eye_height_cm * CM_TO_M) - center["z"], arm_length_cm * CM_TO_M))
+    assert elevation_deg == pytest.approx(30.0)
 
 
 def test_inner_radius_is_the_tighter_of_height_band_and_eye_cone():
