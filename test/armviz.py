@@ -70,6 +70,7 @@ JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
 SPRING_NODE   = "/virtual_spring_node"
 COLLISION_STATE_TOPIC = "/virtual_spring_node/collision_object_state"
+SAFETY_STATUS_TOPIC = "/virtual_spring_node/safety_status"
 
 # ---------------------------------------------------------------------------
 # Pinocchio setup
@@ -426,7 +427,44 @@ def draw_collision_object(obj_id):
                     g.Cylinder(height + 2 * pad, radius + pad), _CAUTION_HALO_MATERIAL
                 )
             # Child of the solid primitive's own path, so it inherits T
-            # automatically -- no separate set_transform needed.
+            # automatically -- no separate set_transform needed. Starts
+            # hidden -- safety_status_cb below is what actually shows it,
+            # only while the arm is within caution_threshold of *this*
+            # object, not as a permanent always-on zone marker.
+            viz.viewer[halo_path].set_property("visible", False)
+
+
+def set_halo_visible(obj_id, visible):
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    for i in range(len(entry["primitives"])):
+        viz.viewer[f"collision_objects/{obj_id}/{i}/halo"].set_property("visible", visible)
+
+
+def safety_status_cb(msg):
+    """
+    ~/safety_status only ever reports the single globally closest pair
+    (see virtual_spring_node's _publish_safety_status), so at most one
+    object's halo is ever shown here too -- consistent with that, not a
+    new limitation introduced by this visualizer. Format depended on:
+    "WORD: linkA/linkB dist=...m[ ...]" for CAUTION/DANGER/COLLISION,
+    "SAFE ..." (no parseable pair) otherwise.
+    """
+    text = msg.data or ""
+    active_obj_id = None
+    if not text.startswith("SAFE"):
+        try:
+            pair_part = text.split(": ", 1)[1].split(" dist=")[0]
+            a, b = pair_part.split("/")
+        except (IndexError, ValueError):
+            a = b = None
+        if a in collision_objects:
+            active_obj_id = a
+        elif b in collision_objects:
+            active_obj_id = b
+    for obj_id in collision_objects:
+        set_halo_visible(obj_id, obj_id == active_obj_id)
 
 
 
@@ -547,6 +585,10 @@ node.create_subscription(String, SPRINGS_TOPIC, springs_updated_cb, _latched_qos
 node.create_subscription(
     CollisionObject, COLLISION_STATE_TOPIC, collision_object_cb, _latched_qos
 )
+# Plain VOLATILE, unlike the two subscriptions above -- virtual_spring_node
+# republishes ~/safety_status continuously (every joint_state cycle, not
+# just on change), so there's no late-joiner gap to cover with latching.
+node.create_subscription(String, SAFETY_STATUS_TOPIC, safety_status_cb, 10)
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)

@@ -197,25 +197,25 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <div class="toggle-row">
             <span class="toggle-label">Torque control</span>
             <label class="switch">
-              <input type="checkbox" id="torque-toggle-switch" onchange="toggleTorqueControl()">
+              <input type="checkbox" id="torque-toggle-switch" autocomplete="off" onchange="toggleTorqueControl()">
               <span class="slider"></span>
             </label>
-            <span class="toggle-state val inactive" id="torque-toggle-state">OFF</span>
+            <span class="toggle-state val unknown" id="torque-toggle-state">?</span>
           </div>
           <div class="toggle-row">
             <span class="toggle-label">Springs</span>
             <label class="switch">
-              <input type="checkbox" id="springs-toggle-switch" onchange="toggleSprings()">
+              <input type="checkbox" id="springs-toggle-switch" autocomplete="off" onchange="toggleSprings()">
               <span class="slider"></span>
             </label>
-            <span class="toggle-state val inactive" id="springs-toggle-state">OFF</span>
+            <span class="toggle-state val unknown" id="springs-toggle-state">?</span>
           </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
         </div>
         <label class="chk" style="margin-top:8px">
-          <input type="checkbox" id="allow-danger"> Override safety interlock
+          <input type="checkbox" id="allow-danger" autocomplete="off"> Override safety interlock
         </label>
         <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps in those two states (see README:224).</p>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
@@ -389,6 +389,20 @@ const targetTopicPrefix   = '/virtual_spring_node/target/';
 let ros = null;
 let lastJointState = null;
 let currentSprings = [];
+
+// Browsers restore form control state (checkboxes included) across a
+// same-tab reload independent of anything in this page's own HTML/JS --
+// confirmed live 2026-08-20: "Override safety interlock" and both toggle
+// switches came back checked/ON on a fresh page load despite never being
+// declared `checked` here. autocomplete="off" on these inputs helps but
+// isn't reliably honored for checkbox restore in every browser, so force
+// the real defaults here instead of trusting markup or attributes alone.
+// allow-danger has no live server-side state to reflect, so plain false is
+// correct; the two toggle switches instead go to an explicit "unknown"
+// state (not a false "OFF" claim) until a real status arrives post-connect.
+document.getElementById('allow-danger').checked = false;
+document.getElementById('torque-toggle-switch').checked = false;
+document.getElementById('springs-toggle-switch').checked = false;
 
 // ---- generic ROS helpers -------------------------------------------------
 function showMsg(elId, ok, text) {
@@ -828,6 +842,16 @@ function connectRos() {
 
     sub(NODE + '/study_start_status', 'std_msgs/msg/String', handleStudyStartStatus);
     sub('/virtual_spring_node/springs_updated', 'std_msgs/msg/String', handleSpringsUpdated);
+    // Authoritative springs-enabled state (TRANSIENT_LOCAL -- delivered
+    // immediately on connect, not just on the next change) -- supersedes
+    // the optimistic update setSpringsEnabled() does on its own success,
+    // which had no way to reflect true state on a fresh page load/reconnect.
+    sub('/virtual_spring_node/springs_enabled', 'std_msgs/msg/Bool', function(msg) {
+      const el = document.getElementById('springs-state');
+      el.textContent = msg.data ? 'enabled' : 'disabled';
+      el.className = 'val ' + (msg.data ? 'active' : 'inactive');
+      updateSpringsToggleSwitch(msg.data);
+    });
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
     sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
