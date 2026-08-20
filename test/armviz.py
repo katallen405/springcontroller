@@ -383,6 +383,41 @@ _CAUTION_HALO_MATERIAL = g.MeshBasicMaterial(
     color=0xd4a017, wireframe=True, opacity=0.7, transparent=True
 )
 
+# Same red as the study UI's .val.COLLISION (#a02020).
+_COLLISION_OBJECT_MATERIAL_RED = g.MeshLambertMaterial(
+    color=0xa02020, opacity=0.5, transparent=True
+)
+
+
+def _draw_solid_primitive(obj_id, i, material):
+    """Draw/recolor primitive `i` of `obj_id` with the given material,
+    recomputing its transform from scratch each time -- shared by
+    draw_collision_object (initial draw/move, always _COLLISION_OBJECT_MATERIAL)
+    and set_object_collision_color (recolor only, red<->grey, no move
+    involved) so the geometry/transform logic can't drift between the two
+    call sites. Does not touch the halo child path."""
+    entry = collision_objects.get(obj_id)
+    shape, dims, relative_pose = entry["primitives"][i]
+    path = f"collision_objects/{obj_id}/{i}"
+    T = entry["object_pose"] @ relative_pose
+    if shape == "box":
+        viz.viewer[path].set_object(g.Box(dims), material)
+    else:  # cylinder
+        height, radius = dims
+        viz.viewer[path].set_object(g.Cylinder(height, radius), material)
+        T = T @ _CYLINDER_AXIS_ALIGN
+    viz.viewer[path].set_transform(T)
+
+
+def set_object_collision_color(obj_id, in_collision):
+    entry = collision_objects.get(obj_id)
+    if entry is None:
+        return
+    material = _COLLISION_OBJECT_MATERIAL_RED if in_collision else _COLLISION_OBJECT_MATERIAL
+    for i in range(len(entry["primitives"])):
+        _draw_solid_primitive(obj_id, i, material)
+
+
 def draw_collision_object(obj_id):
     """(Re)draw every primitive of a tracked collision object at its current
     pose. Event-driven (called from collision_object_cb on ADD/MOVE), unlike
@@ -400,20 +435,18 @@ def draw_collision_object(obj_id):
     where the field can start acting at all -- so that's what's drawn,
     rather than an arrow field that would imply forces exist at points the
     math never actually evaluates.
+
+    Always redraws in the default (grey) material, even if this object's
+    solid color is currently red from set_object_collision_color -- an
+    ADD/MOVE while already in collision is an edge case (moving objects
+    don't currently get recolored), not worth the extra state tracking to
+    preserve red through a redraw.
     """
     entry = collision_objects.get(obj_id)
     if entry is None:
         return
     for i, (shape, dims, relative_pose) in enumerate(entry["primitives"]):
-        path = f"collision_objects/{obj_id}/{i}"
-        T = entry["object_pose"] @ relative_pose
-        if shape == "box":
-            viz.viewer[path].set_object(g.Box(dims), _COLLISION_OBJECT_MATERIAL)
-        else:  # cylinder
-            height, radius = dims
-            viz.viewer[path].set_object(g.Cylinder(height, radius), _COLLISION_OBJECT_MATERIAL)
-            T = T @ _CYLINDER_AXIS_ALIGN
-        viz.viewer[path].set_transform(T)
+        _draw_solid_primitive(obj_id, i, _COLLISION_OBJECT_MATERIAL)
 
         if CAUTION_THRESHOLD > 0.0:
             halo_path = f"collision_objects/{obj_id}/{i}/halo"
@@ -441,10 +474,12 @@ def set_halo_visible(obj_id, visible):
         viz.viewer[f"collision_objects/{obj_id}/{i}/halo"].set_property("visible", visible)
 
 
-# Tracks which object's halo is currently shown (or None), so
-# safety_status_cb only sends a SetProperty command on an actual
-# transition -- see its docstring for why that matters.
+# Tracks which object's halo is currently shown / which object is
+# currently recolored red (or None each), so safety_status_cb only sends
+# a command on an actual transition -- see its docstring for why that
+# matters.
 _active_halo_obj_id = None
+_active_collision_obj_id = None
 
 
 def safety_status_cb(msg):
@@ -470,10 +505,17 @@ def safety_status_cb(msg):
     new limitation introduced by this visualizer. Format depended on:
     "WORD: linkA/linkB dist=...m[ ...]" for CAUTION/DANGER/COLLISION,
     "SAFE ..." (no parseable pair) otherwise.
+
+    Also recolors the object red (via set_object_collision_color) for
+    exactly the same reason and the same flood-avoidance fix, but gated
+    stricter -- only while the status word is specifically COLLISION, not
+    just any non-SAFE state -- tracked independently in
+    _active_collision_obj_id so the halo and color transitions don't
+    interfere with each other's redundant-command guard.
     """
-    global _active_halo_obj_id
+    global _active_halo_obj_id, _active_collision_obj_id
     text = msg.data or ""
-    active_obj_id = None
+    pair_obj_id = None
     if not text.startswith("SAFE"):
         try:
             pair_part = text.split(": ", 1)[1].split(" dist=")[0]
@@ -481,17 +523,24 @@ def safety_status_cb(msg):
         except (IndexError, ValueError):
             a = b = None
         if a in collision_objects:
-            active_obj_id = a
+            pair_obj_id = a
         elif b in collision_objects:
-            active_obj_id = b
+            pair_obj_id = b
 
-    if active_obj_id == _active_halo_obj_id:
-        return  # no state change -- don't send a redundant command
-    if _active_halo_obj_id is not None:
-        set_halo_visible(_active_halo_obj_id, False)
-    if active_obj_id is not None:
-        set_halo_visible(active_obj_id, True)
-    _active_halo_obj_id = active_obj_id
+    if pair_obj_id != _active_halo_obj_id:
+        if _active_halo_obj_id is not None:
+            set_halo_visible(_active_halo_obj_id, False)
+        if pair_obj_id is not None:
+            set_halo_visible(pair_obj_id, True)
+        _active_halo_obj_id = pair_obj_id
+
+    collision_obj_id = pair_obj_id if text.startswith("COLLISION") else None
+    if collision_obj_id != _active_collision_obj_id:
+        if _active_collision_obj_id is not None:
+            set_object_collision_color(_active_collision_obj_id, False)
+        if collision_obj_id is not None:
+            set_object_collision_color(collision_obj_id, True)
+        _active_collision_obj_id = collision_obj_id
 
 
 def draw_springs(q):
