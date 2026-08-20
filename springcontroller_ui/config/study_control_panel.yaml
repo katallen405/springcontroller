@@ -43,11 +43,10 @@ study_control_panel_node:
     reset_spring_local_point: [0.0, 0.0, 0.1]
     study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
     # Participant midline's pre-set seat position, world-frame meters (see
-    # orchestration_node.py's declare_parameter comment) -- TODO: measure
-    # and fill in for the real physical setup before running the workspace
-    # calibration panel; 0.0/0.0 is just a placeholder.
-    workspace_seat_x: 0.0
-    workspace_seat_y: 0.0
+    # orchestration_node.py's declare_parameter comment). Measured as
+    # x=+16in, y=-20in from the robot base; 1in = 0.0254m.
+    workspace_seat_x: 0.4064
+    workspace_seat_y: -0.508
     workspace_study_data_dir: "~/gen3_study_data"
     workspace_spring_name: tip_spring
     workspace_spring_stiffness: 50.0
