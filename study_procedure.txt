@@ -14,6 +14,16 @@ http://localhost:8090/
 
 --- Per-participant calibration (once, before their 3 randomized-order runs) ---
 
+None of steps 4-7 below need a restart between participants -- eye height,
+arm length, and the finalized target are all read live from the panel each
+time, not cached at node startup. The only things that need a relaunch (of
+steps 2/3 above) are the physical rig geometry: the table/chair collision
+scene (gen3_collision_scene.yaml, loaded via load_collision_scene:=true in
+step 2) and the seat position (workspace_seat_x/y in
+springcontroller_ui/config/study_control_panel.yaml, loaded by step 3) --
+both are meant to be set once when the physical setup is finalized, so this
+should only come up if the table or chair actually gets moved.
+
 1. Move the arm to the study start location ("Study start location" panel).
 2. Seat the participant so their midline is at the pre-set seat location.
 3. Adjust the chair height so their elbows are at table height.
