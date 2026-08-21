@@ -114,6 +114,9 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 
 .hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
+.hint-steps { margin: 4px 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.hint-steps li { font-size: 11px; color: #6b6b6b; }
+.hint-steps b { font-size: 12.5px; color: #333; }
 
 .field-glossary { margin-bottom: 10px; }
 .field-glossary > summary {
@@ -290,26 +293,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <div class="main-col">
     <details class="panel">
       <summary>Study workspace calibration</summary>
-      <p class="hint">
-        Enter the participant ID and click "Get condition order" first --
-        it counterbalances which condition (1 or 2) this participant runs
-        first, alternating with each new participant ID so it stays
-        balanced across the study regardless of enrollment order, and
-        remembers the assignment if you check the same participant ID
-        again. Then enter the two participant measurements and preview to
-        place a live, 0-deadband "<code>workspace_demo</code>" spring at
-        the computed center -- enable torque control (see "Torque control"
-        panel), then push the arm around or retarget
-        <code>workspace_demo</code> in the "Add / remove springs" list
-        below to approve or adjust the location. "Preview eye location"
-        places a force-free "<code>workspace_demo_eye</code>" marker
-        straight above the <em>current</em> <code>workspace_demo</code>
-        position, at eye height -- this is where condition 2's orientation
-        spring will aim; re-click it after adjusting the center to keep it
-        in sync. Finalize writes condition1.yaml/condition2.yaml from
-        wherever <code>workspace_demo</code> currently is and removes both
-        demo springs.
-      </p>
+      <ul class="hint-steps">
+        <li><b>Get condition order</b> -- enter participant ID, click. Sets which condition (1 or 2) runs first, alternating per new ID; re-checking the same ID just shows the existing assignment.</li>
+        <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
+        <li><b>Preview eye location</b> -- click. Shows the force-free <code>workspace_demo_eye</code> marker above the <em>current</em> center, at eye height -- where condition 2's orientation spring will aim. Re-click after moving the center to resync.</li>
+        <li><b>Finalize</b> -- writes condition1.yaml/condition2.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
+      </ul>
       <div class="spring-form">
         <div class="row">
           <label>Participant ID <input type="text" id="wc-pid" value=""></label>
