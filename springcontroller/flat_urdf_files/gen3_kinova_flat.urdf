@@ -100,7 +100,13 @@
     </joint>
   </ros2_control>
   <joint name="base_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <!-- Hand-edited (not from xacro): world's origin is table height at the
+         center of the robot's base, not base_link's own origin. The Gen3's
+         mounting hardware raises base_link 2cm above the real table
+         surface (see gen3_collision_scene.yaml's table pose comment), so
+         base_link sits 2cm above world along z; x/y are unchanged since
+         base_link's origin is already the mounting-bolt center. -->
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
     <parent link="world"/>
     <child link="base_link"/>
   </joint>

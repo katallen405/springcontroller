@@ -23,16 +23,15 @@ objects:
     dimensions: [1.52, 0.76, 0.05]
     frame_id: "world"
     pose:
-      # z: top face at z=-0.02, not z=0 -- the robot's mounting hardware
-      # raises base_link's origin 2cm above the real table surface, so a
-      # flush-at-z=0 table (the old value, -0.025) actually floated 2cm
-      # above the true table. -0.045 = -0.02 (new top face) - 0.025 (half
-      # the box height) to land the top face there instead.
+      # z = -half the box height so the top face lands at z=0 -- world's
+      # origin is now defined at table height (see base_joint in
+      # gen3_kinova_flat.urdf), so a flush table is exactly z=0 again; no
+      # per-object mounting-hardware offset needed here any more.
       # x/y measured live 2026-08-20: table is 60in (x) x 30in (y), with the
       # robot base 4.5in from the -x edge and 15.75in from the -y edge.
       # center = edge + half-dimension; rounded to the nearest cm since
       # nothing finer matters here.
-      position: [0.65, -0.02, -0.045]
+      position: [0.65, -0.02, -0.025]
       orientation: [0.0, 0.0, 0.0, 1.0]
     # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
     # URDF link names to exclude from collision pairs against this object,
@@ -51,9 +50,9 @@ objects:
     pose:
       # Sits in the table's -x/+y corner: x/y at that corner (table center
       # [0.65, -0.02] +- half-dimensions [0.76, 0.38] above), z centered so
-      # the box's bottom face starts at the table top (-0.02, see table's
-      # pose comment) and extends up 1.5m: -0.02 + 1.5/2 = 0.73.
-      position: [-0.11, 0.36, 0.73]
+      # the box's bottom face starts at the table top (z=0, see table's
+      # pose comment) and extends up 1.5m: 0 + 1.5/2 = 0.75.
+      position: [-0.11, 0.36, 0.75]
       orientation: [0.0, 0.0, 0.0, 1.0]
 
   # Example of a live-tracked obstacle's *initial* placement -- a perception
