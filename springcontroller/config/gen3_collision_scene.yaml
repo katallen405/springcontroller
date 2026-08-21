@@ -44,15 +44,20 @@ objects:
 
   camera_tower:
     shape: box
-    # 4cm x 4cm footprint, 1.5m tall.
-    dimensions: [0.04, 0.04, 1.5]
+    # 7cm x 7cm footprint, 1.5m tall. Widened from 4cm 2026-08-21 after the
+    # tower was physically relocated.
+    dimensions: [0.07, 0.07, 1.5]
     frame_id: "world"
     pose:
-      # Sits in the table's -x/+y corner: x/y at that corner (table center
-      # [0.65, -0.02] +- half-dimensions [0.76, 0.38] above), z centered so
-      # the box's bottom face starts at the table top (z=0, see table's
-      # pose comment) and extends up 1.5m: 0 + 1.5/2 = 0.75.
-      position: [-0.11, 0.36, 0.75]
+      # x: positioned so the tower's furthest +x edge sits 25cm out from the
+      # table's -x edge (-0.11, see table pose comment): -0.11 + 0.25 = 0.14
+      # is that edge, so center_x = 0.14 - half-width(0.035) = 0.105.
+      # y: unchanged from the tower's original -x/+y-corner placement (table
+      # center y=-0.02 + half-dimension 0.38) -- only x/size were given as
+      # having changed with the relocation.
+      # z centered so the box's bottom face starts at the table top (z=0,
+      # see table's pose comment) and extends up 1.5m: 0 + 1.5/2 = 0.75.
+      position: [0.105, 0.36, 0.75]
       orientation: [0.0, 0.0, 0.0, 1.0]
 
   # Example of a live-tracked obstacle's *initial* placement -- a perception
