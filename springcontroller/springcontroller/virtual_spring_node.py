@@ -115,14 +115,6 @@ add_gravity_compensation : bool
     Add pinocchio gravity torques to the published command -- true for
     arms whose own controller doesn't already do it (e.g. Gen3 via
     gen3_torque_control), false where it does (e.g. UR3e).
-recentering_threshold_rad : double
-    Equilibrium-shift threshold (see _check_equilibrium_shift) above which
-    re-centering triggers, if recentering_enabled.
-recentering_enabled : bool
-    Off by default -- the re-centering sequence needs ros2_control's
-    controller_manager and a real equilibrium_mover package, neither of
-    which apply to Gen3 (and it's unfinished even for UR3e). When off, a
-    large shift is only logged, springs are left alone.
 srdf_path : str
     Optional SRDF path excluding known-adjacent-link pairs from the
     self-collision model (pin.removeCollisionPairs); without it, adjacent
@@ -188,7 +180,6 @@ from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
 from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
-import threading
 
 from springcontroller.virtual_spring import (
     VirtualSpring, JointSpring, OrientationSpring, SpringCollection,
@@ -258,17 +249,6 @@ class VirtualSpringNode(Node):
         self.declare_parameter("plot_output_path", "/home/kat/spring_extensions.png")
         self.declare_parameter("plot_on_shutdown", False)
         self.declare_parameter("add_gravity_compensation", False)
-        self.declare_parameter("recentering_threshold_rad", 0.3)
-        # Off by default: the re-centering sequence (switch to position
-        # control, run equilibrium_mover, switch back) depends on
-        # ros2_control's controller_manager and a real equilibrium_mover
-        # package -- neither applies to Gen3, and even on UR3e it currently
-        # points at a placeholder package name ("your_study_pkg") that was
-        # never filled in. Until that's actually finished and verified,
-        # this stays opt-in so a large equilibrium shift never silently
-        # disables springs on a robot/setup that can't complete the
-        # sequence. When off, the shift is still computed and logged.
-        self.declare_parameter("recentering_enabled", False)
         self.declare_parameter("srdf_path", "")
         # 1cm, not 5cm: 5cm was confirmed too conservative for close-quarters
         # work 2026-08-14/2026-08-19 (see gen3_collision_clamp_debug project
@@ -397,9 +377,6 @@ class VirtualSpringNode(Node):
         # instantly.
         self._springs_reenabled_since = None
         self._add_grav_comp = self.get_parameter("add_gravity_compensation").get_parameter_value().bool_value
-        self._recentering_threshold = self.get_parameter("recentering_threshold_rad").get_parameter_value().double_value
-        self._recentering_enabled = self.get_parameter("recentering_enabled").get_parameter_value().bool_value
-        self._recentering_in_progress = False
 
         # Fail-safe: on repeated spring-computation failure, switch the arm
         # out of torque control entirely (e.g. back to Kortex position hold)
@@ -1964,162 +1941,6 @@ class VirtualSpringNode(Node):
         return response
 
     # ------------------------------------------------------------------
-    # Runtime re-centering
-    # ------------------------------------------------------------------
-
-    def _check_equilibrium_shift(self) -> None:
-        """
-        Called after any spring change. Always solves for the new
-        equilibrium and logs the shift. If it exceeds
-        recentering_threshold_rad AND recentering_enabled is true, triggers
-        a re-centering cycle:
-          disable springs → switch to position controller →
-          run equilibrium_mover → switch back to effort → re-enable springs
-
-        recentering_enabled defaults to false (see its declare_parameter
-        call) since this cycle depends on ros2_control's controller_manager
-        and a real equilibrium_mover package -- neither applies to Gen3,
-        and it's not yet finished even for UR3e. With it off, a large shift
-        is logged but springs are left alone.
-        """
-        if self._recentering_in_progress:
-            self.get_logger().warn(
-                "Re-centering already in progress; ignoring equilibrium check."
-            )
-            return
-
-        n_dof = self._arm.n_dof
-        # NOT self._arm.joint_positions -- that's pinocchio's raw internal q
-        # vector (nq-length), which for any robot with continuous joints
-        # (e.g. Gen3's 4) is longer than n_dof since each needs 2 slots
-        # (cos, sin). update_from_angles/residual below need one angle per
-        # joint (n_dof-length), which get_joint_angle decodes correctly.
-        q_current = np.array([self._arm.get_joint_angle(i) for i in range(n_dof)])
-
-        from scipy.optimize import fsolve
-
-        def residual(angles):
-            self._arm.update_from_angles(angles, np.zeros(n_dof))
-            return (self._springs.compute_total_torques(self._arm, False)
-                    + self._arm.get_gravity_torques())
-
-        q_star, info, ier, _ = fsolve(residual, q_current, full_output=True)
-
-        # Restore current state after solve
-        self._arm.update_from_angles(q_current, np.zeros(n_dof))
-
-        if ier != 1:
-            self.get_logger().error(
-                "Equilibrium solve did not converge after spring change. "
-                "Leaving arm in current configuration."
-            )
-            return
-
-        # Wrap to (-pi, pi] before measuring the shift: for continuous
-        # joints, angles feed into a cos/sin encoding (see update_from_angles)
-        # that's exactly 2*pi-periodic, so fsolve is free to converge on an
-        # equilibrium many whole revolutions away from q_current -- an
-        # equally valid root of the periodic residual, but a meaningless
-        # "shift" if measured on the raw unwrapped difference.
-        delta = q_star - q_current
-        delta = np.arctan2(np.sin(delta), np.cos(delta))
-        shift = np.max(np.abs(delta))
-        self.get_logger().info(
-            f"New equilibrium shift: {np.degrees(shift):.1f} deg "
-            f"(threshold: {np.degrees(self._recentering_threshold):.1f} deg)"
-        )
-
-        if shift < self._recentering_threshold:
-            self.get_logger().info("Shift within threshold — no re-centering needed.")
-            return
-
-        if not self._recentering_enabled:
-            self.get_logger().warn(
-                f"Large equilibrium shift ({np.degrees(shift):.1f} deg) but "
-                "recentering_enabled is false -- not auto-disabling springs. "
-                "Set recentering_enabled:=true once the re-centering sequence "
-                "(controller_manager + equilibrium_mover) is actually set up "
-                "for this robot."
-            )
-            return
-
-        self.get_logger().warn(
-            f"Large equilibrium shift ({np.degrees(shift):.1f} deg). "
-            "Initiating re-centering."
-        )
-        self._recentering_in_progress = True
-
-        for spring in self._springs:
-            spring.enabled = False
-
-        threading.Thread(
-            target=self._recenter_thread,
-            args=(q_star,),
-            daemon=True,
-        ).start()
-
-    def _recenter_thread(self, q_star: np.ndarray) -> None:
-        """
-        Background thread: switch to position controller, run equilibrium_mover,
-        switch back to effort controller, re-enable springs.
-
-        Springs are always re-enabled on the way out, success or failure --
-        re-enabling itself is never unsafe (a spring computing torques that
-        don't reach the motors because the wrong controller is active is a
-        no-op, not a hazard), whereas leaving them silently disabled forever
-        is the real footgun. A failure is still logged fatally, since it
-        means the controller switch may need manual attention -- just not
-        left in a state where the operator has no idea springs are off.
-        """
-        import subprocess
-
-        try:
-            self.get_logger().info("Re-centering: switching to position controller.")
-            subprocess.run([
-                "ros2", "service", "call",
-                "/controller_manager/switch_controller",
-                "controller_manager_msgs/srv/SwitchController",
-                "{activate_controllers: [scaled_joint_trajectory_controller], "
-                "deactivate_controllers: [forward_effort_controller], "
-                "strictness: 2}",
-            ], check=True)
-
-            self.get_logger().info("Re-centering: running equilibrium_mover.")
-            subprocess.run([
-                "ros2", "run", "your_study_pkg", "equilibrium_mover",
-                "--ros-args",
-                "-p", f"config_path:={self._config_path}",
-                "-p", "velocity_scaling:=0.1",
-                "-p", "accel_scaling:=0.1",
-            ], check=True)
-
-            self.get_logger().info("Re-centering: switching back to effort controller.")
-            subprocess.run([
-                "ros2", "service", "call",
-                "/controller_manager/switch_controller",
-                "controller_manager_msgs/srv/SwitchController",
-                "{activate_controllers: [forward_effort_controller], "
-                "deactivate_controllers: [scaled_joint_trajectory_controller], "
-                "strictness: 2}",
-            ], check=True)
-
-            self.get_logger().info("Re-centering complete.")
-
-        except subprocess.CalledProcessError as e:
-            self.get_logger().fatal(
-                f"Re-centering failed: {e}. The controller switch may be "
-                "left in a partial state -- check controller_manager "
-                "manually. Springs are being re-enabled regardless; "
-                "if the wrong controller is active they'll be no-ops "
-                "until you fix the controller state."
-            )
-
-        finally:
-            for spring in self._springs:
-                spring.enabled = True
-            self._recentering_in_progress = False
-
-    # ------------------------------------------------------------------
     # add_spring callback
     # ------------------------------------------------------------------
 
@@ -2218,7 +2039,6 @@ class VirtualSpringNode(Node):
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
-        self._check_equilibrium_shift()
         return response
 
     def _add_joint_spring_cb(
@@ -2284,7 +2104,6 @@ class VirtualSpringNode(Node):
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
-        self._check_equilibrium_shift()
         return response
 
     def _add_orientation_spring_cb(
@@ -2365,7 +2184,6 @@ class VirtualSpringNode(Node):
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
-        self._check_equilibrium_shift()
         return response
 
     def _load_springs_from_params(self) -> None:

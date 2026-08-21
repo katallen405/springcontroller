@@ -64,8 +64,8 @@ def test_fk_at_zero_configuration(arm):
     # end_effector_link -- reproducible, and pre-existing in
     # URDFArmConfiguration/the flat URDF (not introduced by this package,
     # and out of scope to fix here). It doesn't affect any current
-    # production code path: virtual_spring_node and equilibrium_mover only
-    # ever call update_from_angles with real measured joint angles, never
+    # production code path: virtual_spring_node only ever calls
+    # update_from_angles with real measured joint angles, never
     # the exact zero configuration. See test_fk_at_nonzero_configuration
     # below for a proper-rotation regression check.
 
