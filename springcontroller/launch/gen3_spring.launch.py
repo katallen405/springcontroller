@@ -26,20 +26,22 @@ Prerequisites
 
 Audio/video recording (record_audio:=true / record_video:=true)
 ------------------------------------------------------------
-  Needs packages this workspace doesn't have installed yet:
-      sudo apt install ros-kilted-audio-capture ros-kilted-v4l2-camera \
-          ros-kilted-compressed-image-transport ros-kilted-topic-tools
+  Needs: sudo apt install ros-kilted-audio-capture ros-kilted-v4l2-camera \
+      ros-kilted-compressed-image-transport ros-kilted-topic-tools
   audio_capture_node encodes straight to mp3 (mono, 16kHz, ~64kbps by
   default) -- already small enough for the bag, no separate downsampling
-  step needed. Video is downsampled twice: v4l2_camera_node captures at
-  video_image_size (default 640x480, well below most webcams' native
-  resolution) and publishes both raw and, once compressed_image_transport
-  is installed, a lazy JPEG .../compressed topic; a topic_tools throttle
-  node then caps that to video_fps (default 10) before it's recorded --
-  only the throttled+compressed topic goes in the bag, never the raw
-  feed. Sight-unseen (no camera attached to this dev machine, packages
-  not yet installed) -- verify video_image_size/jpeg_quality parameter
-  names still match once actually tested live.
+  step needed. Video is downsampled twice, once per camera (this file
+  drives two -- see video_device/video_device2 below): v4l2_camera_node
+  captures at video_image_size (default 640x480, well below most webcams'
+  native resolution) and publishes a lazy JPEG .../compressed topic (via
+  compressed_image_transport) the instant something subscribes to it; a
+  topic_tools throttle node then caps that to video_fps (default 10) before
+  it's recorded -- only the throttled+compressed topic goes in the bag,
+  never the raw feed. video_jpeg_quality is applied via a delayed
+  `ros2 param set` rather than a static launch parameter -- see
+  video_jpeg_quality_arg for why. Live-verified 2026-08-21 against two
+  real USB cameras + a mic; video size vs. quality tradeoff still being
+  tuned (see project memory for the running notes).
 """
 
 import os
@@ -356,20 +358,43 @@ def generate_launch_description():
 
     video_device_arg = DeclareLaunchArgument(
         "video_device",
-        default_value="/dev/video0",
-        description="V4L2 device path for v4l2_camera_node. Only used when record_video:=true.",
+        default_value="/dev/v4l/by-id/usb-USB_CAMERA_USB_CAMERA_240725172848-video-index0",
+        description=(
+            "V4L2 device path for the first camera (v4l2_camera_node). "
+            "Only used when record_video:=true. Defaults to a "
+            "/dev/v4l/by-id/... symlink (identifies this specific USB "
+            "device by its serial) rather than a plain /dev/videoN path -- "
+            "confirmed live 2026-08-21 this dev machine has two cameras "
+            "plugged in and plain /dev/videoN numbering depends on USB "
+            "enumeration order, which can shift after a reboot or "
+            "unplug/replug; the by-id symlink doesn't. Run `ls "
+            "/dev/v4l/by-id/` to find the right symlink for a given "
+            "machine/camera if this default doesn't match."
+        ),
+    )
+
+    video_device2_arg = DeclareLaunchArgument(
+        "video_device2",
+        default_value="/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_91E4D430-video-index0",
+        description=(
+            "V4L2 device path for the second camera (v4l2_camera_node2), "
+            "same reasoning as video_device above. Only used when "
+            "record_video:=true -- both cameras share that one toggle, "
+            "there's no way to enable just one from the command line."
+        ),
     )
 
     video_image_size_arg = DeclareLaunchArgument(
         "video_image_size",
         default_value="[640, 480]",
         description=(
-            "Capture resolution v4l2_camera_node is told to request from "
-            "the camera, well below most webcams' native resolution -- the "
-            "first (and cheapest) of the two downsampling steps applied to "
-            "video before it's recorded (see video_fps below for the "
-            "second). Passed through as YAML so it must stay valid YAML "
-            "list syntax, e.g. '[1280, 720]'."
+            "Capture resolution both v4l2_camera_node and v4l2_camera_node2 "
+            "are told to request from their cameras, well below most "
+            "webcams' native resolution -- the first (and cheapest) of the "
+            "two downsampling steps applied to video before it's recorded "
+            "(see video_fps below for the second). Shared by both cameras, "
+            "no per-camera override. Passed through as YAML so it must "
+            "stay valid YAML list syntax, e.g. '[1280, 720]'."
         ),
     )
 
@@ -377,13 +402,14 @@ def generate_launch_description():
         "video_fps",
         default_value="10",
         description=(
-            "Frame rate the topic_tools throttle node caps the compressed "
-            "video topic to before it's recorded -- the second of the two "
-            "downsampling steps (see video_image_size above for the "
-            "first). Applied downstream of v4l2_camera_node rather than "
-            "via a camera-driver frame-rate parameter so it works "
-            "regardless of what frame rates the attached camera actually "
-            "supports."
+            "Frame rate the topic_tools throttle nodes (one per camera) "
+            "cap their compressed video topic to before it's recorded -- "
+            "the second of the two downsampling steps (see video_image_size "
+            "above for the first). Applied downstream of v4l2_camera_node "
+            "rather than via a camera-driver frame-rate parameter so it "
+            "works regardless of what frame rates the attached camera "
+            "actually supports. Shared by both cameras, no per-camera "
+            "override."
         ),
     )
 
@@ -564,6 +590,11 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("record_audio")),
     )
 
+    # First of two cameras (see video_device2_arg / v4l2_camera_node2 below
+    # for the second) -- confirmed live 2026-08-21 this dev machine has two
+    # USB cameras plugged in and only one was ever being captured/recorded,
+    # so the second silently had no topic at all for rqt_image_view to show.
+    #
     # Captures at a reduced resolution (video_image_size) and republishes
     # via image_transport, which -- once compressed_image_transport is
     # installed -- lazily advertises a JPEG .../compressed sibling topic the
@@ -644,6 +675,56 @@ def generate_launch_description():
         ],
     )
 
+    # Second camera -- mirrors v4l2_camera_node/video_throttle_node/
+    # set_video_jpeg_quality above exactly, just against video_device2 and
+    # topic names under /camera2 instead of /camera. Shares the single
+    # record_video toggle (see video_device2_arg) and the same
+    # video_image_size/video_fps/video_jpeg_quality settings -- no
+    # independent per-camera tuning.
+    v4l2_camera_node2 = Node(
+        package="v4l2_camera",
+        executable="v4l2_camera_node",
+        name="camera2",
+        output="screen",
+        parameters=[{
+            "video_device": LaunchConfiguration("video_device2"),
+            "image_size": LaunchConfiguration("video_image_size"),
+        }],
+        remappings=[
+            ("image_raw", "/camera2/image_raw"),
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    video_throttle_node2 = Node(
+        package="topic_tools",
+        executable="throttle",
+        name="camera2_throttle",
+        output="screen",
+        arguments=[
+            "messages",
+            "/camera2/image_raw/compressed",
+            LaunchConfiguration("video_fps"),
+            "/camera2/image_raw_throttled/compressed",
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    set_video_jpeg_quality2 = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "param", "set", "/camera2",
+                    "image_raw.compressed.jpeg_quality",
+                    LaunchConfiguration("video_jpeg_quality"),
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_video")),
+            )
+        ],
+    )
+
     # Real rosbag of the key torque/state/status topics plus /rosout
     # (folds in every WARN/ERROR log line too, so recorded data and log
     # messages line up in one place) -- see record_rosbag_arg. Topics are
@@ -658,13 +739,14 @@ def generate_launch_description():
     # roster for the run; diffing consecutive messages in the bag recovers
     # exactly which spring was created or destroyed and when.
     #
-    # /audio/audio and /camera/image_raw_throttled/compressed are recorded
-    # unconditionally here even though audio_capture_node/v4l2_camera_node/
-    # video_throttle_node above only actually run when record_audio:=true /
-    # record_video:=true -- same pattern as press_to_pin's topics used to
-    # follow (a bag recorder subscribed to a topic nobody's publishing on
-    # just records nothing for it, harmlessly) so record_audio/record_video
-    # can be toggled without also having to edit this topic list.
+    # /audio/audio and the two /cameraN/image_raw_throttled/compressed
+    # topics are recorded unconditionally here even though
+    # audio_capture_node/v4l2_camera_node(2)/video_throttle_node(2) above
+    # only actually run when record_audio:=true / record_video:=true --
+    # same pattern as press_to_pin's topics used to follow (a bag recorder
+    # subscribed to a topic nobody's publishing on just records nothing for
+    # it, harmlessly) so record_audio/record_video can be toggled without
+    # also having to edit this topic list.
     record_rosbag = ExecuteProcess(
         cmd=[
             "ros2", "bag", "record",
@@ -685,6 +767,7 @@ def generate_launch_description():
             "/gen3_torque_control/status",
             "/audio/audio",
             "/camera/image_raw_throttled/compressed",
+            "/camera2/image_raw_throttled/compressed",
             "/rosout",
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
@@ -728,6 +811,7 @@ def generate_launch_description():
         audio_bitrate_kbps_arg,
         record_video_arg,
         video_device_arg,
+        video_device2_arg,
         video_image_size_arg,
         video_fps_arg,
         video_jpeg_quality_arg,
@@ -741,5 +825,8 @@ def generate_launch_description():
         v4l2_camera_node,
         video_throttle_node,
         set_video_jpeg_quality,
+        v4l2_camera_node2,
+        video_throttle_node2,
+        set_video_jpeg_quality2,
         record_rosbag,
     ])
