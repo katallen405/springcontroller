@@ -38,7 +38,7 @@ EYE_ANGLE_DEG = 30.0
 # mark along the same +y axis compute_candidate_center reaches across,
 # just much shorter than a full arm's reach. Confirmed wrong 2026-08-21:
 # it had been reusing the approved reach-center's x/y outright.
-EYE_TARGET_Y_OFFSET_CM = 15.0
+EYE_TARGET_Y_OFFSET_CM = 5.0
 
 
 def _cm(value_cm: float) -> float:
