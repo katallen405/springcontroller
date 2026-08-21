@@ -114,6 +114,9 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 
 .hint { font-size: 11px; color: #6b6b6b; margin-top: 4px; }
+.hint-steps { margin: 4px 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.hint-steps li { font-size: 11px; color: #6b6b6b; }
+.hint-steps b { font-size: 12.5px; color: #333; }
 
 .field-glossary { margin-bottom: 10px; }
 .field-glossary > summary {
@@ -290,26 +293,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <div class="main-col">
     <details class="panel">
       <summary>Study workspace calibration</summary>
-      <p class="hint">
-        Enter the participant ID and click "Get condition order" first --
-        it counterbalances which condition (1 or 2) this participant runs
-        first, alternating with each new participant ID so it stays
-        balanced across the study regardless of enrollment order, and
-        remembers the assignment if you check the same participant ID
-        again. Then enter the two participant measurements and preview to
-        place a live, 0-deadband "<code>workspace_demo</code>" spring at
-        the computed center -- enable torque control (see "Torque control"
-        panel), then push the arm around or retarget
-        <code>workspace_demo</code> in the "Add / remove springs" list
-        below to approve or adjust the location. "Preview eye location"
-        places a force-free "<code>workspace_demo_eye</code>" marker
-        straight above the <em>current</em> <code>workspace_demo</code>
-        position, at eye height -- this is where condition 2's orientation
-        spring will aim; re-click it after adjusting the center to keep it
-        in sync. Finalize writes condition1.yaml/condition2.yaml from
-        wherever <code>workspace_demo</code> currently is and removes both
-        demo springs.
-      </p>
+      <ul class="hint-steps">
+        <li><b>Get condition order</b> -- enter participant ID, click. Sets which condition (1 or 2) runs first, alternating per new ID; re-checking the same ID just shows the existing assignment.</li>
+        <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
+        <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where condition 2's orientation spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
+        <li><b>Finalize</b> -- writes condition1.yaml/condition2.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
+      </ul>
       <div class="spring-form">
         <div class="row">
           <label>Participant ID <input type="text" id="wc-pid" value=""></label>
@@ -457,7 +446,6 @@ let lastJointState = null;
 let currentSprings = [];
 const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
 const WORKSPACE_DEMO_EYE_SPRING_NAME = 'workspace_demo_eye';
-const CM_TO_M = 0.01;
 
 // Browsers restore form control state (checkboxes included) across a
 // same-tab reload independent of anything in this page's own HTML/JS --
@@ -987,29 +975,27 @@ function getConditionOrder() {
   }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
 }
 
-// Places a force-free (0 stiffness/damping) marker straight above the
-// *current* workspace_demo target, at eye height -- exactly where
-// condition 2's orientation spring will aim (see
-// _finalize_study_conditions_cb's orientation_target: same x/y as the
-// approved center, z = eye height). Reads workspace_demo's live target
-// back the same way finalizeStudyConditions does, so this tracks any
-// push/retarget adjustment made to the center -- re-click after adjusting
-// to keep the eye marker in sync, it doesn't move on its own.
+// Places a force-free (0 stiffness/damping) marker at condition 2's real
+// orientation-spring target: in front of the participant's actual face
+// (chair position), NOT above wherever the reach-center ended up -- those
+// are two different points on the participant's body (the reach-center is
+// where their *hand* goes; this is where their *face* is). Computed
+// server-side by the same compute_eye_location() finalizeStudyConditions
+// uses, via preview_workspace_center's eye_location field, so it can never
+// drift out of sync with what finalize will actually write. Doesn't
+// depend on workspace_demo existing -- no need to preview the center
+// first (arm_length_cm is still sent since it's the same shared service
+// request as previewWorkspaceCenter, it's just unused for eye_location).
 function previewEyeLocation() {
   const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
-  if (!isFinite(eyeHeight)) {
-    showMsg('workspace-msg', false, 'Eye height must be a number.');
+  const armLength = parseFloat(document.getElementById('wc-arm').value);
+  if (!isFinite(eyeHeight) || !isFinite(armLength)) {
+    showMsg('workspace-msg', false, 'Eye height and arm length must both be numbers.');
     return;
   }
-  callService(svcGetSpringParams, { names: ['springs.' + WORKSPACE_DEMO_SPRING_NAME + '.target'] }, function(resp) {
-    const t = resp.values[0];
-    if (!t || t.type !== PARAM_TYPE_DOUBLE_ARRAY || t.double_array_value.length !== 3) {
-      showMsg('workspace-msg', false,
-        'No live "' + WORKSPACE_DEMO_SPRING_NAME + '" spring found -- click "Preview workspace center" first.');
-      return;
-    }
-    const center = t.double_array_value;
-    const eyeTarget = [center[0], center[1], eyeHeight * CM_TO_M];
+  callService(svcPreviewWorkspaceCenter, { eye_height_cm: eyeHeight, arm_length_cm: armLength }, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const eyeTarget = resp.eye_location;
     const addReq = {
       name: WORKSPACE_DEMO_EYE_SPRING_NAME,
       link_name: document.getElementById('wc-link').value,
@@ -1035,7 +1021,7 @@ function previewEyeLocation() {
     };
     // Same re-add-over-existing pattern as previewWorkspaceCenter above.
     callService(svcRemoveSpring, { name: WORKSPACE_DEMO_EYE_SPRING_NAME }, placeSpring, placeSpring);
-  }, function(err) { showMsg('workspace-msg', false, 'Could not read current center: ' + err); });
+  }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
 function finalizeStudyConditions() {
