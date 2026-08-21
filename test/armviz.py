@@ -165,6 +165,23 @@ def get_param_target(name):
         return np.array([float(x) for x in nums])
     return None
 
+def get_param_local_point(name):
+    """Read initial local_point (attachment offset within the link's own
+    frame) from the spring node's ROS parameters. Unlike target/link_name,
+    this was never fetched at all before -- the blue attachment sphere
+    always sat at the link's frame origin regardless of local_point,
+    confirmed live 2026-08-21 (a (0,0,0.1) local_point still drew the ball
+    at (0,0,0) in the link frame). Same "None means not resolved yet, no
+    hardcoded fallback" contract as get_param_target/get_param_link."""
+    out = _get_spring_param(name, 'local_point')
+    if out is None:
+        print(f"[viz] could not read local_point for '{name}'")
+        return None
+    nums = re.findall(r'[-\d.]+', out.split(':')[-1])
+    if len(nums) == 3:
+        return np.array([float(x) for x in nums])
+    return None
+
 def get_param_link(name):
     """Read initial link_name from the spring node's ROS parameters."""
     out = _get_spring_param(name, 'link_name')
@@ -203,11 +220,13 @@ def _track_spring(name):
     message) a chance to actually recover from that."""
     entry = springs.get(name)
     if entry is None:
-        target    = get_param_target(name)
-        link_name = get_param_link(name)
+        target      = get_param_target(name)
+        link_name   = get_param_link(name)
+        local_point = get_param_local_point(name)
         springs[name] = entry = {
-            "target":    target,
-            "link_name": link_name,
+            "target":      target,
+            "link_name":   link_name,
+            "local_point": local_point,
         }
         # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
         # publisher -- see _latched_qos below for why a plain VOLATILE
@@ -228,6 +247,14 @@ def _track_spring(name):
         if entry.get("link_name") is None:
             entry["link_name"] = get_param_link(name)
             print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
+        if entry.get("local_point") is None:
+            entry["local_point"] = get_param_local_point(name)
+            print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
+    # local_point isn't part of the resolved-gate: draw_springs falls back
+    # to zero for it (the ball just sits at the link origin, same as
+    # before this was tracked at all) rather than blocking the whole
+    # spring on it, since target/link_name are the two that matter for
+    # whether a spring can be drawn at all.
     return entry.get("target") is not None and entry.get("link_name") is not None
 
 def load_springs_from_params():
@@ -622,7 +649,17 @@ def draw_springs(q):
                 print(f"[viz] unknown frame '{link_name}' for spring '{name}'")
             continue
         _unknown_frame_warned.discard(name)
-        attachment = data.oMf[frame_id].translation.copy()
+        # Offset by local_point in the link's own frame -- same transform
+        # virtual_spring.py's force computation uses (T @ [local_point,1]).
+        # Previously this always used the link's frame origin outright, so
+        # the blue ball ignored local_point entirely regardless of what
+        # was actually configured -- confirmed live 2026-08-21 with a
+        # (0,0,0.1) local_point still drawing at the link origin.
+        placement = data.oMf[frame_id]
+        local_point = spring.get("local_point")
+        if local_point is None:
+            local_point = np.zeros(3)
+        attachment = placement.translation + placement.rotation @ local_point
 
         # Blue sphere at attachment point
         T_attach = np.eye(4)
