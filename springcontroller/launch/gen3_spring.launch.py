@@ -42,12 +42,31 @@ Audio/video recording (record_audio:=true / record_video:=true)
   video_jpeg_quality_arg for why. Live-verified 2026-08-21 against two
   real USB cameras + a mic; video size vs. quality tradeoff still being
   tuned (see project memory for the running notes).
+
+Study-participant rosbag routing (participant_id:=... condition_name:=...)
+------------------------------------------------------------
+  If participant_id is set, the rosbag routes into
+  ~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- the same
+  directory orchestration_node's ~/finalize_study_conditions service (see
+  springcontroller_ui) writes condition1.yaml/condition2.yaml into.
+  condition_name (e.g. 'condition1') labels the bag's output directory
+  name. Assumes gen3_spring.launch.py gets relaunched fresh per condition
+  (Ctrl-C, then relaunch with config:=.../condition2.yaml
+  condition_name:=condition2) rather than one long-running launch
+  switching conditions live -- see participant_id_arg/condition_name_arg.
 """
 
 import os
+from datetime import datetime
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    OpaqueFunction,
+    SetEnvironmentVariable,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -304,7 +323,44 @@ def generate_launch_description():
         description=(
             "Directory bag files are written under (ros2 bag auto-names "
             "each run within it). A non-default override must already "
-            "exist -- only the default is created automatically."
+            "exist -- only the default is created automatically. Ignored "
+            "if participant_id is set (see participant_id_arg below) -- "
+            "that routes the bag into ~/gen3_study_data/<participant_id>/ "
+            "instead."
+        ),
+    )
+
+    participant_id_arg = DeclareLaunchArgument(
+        "participant_id",
+        default_value="",
+        description=(
+            "If set, routes the rosbag (see record_rosbag_arg) into "
+            "~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- "
+            "the same per-participant directory "
+            "orchestration_node's ~/finalize_study_conditions service "
+            "already writes condition1.yaml/condition2.yaml into (see "
+            "springcontroller_ui/orchestration_node.py), so a "
+            "participant's condition config and recordings end up side by "
+            "side. Empty (default) keeps the old flat rosbag_dir behavior "
+            "unchanged -- this launch file has no other dependency on "
+            "springcontroller_ui and doesn't require it to be running."
+        ),
+    )
+
+    condition_name_arg = DeclareLaunchArgument(
+        "condition_name",
+        default_value="",
+        description=(
+            "If set (and participant_id is too), labels the rosbag's "
+            "output directory name with this condition, e.g. 'condition1' "
+            "to match orchestration_node's fixed condition1.yaml/"
+            "condition2.yaml filenames -- plus a timestamp suffix so "
+            "re-running the same condition (a redo, an aborted run) "
+            "doesn't collide with `ros2 bag record`'s hard failure on an "
+            "already-existing output directory. Purely a label -- doesn't "
+            "need to match any file on disk, and can be any string (not "
+            "just 'condition1'/'condition2'). Ignored if participant_id "
+            "is empty."
         ),
     )
 
@@ -747,33 +803,72 @@ def generate_launch_description():
     # subscribed to a topic nobody's publishing on just records nothing for
     # it, harmlessly) so record_audio/record_video can be toggled without
     # also having to edit this topic list.
-    record_rosbag = ExecuteProcess(
-        cmd=[
-            "ros2", "bag", "record",
-            # Write to disk immediately instead of batching in an in-memory
-            # cache -- trades a little write throughput for the bag actually
-            # being (mostly) readable if the recorder has to be hard-killed.
-            # Confirmed live 2026-08-19: rosbag2's writer needs a clean
-            # shutdown to finalize, so a Ctrl-\ during an e-stop incident
-            # meant the bag for that whole session was lost outright, even
-            # though the per-node ~/.ros/log/ text logs survived fine.
-            "--max-cache-size", "0",
-            LaunchConfiguration("joint_states_topic"),
-            "/virtual_spring_node/joint_torques",
-            "/virtual_spring_node/repulsion_torques",
-            "/virtual_spring_node/safety_status",
-            "/virtual_spring_node/springs_updated",
-            "/kinova/joint_torque_command",
-            "/gen3_torque_control/status",
-            "/audio/audio",
-            "/camera/image_raw_throttled/compressed",
-            "/camera2/image_raw_throttled/compressed",
-            "/rosout",
-        ],
-        cwd=LaunchConfiguration("rosbag_dir"),
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("record_rosbag")),
-    )
+    #
+    # Wrapped in an OpaqueFunction (rather than a plain ExecuteProcess, like
+    # every other action in this file) because routing into
+    # ~/gen3_study_data/<participant_id>/ needs the *actual* participant_id
+    # string at launch time -- to build that path and os.makedirs() it
+    # before `ros2 bag record` starts (a bad cwd is an immediate hard
+    # failure, not a graceful retry, same as DEFAULT_ROSBAG_DIR's eager
+    # makedirs above). LaunchConfiguration substitutions aren't resolved to
+    # real strings until here, inside a function launch calls at launch
+    # time with a `context` to resolve against -- generate_launch_description
+    # itself only ever sees unresolved substitution objects.
+    def _make_record_rosbag_action(context, *args, **kwargs):
+        participant_id = LaunchConfiguration("participant_id").perform(context)
+        condition_name = LaunchConfiguration("condition_name").perform(context)
+
+        if participant_id:
+            bag_dir = os.path.join(
+                os.path.expanduser("~/gen3_study_data"), participant_id
+            )
+            os.makedirs(bag_dir, exist_ok=True)
+            output_name_args = []
+            if condition_name:
+                # Timestamp suffix so a redo/aborted-run retry under the same
+                # condition_name doesn't collide with `ros2 bag record -o`'s
+                # hard failure on an already-existing output directory --
+                # same format rosbag2's own default auto-naming uses.
+                ts = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+                output_name_args = ["-o", f"{condition_name}_{ts}"]
+        else:
+            bag_dir = LaunchConfiguration("rosbag_dir").perform(context)
+            output_name_args = []
+
+        return [
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "bag", "record",
+                    # Write to disk immediately instead of batching in an
+                    # in-memory cache -- trades a little write throughput
+                    # for the bag actually being (mostly) readable if the
+                    # recorder has to be hard-killed. Confirmed live
+                    # 2026-08-19: rosbag2's writer needs a clean shutdown to
+                    # finalize, so a Ctrl-\ during an e-stop incident meant
+                    # the bag for that whole session was lost outright,
+                    # even though the per-node ~/.ros/log/ text logs
+                    # survived fine.
+                    "--max-cache-size", "0",
+                    *output_name_args,
+                    LaunchConfiguration("joint_states_topic"),
+                    "/virtual_spring_node/joint_torques",
+                    "/virtual_spring_node/repulsion_torques",
+                    "/virtual_spring_node/safety_status",
+                    "/virtual_spring_node/springs_updated",
+                    "/kinova/joint_torque_command",
+                    "/gen3_torque_control/status",
+                    "/audio/audio",
+                    "/camera/image_raw_throttled/compressed",
+                    "/camera2/image_raw_throttled/compressed",
+                    "/rosout",
+                ],
+                cwd=bag_dir,
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_rosbag")),
+            )
+        ]
+
+    record_rosbag = OpaqueFunction(function=_make_record_rosbag_action)
 
     return LaunchDescription([
         # Keep all ROS2/DDS traffic on loopback, off the Gen3's dedicated
@@ -806,6 +901,8 @@ def generate_launch_description():
         meshcat_port_arg,
         record_rosbag_arg,
         rosbag_dir_arg,
+        participant_id_arg,
+        condition_name_arg,
         record_audio_arg,
         audio_device_arg,
         audio_bitrate_kbps_arg,
