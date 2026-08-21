@@ -473,22 +473,27 @@ def generate_launch_description():
         "video_jpeg_quality",
         default_value="60",
         description=(
-            "JPEG quality (0-100) for compressed_image_transport's lazy "
+            "JPEG quality (0-100) for compressed_image_transport's "
             ".../compressed publisher on v4l2_camera_node -- the default "
             "95 is needlessly large for a study recording; 60 is meant to "
             "be noticeably smaller with no visible quality loss at this "
             "resolution. Applied via a delayed `ros2 param set` "
             "(set_video_jpeg_quality below), not as a static launch "
-            "parameter -- confirmed live 2026-08-21: passing this as a "
-            "startup parameter override left it declared-but-NOT_SET "
-            "('ros2 param get' -> \"Parameter not set\"), since "
-            "compressed_image_transport only declares this parameter once "
-            "something actually subscribes to .../compressed, and the "
-            "override didn't survive to that late declare_parameter() "
-            "call. NOTE: still not confirmed that a live `ros2 param set` "
-            "actually changes subsequent frames' encoded size -- check "
-            "with a bag-size comparison across two quality values before "
-            "relying on it for a long/unattended run."
+            "parameter -- passing it as a Node(parameters=[...]) override "
+            "at startup consistently left it unset (two failed live "
+            "attempts, 2026-08-21: first as a silent NOT_SET, then -- "
+            "after confirming via `ros2 param list /camera` that the real "
+            "declared name is prefixed with the node's own name "
+            "('camera.image_raw.compressed.jpeg_quality', not the bare "
+            "'image_raw.compressed.jpeg_quality' both this arg's static "
+            "form and the first delayed-set attempt used) -- as an "
+            "explicit 'not declared' `ros2 param set` failure. Both "
+            "camera1/camera2's delayed-set calls now use the correct "
+            "node-name-prefixed name, confirmed to exist via `ros2 param "
+            "list /camera` -- NOT YET live-tested that `ros2 param set` "
+            "actually succeeds against it (let alone that it shrinks "
+            "subsequent frames' encoded size). Check both before relying "
+            "on this for a long/unattended run."
         ),
     )
 
@@ -716,13 +721,19 @@ def generate_launch_description():
     # parameter actually declared first -- same delayed-call reasoning as
     # load_collision_scene above, with extra margin since this depends on
     # two nodes (camera + throttle) instead of one being ready.
+    #
+    # Parameter name confirmed live 2026-08-21 via `ros2 param list
+    # /camera` -- it's prefixed with the node's own name
+    # ("camera.image_raw.compressed.jpeg_quality"), not the bare
+    # "image_raw.compressed.jpeg_quality" this used before, which is why
+    # every earlier attempt to set it failed ("not declared").
     set_video_jpeg_quality = TimerAction(
         period=5.0,
         actions=[
             ExecuteProcess(
                 cmd=[
                     "ros2", "param", "set", "/camera",
-                    "image_raw.compressed.jpeg_quality",
+                    "camera.image_raw.compressed.jpeg_quality",
                     LaunchConfiguration("video_jpeg_quality"),
                 ],
                 output="screen",
@@ -772,7 +783,7 @@ def generate_launch_description():
             ExecuteProcess(
                 cmd=[
                     "ros2", "param", "set", "/camera2",
-                    "image_raw.compressed.jpeg_quality",
+                    "camera2.image_raw.compressed.jpeg_quality",
                     LaunchConfiguration("video_jpeg_quality"),
                 ],
                 output="screen",
