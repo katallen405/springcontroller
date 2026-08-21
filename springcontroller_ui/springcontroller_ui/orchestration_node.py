@@ -847,9 +847,17 @@ class StudyControlPanelNode(Node):
         return response
 
     def _list_link_names_cb(self, request, response):
+        # Excludes joint frames (pinocchio auto-creates one per URDF joint,
+        # same name as the joint e.g. "joint_1") -- selectable here only as
+        # a spring's attachment link, not a real rigid body. Confirmed live
+        # 2026-08-21: anchoring a spring to a joint frame caused seriously
+        # unstable behavior; root cause investigation deferred, this is the
+        # immediate fix (still a valid link_name for validate_link_name/
+        # get_link_pose, just no longer offered in this picker).
         response.success = True
         response.message = "ok"
-        response.link_names = sorted(self._arm.link_names)
+        joint_names = set(self._arm.joint_names)
+        response.link_names = sorted(n for n in self._arm.link_names if n not in joint_names)
         return response
 
     def _save_named_location_cb(self, request, response):
