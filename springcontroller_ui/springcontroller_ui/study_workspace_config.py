@@ -139,12 +139,32 @@ def compute_condition_params(
     }
 
 
+class _NoAliasDumper(yaml.SafeDumper):
+    """
+    ROS 2's params-file YAML parser (rcl_yaml_param_parser) doesn't support
+    YAML anchors/aliases at all ("Will not support aliasing") -- but
+    PyYAML's default SafeDumper auto-emits them whenever the *same*
+    Python list/dict object (by identity) appears more than once in the
+    data being dumped. write_condition_yaml's condition-2 output does
+    exactly that: spring_params and orientation_params both carry the
+    same local_point list object (see _finalize_study_conditions_cb in
+    orchestration_node.py). Confirmed live 2026-08-21: virtual_spring_node
+    crashed on startup ("Will not support aliasing at line 26") loading a
+    real condition2.yaml written before this fix. Disabling aliasing
+    entirely keeps every written condition YAML loadable regardless of
+    how a future caller happens to share (or not share) list/dict objects
+    -- cheaper than auditing every call site for accidental object reuse.
+    """
+    def ignore_aliases(self, data):
+        return True
+
+
 def _atomic_write_yaml(path: str, data: dict) -> None:
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = path + ".tmp"
     with open(tmp_path, "w") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+        yaml.dump(data, f, Dumper=_NoAliasDumper, sort_keys=False)
     os.replace(tmp_path, path)
 
 
