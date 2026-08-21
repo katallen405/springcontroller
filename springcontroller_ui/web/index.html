@@ -296,6 +296,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       <ul class="hint-steps">
         <li><b>Get condition order</b> -- enter participant ID, click. Sets which condition (1 or 2) runs first, alternating per new ID; re-checking the same ID just shows the existing assignment.</li>
         <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
+        <li><b>Capture current location as workspace target</b> -- after pushing the arm to where you want it, click to lock <code>workspace_demo</code>'s target onto wherever the link/local point above currently is, instead of typing numbers into the retarget boxes below.</li>
         <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where condition 2's orientation spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
         <li><b>Finalize</b> -- writes condition1.yaml/condition2.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
       </ul>
@@ -320,8 +321,16 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="btn-row">
           <button class="action on" onclick="getConditionOrder()">Get condition order</button>
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
+          <button class="action off" onclick="captureCurrentAsWorkspaceTarget()">Capture current location as workspace target</button>
           <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
+        </div>
+        <p class="hint">Named locations (offset is world-frame, added to the link's current position -- see "Add / remove springs" below for saving one):</p>
+        <div class="row">
+          <label>Named location
+            <select id="wc-named-loc"></select>
+          </label>
+          <button class="action off" onclick="useNamedLocationForWorkspaceTarget()">Set workspace target from named location</button>
         </div>
       </div>
       <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
@@ -337,6 +346,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>name</dt><dd>Identifier used to remove/update this spring later -- must be unique.</dd>
           <dt>target x/y/z</dt><dd>World-frame point (m) the spring pulls the attachment point toward (position springs only).</dd>
           <dt>local x/y/z</dt><dd>Attachment point (m), in the link's own local frame -- e.g. (0,0,0) is the link origin.</dd>
+          <dt>offset x/y/z</dt><dd>World-frame offset (m) added to the Link's current position by "Use current position of link + offset" -- fills target x/y/z, doesn't rotate with the link.</dd>
           <dt>stiffness</dt><dd>Spring constant k (N/m). Force grows linearly with distance from target/rest length.</dd>
           <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
@@ -357,6 +367,21 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
             <select id="sp-link"></select>
           </label>
           <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
+        </div>
+        <div class="row">
+          <label>offset x <input type="number" step="0.01" id="sp-off-x" value="0"></label>
+          <label>offset y <input type="number" step="0.01" id="sp-off-y" value="0"></label>
+          <label>offset z <input type="number" step="0.01" id="sp-off-z" value="0"></label>
+          <button class="action off" onclick="fetchCurrentPositionWithOffset()" style="padding:6px 10px;font-size:12.5px">Use current position of link + offset</button>
+        </div>
+        <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
+        <div class="row">
+          <label>Named location
+            <select id="sp-named-loc"></select>
+          </label>
+          <button class="action off" onclick="useNamedLocationForSpringTarget()">Use for target</button>
+          <label>save as <input type="text" id="sp-named-loc-name" value="" style="width:110px"></label>
+          <button class="action off" onclick="saveNamedLocationFromSpringPanel()">Save link + offset above as named location</button>
         </div>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
@@ -423,6 +448,8 @@ const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
+const svcSaveNamedLocation  = { name: NODE + '/save_named_location',  type: 'springcontroller_ui_interfaces/srv/SaveNamedLocation' };
+const svcListNamedLocations = { name: NODE + '/list_named_locations', type: 'springcontroller_ui_interfaces/srv/ListNamedLocations' };
 const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
 const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
@@ -724,6 +751,130 @@ function fetchCurrentPosition() {
   }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
 }
 
+// Resolves link's *current* position plus a world-frame (dx,dy,dz) offset --
+// doesn't rotate with the link, unlike get_link_pose's own local_point
+// field (that one's for a spring's own attachment point; this is for
+// defining a target/named-location relative to wherever some other link
+// happens to be right now).
+function resolveLinkWorldOffset(link, dx, dy, dz, onOk, onErr) {
+  callService(svcGetLinkPose, { link_name: link }, function(resp) {
+    if (!resp.success) { onErr(resp.message); return; }
+    onOk([resp.point[0] + dx, resp.point[1] + dy, resp.point[2] + dz]);
+  }, function(err) { onErr('get_link_pose failed: ' + err); });
+}
+
+function fetchCurrentPositionWithOffset() {
+  const link = document.getElementById('sp-link').value;
+  const dx = parseFloat(document.getElementById('sp-off-x').value);
+  const dy = parseFloat(document.getElementById('sp-off-y').value);
+  const dz = parseFloat(document.getElementById('sp-off-z').value);
+  if (![dx, dy, dz].every(isFinite)) {
+    showMsg('spring-msg', false, 'Offset x/y/z must all be numbers.');
+    return;
+  }
+  resolveLinkWorldOffset(link, dx, dy, dz, function(point) {
+    document.getElementById('sp-tx').value = point[0].toFixed(4);
+    document.getElementById('sp-ty').value = point[1].toFixed(4);
+    document.getElementById('sp-tz').value = point[2].toFixed(4);
+    showMsg('spring-msg', true, 'Filled target with current position of ' + link + ' + offset.');
+  }, function(msg) { showMsg('spring-msg', false, msg); });
+}
+
+// ---- named locations ---------------------------------------------------
+// A named location is (link_name, world-frame offset) -- saved server-side
+// so it's shared between this panel and the workspace-calibration panel
+// above, and re-resolved against the link's *current* position every time
+// it's used (see resolveLinkWorldOffset), not frozen at save time.
+let namedLocations = {};
+
+function populateNamedLocationsDropdown() {
+  callService(svcListNamedLocations, {}, function(resp) {
+    if (!resp.success) return;
+    namedLocations = {};
+    for (let i = 0; i < resp.names.length; i++) {
+      namedLocations[resp.names[i]] = {
+        link_name: resp.link_names[i],
+        offset: [resp.offset_x[i], resp.offset_y[i], resp.offset_z[i]],
+      };
+    }
+    ['sp-named-loc', 'wc-named-loc'].forEach(function(selId) {
+      const sel = document.getElementById(selId);
+      const previous = sel.value;
+      sel.innerHTML = '';
+      resp.names.forEach(function(name) {
+        const opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (resp.names.includes(previous)) sel.value = previous;
+    });
+  });
+}
+
+function saveNamedLocationFromSpringPanel() {
+  const name = document.getElementById('sp-named-loc-name').value.trim();
+  if (!name) { showMsg('spring-msg', false, 'Enter a name to save this location as.'); return; }
+  const link = document.getElementById('sp-link').value;
+  const offset = [parseFloat(document.getElementById('sp-off-x').value),
+                   parseFloat(document.getElementById('sp-off-y').value),
+                   parseFloat(document.getElementById('sp-off-z').value)];
+  if (!offset.every(isFinite)) { showMsg('spring-msg', false, 'Offset x/y/z must all be numbers.'); return; }
+  callService(svcSaveNamedLocation, { name: name, link_name: link, offset: offset }, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message);
+    if (resp.success) populateNamedLocationsDropdown();
+  }, function(err) { showMsg('spring-msg', false, 'save_named_location failed: ' + err); });
+}
+
+function useNamedLocationForSpringTarget() {
+  const name = document.getElementById('sp-named-loc').value;
+  const loc = namedLocations[name];
+  if (!loc) { showMsg('spring-msg', false, 'No named locations saved yet.'); return; }
+  resolveLinkWorldOffset(loc.link_name, loc.offset[0], loc.offset[1], loc.offset[2], function(point) {
+    document.getElementById('sp-tx').value = point[0].toFixed(4);
+    document.getElementById('sp-ty').value = point[1].toFixed(4);
+    document.getElementById('sp-tz').value = point[2].toFixed(4);
+    showMsg('spring-msg', true, 'Filled target from named location "' + name + '".');
+  }, function(msg) { showMsg('spring-msg', false, msg); });
+}
+
+function useNamedLocationForWorkspaceTarget() {
+  const name = document.getElementById('wc-named-loc').value;
+  const loc = namedLocations[name];
+  if (!loc) { showMsg('workspace-msg', false, 'No named locations saved yet.'); return; }
+  if (!currentSprings.includes(WORKSPACE_DEMO_SPRING_NAME)) {
+    showMsg('workspace-msg', false, 'Preview workspace center first -- "' + WORKSPACE_DEMO_SPRING_NAME + '" doesn\'t exist yet.');
+    return;
+  }
+  resolveLinkWorldOffset(loc.link_name, loc.offset[0], loc.offset[1], loc.offset[2], function(point) {
+    const ok = publishRetarget(WORKSPACE_DEMO_SPRING_NAME, point);
+    showMsg('workspace-msg', ok, ok
+      ? ('Workspace target set from named location "' + name + '": [' + point.map(function(v) { return v.toFixed(4); }).join(', ') + '].')
+      : 'Not connected to rosbridge.');
+  }, function(msg) { showMsg('workspace-msg', false, msg); });
+}
+
+// Locks workspace_demo's target onto wherever its attachment point (Link +
+// local x/y/z above -- a link-local offset, unlike named locations' world
+// offset) currently is, e.g. after pushing the arm there by hand.
+function captureCurrentAsWorkspaceTarget() {
+  if (!currentSprings.includes(WORKSPACE_DEMO_SPRING_NAME)) {
+    showMsg('workspace-msg', false, 'Preview workspace center first -- "' + WORKSPACE_DEMO_SPRING_NAME + '" doesn\'t exist yet.');
+    return;
+  }
+  const link = document.getElementById('wc-link').value;
+  const localPoint = [parseFloat(document.getElementById('wc-lx').value),
+                       parseFloat(document.getElementById('wc-ly').value),
+                       parseFloat(document.getElementById('wc-lz').value)];
+  if (!localPoint.every(isFinite)) { showMsg('workspace-msg', false, 'local x/y/z must all be numbers.'); return; }
+  callService(svcGetLinkPose, { link_name: link, local_point: localPoint }, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const ok = publishRetarget(WORKSPACE_DEMO_SPRING_NAME, resp.point);
+    showMsg('workspace-msg', ok, ok
+      ? ('Workspace target captured at [' + resp.point.map(function(v) { return v.toFixed(4); }).join(', ') + '].')
+      : 'Not connected to rosbridge.');
+  }, function(err) { showMsg('workspace-msg', false, 'get_link_pose failed: ' + err); });
+}
+
 function addSpring() {
   const name = document.getElementById('sp-name').value.trim();
   if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
@@ -844,16 +995,20 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
 // ~/target/<name> topic, see virtual_spring_node.py's per-spring loop) by
 // publishing a PointStamped. Not a service call like updateSpring -- there's
 // no synchronous ack, so this just reports "sent" rather than success/failure.
+function publishRetarget(name, point) {
+  return pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
+    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
+    point: { x: point[0], y: point[1], z: point[2] },
+  });
+}
+
 function retargetSpring(name, xInput, yInput, zInput) {
   const x = parseFloat(xInput.value), y = parseFloat(yInput.value), z = parseFloat(zInput.value);
   if (![x, y, z].every(isFinite)) {
     showMsg('spring-msg', false, 'Target x/y/z must all be numbers.');
     return;
   }
-  const ok = pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
-    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
-    point: { x: x, y: y, z: z },
-  });
+  const ok = publishRetarget(name, [x, y, z]);
   showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
 }
 
@@ -1173,6 +1328,7 @@ function connectRos() {
     });
 
     populateLinkDropdown();
+    populateNamedLocationsDropdown();
 
     // The meshcat iframe keeps its own websocket straight to meshcat-server
     // (not through rosbridge), established once when the iframe's src first

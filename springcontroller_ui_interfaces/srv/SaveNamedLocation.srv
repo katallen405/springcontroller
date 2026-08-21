@@ -1,0 +1,10 @@
+# Saves (or overwrites) one named location: a world-frame x/y/z offset
+# from a link's current position (e.g. "block" = end_effector_link +
+# [0, 0, 0.13]). See springcontroller_ui.named_locations for the
+# persisted-file format.
+string name
+string link_name
+float64[3] offset
+---
+bool success
+string message
