@@ -1,4 +1,9 @@
+# local_point is optional -- omitted (or all-zero) requests get the link
+# origin itself; a non-zero value gets that point in the link's *local*
+# frame instead (rotates with the link, e.g. a fingertip offset), matching
+# the local_point convention springs already use (see AddSpring.srv).
 string link_name
+float64[3] local_point
 ---
 bool success
 string message

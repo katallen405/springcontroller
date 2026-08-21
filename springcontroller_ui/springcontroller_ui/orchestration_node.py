@@ -64,10 +64,13 @@ from springcontroller_ui_interfaces.srv import (
     FinalizeStudyConditions,
     GetLinkPose,
     ListLinkNames,
+    ListNamedLocations,
     MoveToJointAngles,
     PreviewWorkspaceCenter,
+    SaveNamedLocation,
 )
 
+from springcontroller_ui.named_locations import load_locations, save_location
 from springcontroller_ui.study_start_preset import load_preset, save_preset
 from springcontroller_ui.study_workspace_config import (
     assign_condition_order,
@@ -163,6 +166,12 @@ class StudyControlPanelNode(Node):
         # without removing/recreating it, unlike reset_springs which does.
         self.declare_parameter("spring_target_topic_prefix", "/virtual_spring_node/target")
         self.declare_parameter("study_start_preset_path", "~/springcontroller_ui_study_start.yaml")
+        # Named locations (save_named_location / list_named_locations):
+        # world-frame x/y/z offsets from a link's *current* position,
+        # shared between the workspace-calibration and add/remove-springs
+        # panels (e.g. "block" = end_effector_link + [0, 0, 0.13]). See
+        # springcontroller_ui.named_locations for the file format.
+        self.declare_parameter("named_locations_path", "~/springcontroller_ui_named_locations.yaml")
         # Workspace-calibration flow (preview_workspace_center /
         # finalize_study_conditions): seat_x/seat_y are the participant
         # midline's pre-set world-frame position (meters) -- a physical
@@ -206,6 +215,7 @@ class StudyControlPanelNode(Node):
         self._reset_spring_local_point = np.array(gp("reset_spring_local_point"), dtype=float)
         self._spring_target_topic_prefix = gp("spring_target_topic_prefix")
         self._study_start_preset_path = gp("study_start_preset_path")
+        self._named_locations_path = gp("named_locations_path")
         self._workspace_seat_x = float(gp("workspace_seat_x"))
         self._workspace_seat_y = float(gp("workspace_seat_y"))
         self._workspace_study_data_dir = gp("workspace_study_data_dir")
@@ -317,6 +327,10 @@ class StudyControlPanelNode(Node):
                              self._get_link_pose_cb, callback_group=cb_group)
         self.create_service(ListLinkNames, "~/list_link_names",
                              self._list_link_names_cb, callback_group=cb_group)
+        self.create_service(SaveNamedLocation, "~/save_named_location",
+                             self._save_named_location_cb, callback_group=cb_group)
+        self.create_service(ListNamedLocations, "~/list_named_locations",
+                             self._list_named_locations_cb, callback_group=cb_group)
         self.create_service(PreviewWorkspaceCenter, "~/preview_workspace_center",
                              self._preview_workspace_center_cb, callback_group=cb_group)
         self.create_service(FinalizeStudyConditions, "~/finalize_study_conditions",
@@ -826,15 +840,44 @@ class StudyControlPanelNode(Node):
             return response
 
         T = self._arm.get_link_transform(request.link_name)
+        local_point = np.array(request.local_point, dtype=float)
         response.success = True
         response.message = "ok"
-        response.point = [float(v) for v in T[:3, 3]]
+        response.point = [float(v) for v in (T[:3, :3] @ local_point + T[:3, 3])]
         return response
 
     def _list_link_names_cb(self, request, response):
         response.success = True
         response.message = "ok"
         response.link_names = sorted(self._arm.link_names)
+        return response
+
+    def _save_named_location_cb(self, request, response):
+        name = request.name.strip()
+        if not name:
+            response.success = False
+            response.message = "Name is required."
+            return response
+        try:
+            self._arm.validate_link_name(request.link_name)
+        except ValueError as e:
+            response.success = False
+            response.message = str(e)
+            return response
+        save_location(self._named_locations_path, name, request.link_name, list(request.offset))
+        response.success = True
+        response.message = f"Saved named location '{name}'."
+        return response
+
+    def _list_named_locations_cb(self, request, response):
+        locations = load_locations(self._named_locations_path)
+        response.success = True
+        response.message = "ok"
+        response.names = sorted(locations.keys())
+        response.link_names = [locations[n]["link_name"] for n in response.names]
+        response.offset_x = [float(locations[n]["offset"][0]) for n in response.names]
+        response.offset_y = [float(locations[n]["offset"][1]) for n in response.names]
+        response.offset_z = [float(locations[n]["offset"][2]) for n in response.names]
         return response
 
     # ------------------------------------------------------------
