@@ -393,17 +393,20 @@ def generate_launch_description():
         description=(
             "JPEG quality (0-100) for compressed_image_transport's lazy "
             ".../compressed publisher on v4l2_camera_node -- the default "
-            "95 is needlessly large for a study recording; 60 is "
-            "noticeably smaller with no visible quality loss at this "
-            "resolution. NOTE: parameter name assumed from "
-            "compressed_image_transport's documented convention "
-            "('<image_topic>.compressed.jpeg_quality') but not yet "
-            "verified live -- no camera attached to this dev machine and "
-            "the package isn't installed yet as of 2026-08-21 (see module "
-            "docstring). If it's wrong, the param is simply ignored (a "
-            "harmless unused-parameter warning), it won't error -- just "
-            "confirm the resulting file size actually drops before "
-            "relying on it for a long test run."
+            "95 is needlessly large for a study recording; 60 is meant to "
+            "be noticeably smaller with no visible quality loss at this "
+            "resolution. Applied via a delayed `ros2 param set` "
+            "(set_video_jpeg_quality below), not as a static launch "
+            "parameter -- confirmed live 2026-08-21: passing this as a "
+            "startup parameter override left it declared-but-NOT_SET "
+            "('ros2 param get' -> \"Parameter not set\"), since "
+            "compressed_image_transport only declares this parameter once "
+            "something actually subscribes to .../compressed, and the "
+            "override didn't survive to that late declare_parameter() "
+            "call. NOTE: still not confirmed that a live `ros2 param set` "
+            "actually changes subsequent frames' encoded size -- check "
+            "with a bag-size comparison across two quality values before "
+            "relying on it for a long/unattended run."
         ),
     )
 
@@ -576,9 +579,9 @@ def generate_launch_description():
         parameters=[{
             "video_device": LaunchConfiguration("video_device"),
             "image_size": LaunchConfiguration("video_image_size"),
-            # See video_jpeg_quality_arg -- best-effort parameter name,
-            # not yet verified live.
-            "image_raw.compressed.jpeg_quality": LaunchConfiguration("video_jpeg_quality"),
+            # jpeg_quality is NOT set here -- see video_jpeg_quality_arg /
+            # set_video_jpeg_quality below for why a static override doesn't
+            # work for this particular parameter.
         }],
         remappings=[
             ("image_raw", "/camera/image_raw"),
@@ -614,6 +617,31 @@ def generate_launch_description():
             "/camera/image_raw_throttled/compressed",
         ],
         condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    # Sets JPEG quality via `ros2 param set` a few seconds after launch,
+    # rather than as a static launch parameter on v4l2_camera_node -- see
+    # video_jpeg_quality_arg for why the static form doesn't work
+    # (compressed_image_transport declares this parameter lazily, only once
+    # video_throttle_node above actually subscribes to .../compressed, and a
+    # startup-time override doesn't survive to that late declare_parameter()
+    # call). 5s gives the camera/throttle chain time to be fully up and the
+    # parameter actually declared first -- same delayed-call reasoning as
+    # load_collision_scene above, with extra margin since this depends on
+    # two nodes (camera + throttle) instead of one being ready.
+    set_video_jpeg_quality = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "param", "set", "/camera",
+                    "image_raw.compressed.jpeg_quality",
+                    LaunchConfiguration("video_jpeg_quality"),
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_video")),
+            )
+        ],
     )
 
     # Real rosbag of the key torque/state/status topics plus /rosout
@@ -712,5 +740,6 @@ def generate_launch_description():
         audio_capture_node,
         v4l2_camera_node,
         video_throttle_node,
+        set_video_jpeg_quality,
         record_rosbag,
     ])
