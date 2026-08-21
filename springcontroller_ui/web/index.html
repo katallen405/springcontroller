@@ -154,6 +154,7 @@ ul.spring-list li {
   padding: 5px 9px; background: #fafafa; border: 1px solid #eee; border-radius: 7px;
   font-family: monospace; font-size: 12.5px;
 }
+ul.spring-list .spring-anchor { color: #666; font-size: 12px; }
 ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
 ul.spring-list button:hover { background: #fdf0f0; }
 ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
@@ -895,23 +896,28 @@ function updateCollisionThresholds() {
 // an empty response just means "wrong prefix, try the next one" instead of
 // silently emptying out every time.
 const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+// anchorField: joint_springs anchor to a joint (joint_name), not a link --
+// springs/orientation_springs both anchor to link_name.
 const SPRING_PARAM_PREFIXES = [
-  { prefix: 'springs', hasTarget: true },
-  { prefix: 'orientation_springs', hasTarget: true },
-  { prefix: 'joint_springs', hasTarget: false },  // real field is target_angle, not a 3-vector
+  { prefix: 'springs', hasTarget: true, anchorField: 'link_name' },
+  { prefix: 'orientation_springs', hasTarget: true, anchorField: 'link_name' },
+  { prefix: 'joint_springs', hasTarget: false, anchorField: 'joint_name' },  // real target field is target_angle, not a 3-vector
 ];
-function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, anchorEl) {
   function tryPrefix(i) {
     if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
-    const { prefix, hasTarget } = SPRING_PARAM_PREFIXES[i];
-    const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping'];
+    const { prefix, hasTarget, anchorField } = SPRING_PARAM_PREFIXES[i];
+    const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping', prefix + '.' + name + '.' + anchorField];
     if (hasTarget) names.push(prefix + '.' + name + '.target');
     callService(svcGetSpringParams, { names: names }, function(resp) {
       const v = resp.values;
-      if (!(v.length >= 2 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
+      if (!(v.length >= 3 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
       kInput.value = v[0].double_value;
       if (v[1].type === PARAM_TYPE_DOUBLE) bInput.value = v[1].double_value;
-      const t = v[2];
+      if (anchorEl && v[2] && v[2].type === PARAM_TYPE_STRING) {
+        anchorEl.textContent = (anchorField === 'joint_name' ? 'joint: ' : 'link: ') + v[2].string_value;
+      }
+      const t = v[3];
       if (hasTarget && t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
         txInput.value = t.double_array_value[0].toFixed(4);
         tyInput.value = t.double_array_value[1].toFixed(4);
@@ -970,6 +976,10 @@ function handleSpringsUpdated(msg) {
     const span = document.createElement('span');
     span.textContent = name;
 
+    const anchorSpan = document.createElement('span');
+    anchorSpan.className = 'spring-anchor';
+    anchorSpan.textContent = 'link: ?';
+
     const adjust = document.createElement('span');
     adjust.className = 'adjust';
     const kInput = document.createElement('input');
@@ -1000,7 +1010,7 @@ function handleSpringsUpdated(msg) {
     retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
     retarget.appendChild(retargetBtn);
 
-    li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
+    li.appendChild(span); li.appendChild(anchorSpan); li.appendChild(adjust); li.appendChild(retarget);
 
     const btn = document.createElement('button');
     btn.textContent = 'Remove';
@@ -1008,7 +1018,7 @@ function handleSpringsUpdated(msg) {
     li.appendChild(btn);
     ul.appendChild(li);
 
-    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, anchorSpan);
   });
 }
 
