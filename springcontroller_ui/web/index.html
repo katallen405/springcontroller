@@ -188,6 +188,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <span>move status: <span class="val" id="move-state">unknown</span></span>
     <span>safety status: <span class="val" id="safety-state">unknown</span></span>
     <span>springs: <span class="val" id="springs-state">unknown</span></span>
+    <span style="margin-left:auto">config: <span class="val" id="config-path-state">unknown</span></span>
   </div>
   <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite" style="margin-top:0;flex-basis:100%"></div>
 </header>
@@ -366,15 +367,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>Link
             <select id="sp-link"></select>
           </label>
-          <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
-        </div>
-        <div class="row">
           <label>offset x <input type="number" step="0.01" id="sp-off-x" value="0"></label>
           <label>offset y <input type="number" step="0.01" id="sp-off-y" value="0"></label>
           <label>offset z <input type="number" step="0.01" id="sp-off-z" value="0"></label>
           <button class="action off" onclick="fetchCurrentPositionWithOffset()" style="padding:6px 10px;font-size:12.5px">Use current position of link + offset</button>
         </div>
-        <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
+        <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- leave all zero to just use the link's current position. Different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
         <div class="row">
           <label>Named location
             <select id="sp-named-loc"></select>
@@ -740,17 +738,6 @@ function populateLinkDropdown() {
   });
 }
 
-function fetchCurrentPosition() {
-  const link = document.getElementById('sp-link').value;
-  callService(svcGetLinkPose, { link_name: link }, function(resp) {
-    if (!resp.success) { showMsg('spring-msg', false, resp.message); return; }
-    document.getElementById('sp-tx').value = resp.point[0].toFixed(4);
-    document.getElementById('sp-ty').value = resp.point[1].toFixed(4);
-    document.getElementById('sp-tz').value = resp.point[2].toFixed(4);
-    showMsg('spring-msg', true, 'Filled target with current position of ' + link + '.');
-  }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
-}
-
 // Resolves link's *current* position plus a world-frame (dx,dy,dz) offset --
 // doesn't rotate with the link, unlike get_link_pose's own local_point
 // field (that one's for a spring's own attachment point; this is for
@@ -963,7 +950,7 @@ function updateCollisionThresholds() {
 // populated for any spring, ever. Splitting into one call per prefix means
 // an empty response just means "wrong prefix, try the next one" instead of
 // silently emptying out every time.
-const PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
 const SPRING_PARAM_PREFIXES = [
   { prefix: 'springs', hasTarget: true },
   { prefix: 'orientation_springs', hasTarget: true },
@@ -989,6 +976,19 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
     }, function(err) { tryPrefix(i + 1); });
   }
   tryPrefix(0);
+}
+
+// config_path is a load-time-only parameter (set once when virtual_spring_node
+// starts, never changed afterward) -- one fetch on connect is enough, no
+// live subscription needed.
+function fetchLoadedConfigPath() {
+  callService(svcGetSpringParams, { names: ['config_path'] }, function(resp) {
+    const v = resp.values[0];
+    const el = document.getElementById('config-path-state');
+    el.textContent = (v && v.type === PARAM_TYPE_STRING && v.string_value) ? v.string_value : '(none)';
+  }, function(err) {
+    document.getElementById('config-path-state').textContent = 'unknown';
+  });
 }
 
 // Retargets any spring (position or orientation -- both listen on the same
@@ -1329,6 +1329,7 @@ function connectRos() {
 
     populateLinkDropdown();
     populateNamedLocationsDropdown();
+    fetchLoadedConfigPath();
 
     // The meshcat iframe keeps its own websocket straight to meshcat-server
     // (not through rosbridge), established once when the iframe's src first
