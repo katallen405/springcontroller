@@ -298,9 +298,14 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         the computed center -- enable torque control (see "Torque control"
         panel), then push the arm around or retarget
         <code>workspace_demo</code> in the "Add / remove springs" list
-        below to approve or adjust the location. Finalize writes
-        condition1.yaml/condition2.yaml from wherever it currently is and
-        removes the demo spring.
+        below to approve or adjust the location. "Preview eye location"
+        places a force-free "<code>workspace_demo_eye</code>" marker
+        straight above the <em>current</em> <code>workspace_demo</code>
+        position, at eye height -- this is where condition 2's orientation
+        spring will aim; re-click it after adjusting the center to keep it
+        in sync. Finalize writes condition1.yaml/condition2.yaml from
+        wherever <code>workspace_demo</code> currently is and removes both
+        demo springs.
       </p>
       <div class="spring-form">
         <div class="row">
@@ -323,6 +328,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="btn-row">
           <button class="action on" onclick="getConditionOrder()">Get condition order</button>
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
+          <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
         </div>
       </div>
@@ -447,6 +453,8 @@ let ros = null;
 let lastJointState = null;
 let currentSprings = [];
 const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
+const WORKSPACE_DEMO_EYE_SPRING_NAME = 'workspace_demo_eye';
+const CM_TO_M = 0.01;
 
 // Browsers restore form control state (checkboxes included) across a
 // same-tab reload independent of anything in this page's own HTML/JS --
@@ -801,36 +809,44 @@ function updateCollisionThresholds() {
   }, function(err) { showMsg('thresholds-msg', false, 'update_collision_thresholds failed: ' + err); });
 }
 
-// Batches a lookup of every field this spring could have across all three
-// spring types (position/orientation/joint) into one GetParameters call --
-// undeclared parameters just come back PARAMETER_NOT_SET (type 0), so
-// whichever set actually resolves identifies the type as a side effect,
-// no separate spring_names/orientation_spring_names/joint_spring_names
-// classification call needed.
+// Tries each spring-type prefix (position/orientation/joint) in turn with
+// its OWN GetParameters call, rather than one batched call across all
+// three. rclpy's ParameterService._get_parameters_callback does NOT return
+// PARAMETER_NOT_SET per-name for an undeclared parameter -- it aborts the
+// whole request and returns an EMPTY values array the instant it hits the
+// first undeclared name in the list (see parameter_service.py). Since any
+// given spring only has one prefix's fields declared, a single combined
+// query always hit an undeclared name from one of the other two prefixes
+// and came back empty -- confirmed live 2026-08-21, the adjust boxes never
+// populated for any spring, ever. Splitting into one call per prefix means
+// an empty response just means "wrong prefix, try the next one" instead of
+// silently emptying out every time.
 const PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+const SPRING_PARAM_PREFIXES = [
+  { prefix: 'springs', hasTarget: true },
+  { prefix: 'orientation_springs', hasTarget: true },
+  { prefix: 'joint_springs', hasTarget: false },  // real field is target_angle, not a 3-vector
+];
 function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
-  const prefixes = ['springs', 'orientation_springs', 'joint_springs'];
-  const names = [];
-  prefixes.forEach(function(p) {
-    names.push(p + '.' + name + '.stiffness', p + '.' + name + '.damping', p + '.' + name + '.target');
-  });
-  callService(svcGetSpringParams, { names: names }, function(resp) {
-    const v = resp.values;
-    for (let i = 0; i < prefixes.length; i++) {
-      const base = i * 3;
-      if (v[base] && v[base].type === PARAM_TYPE_DOUBLE) {
-        kInput.value = v[base].double_value;
-        if (v[base + 1] && v[base + 1].type === PARAM_TYPE_DOUBLE) bInput.value = v[base + 1].double_value;
-        const t = v[base + 2];
-        if (t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
-          txInput.value = t.double_array_value[0].toFixed(4);
-          tyInput.value = t.double_array_value[1].toFixed(4);
-          tzInput.value = t.double_array_value[2].toFixed(4);
-        }
-        return;  // first matching type wins
+  function tryPrefix(i) {
+    if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
+    const { prefix, hasTarget } = SPRING_PARAM_PREFIXES[i];
+    const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping'];
+    if (hasTarget) names.push(prefix + '.' + name + '.target');
+    callService(svcGetSpringParams, { names: names }, function(resp) {
+      const v = resp.values;
+      if (!(v.length >= 2 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
+      kInput.value = v[0].double_value;
+      if (v[1].type === PARAM_TYPE_DOUBLE) bInput.value = v[1].double_value;
+      const t = v[2];
+      if (hasTarget && t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
+        txInput.value = t.double_array_value[0].toFixed(4);
+        tyInput.value = t.double_array_value[1].toFixed(4);
+        tzInput.value = t.double_array_value[2].toFixed(4);
       }
-    }
-  }, function(err) { /* leave fields blank -- not worth surfacing a msg-box error for this */ });
+    }, function(err) { tryPrefix(i + 1); });
+  }
+  tryPrefix(0);
 }
 
 // Retargets any spring (position or orientation -- both listen on the same
@@ -968,6 +984,57 @@ function getConditionOrder() {
   }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
 }
 
+// Places a force-free (0 stiffness/damping) marker straight above the
+// *current* workspace_demo target, at eye height -- exactly where
+// condition 2's orientation spring will aim (see
+// _finalize_study_conditions_cb's orientation_target: same x/y as the
+// approved center, z = eye height). Reads workspace_demo's live target
+// back the same way finalizeStudyConditions does, so this tracks any
+// push/retarget adjustment made to the center -- re-click after adjusting
+// to keep the eye marker in sync, it doesn't move on its own.
+function previewEyeLocation() {
+  const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
+  if (!isFinite(eyeHeight)) {
+    showMsg('workspace-msg', false, 'Eye height must be a number.');
+    return;
+  }
+  callService(svcGetSpringParams, { names: ['springs.' + WORKSPACE_DEMO_SPRING_NAME + '.target'] }, function(resp) {
+    const t = resp.values[0];
+    if (!t || t.type !== PARAM_TYPE_DOUBLE_ARRAY || t.double_array_value.length !== 3) {
+      showMsg('workspace-msg', false,
+        'No live "' + WORKSPACE_DEMO_SPRING_NAME + '" spring found -- click "Preview workspace center" first.');
+      return;
+    }
+    const center = t.double_array_value;
+    const eyeTarget = [center[0], center[1], eyeHeight * CM_TO_M];
+    const addReq = {
+      name: WORKSPACE_DEMO_EYE_SPRING_NAME,
+      link_name: document.getElementById('wc-link').value,
+      stiffness: 0.0,
+      damping: 0.0,
+      local_point: [parseFloat(document.getElementById('wc-lx').value),
+                    parseFloat(document.getElementById('wc-ly').value),
+                    parseFloat(document.getElementById('wc-lz').value)],
+      target: eyeTarget,
+      rest_length: 0.0,
+      inner_radius: 0.0,
+      outer_radius: 0.0,
+    };
+    const placeSpring = function() {
+      callService(svcAddSpring, addReq, function(addResp) {
+        const eyeStr = eyeTarget.map(function(v) { return v.toFixed(4); }).join(', ');
+        showMsg('workspace-msg', addResp.success,
+          'Eye location: [' + eyeStr + ']. ' + (addResp.message ||
+            (addResp.success
+              ? '"' + WORKSPACE_DEMO_EYE_SPRING_NAME + '" marker placed (0 stiffness -- no force applied) -- this is where condition 2\'s orientation spring will aim.'
+              : 'Failed to place eye marker.')));
+      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+    };
+    // Same re-add-over-existing pattern as previewWorkspaceCenter above.
+    callService(svcRemoveSpring, { name: WORKSPACE_DEMO_EYE_SPRING_NAME }, placeSpring, placeSpring);
+  }, function(err) { showMsg('workspace-msg', false, 'Could not read current center: ' + err); });
+}
+
 function finalizeStudyConditions() {
   const participantId = document.getElementById('wc-pid').value.trim();
   if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
@@ -1008,6 +1075,7 @@ function finalizeStudyConditions() {
       if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
       showMsg('workspace-msg', true, text);
       removeSpring(WORKSPACE_DEMO_SPRING_NAME);
+      removeSpring(WORKSPACE_DEMO_EYE_SPRING_NAME);
     }, function(err) { showMsg('workspace-msg', false, 'finalize_study_conditions failed: ' + err); });
   }, function(err) { showMsg('workspace-msg', false, 'Could not read current target: ' + err); });
 }
