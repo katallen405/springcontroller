@@ -23,6 +23,23 @@ Prerequisites
       # 2026-08-19: virtual_spring_node's own remap was dropped in a WIP
       # snapshot commit on 2026-08-03 and never restored, while armviz's
       # matching remap was restored separately -- the two fell out of sync.
+
+Audio/video recording (record_audio:=true / record_video:=true)
+------------------------------------------------------------
+  Needs packages this workspace doesn't have installed yet:
+      sudo apt install ros-kilted-audio-capture ros-kilted-v4l2-camera \
+          ros-kilted-compressed-image-transport ros-kilted-topic-tools
+  audio_capture_node encodes straight to mp3 (mono, 16kHz, ~64kbps by
+  default) -- already small enough for the bag, no separate downsampling
+  step needed. Video is downsampled twice: v4l2_camera_node captures at
+  video_image_size (default 640x480, well below most webcams' native
+  resolution) and publishes both raw and, once compressed_image_transport
+  is installed, a lazy JPEG .../compressed topic; a topic_tools throttle
+  node then caps that to video_fps (default 10) before it's recorded --
+  only the throttled+compressed topic goes in the bag, never the raw
+  feed. Sight-unseen (no camera attached to this dev machine, packages
+  not yet installed) -- verify video_image_size/jpeg_quality parameter
+  names still match once actually tested live.
 """
 
 import os
@@ -289,6 +306,107 @@ def generate_launch_description():
         ),
     )
 
+    record_audio_arg = DeclareLaunchArgument(
+        "record_audio",
+        default_value="false",
+        description=(
+            "If true, launch audio_capture_node (package ros-kilted-"
+            "audio-capture, not installed on this dev machine as of "
+            "2026-08-21 -- see module docstring) and mic-capture audio for "
+            "the run. Defaults to false, same reasoning as armviz:= -- "
+            "needs real hardware/a package this box doesn't have yet, so "
+            "it's an explicit opt-in rather than something that fails "
+            "loudly on every plain control-code launch."
+        ),
+    )
+
+    audio_device_arg = DeclareLaunchArgument(
+        "audio_device",
+        default_value="",
+        description=(
+            "ALSA device string for audio_capture_node (empty = system "
+            "default capture device, e.g. whichever mic is plugged in). "
+            "Only used when record_audio:=true."
+        ),
+    )
+
+    audio_bitrate_kbps_arg = DeclareLaunchArgument(
+        "audio_bitrate_kbps",
+        default_value="64",
+        description=(
+            "mp3 encode bitrate audio_capture_node compresses to before "
+            "publishing -- mono/16kHz/64kbps is already small enough that "
+            "no further downsampling step is needed to keep a 15+ minute "
+            "run's audio out of the bag's way (roughly 7-8MB per 15 "
+            "minutes at this default)."
+        ),
+    )
+
+    record_video_arg = DeclareLaunchArgument(
+        "record_video",
+        default_value="false",
+        description=(
+            "If true, launch v4l2_camera_node plus a topic_tools throttle "
+            "node and record downsampled webcam video for the run. "
+            "Defaults to false, same reasoning as record_audio:= above -- "
+            "needs a camera and packages not installed on this dev machine "
+            "as of 2026-08-21 (see module docstring)."
+        ),
+    )
+
+    video_device_arg = DeclareLaunchArgument(
+        "video_device",
+        default_value="/dev/video0",
+        description="V4L2 device path for v4l2_camera_node. Only used when record_video:=true.",
+    )
+
+    video_image_size_arg = DeclareLaunchArgument(
+        "video_image_size",
+        default_value="[640, 480]",
+        description=(
+            "Capture resolution v4l2_camera_node is told to request from "
+            "the camera, well below most webcams' native resolution -- the "
+            "first (and cheapest) of the two downsampling steps applied to "
+            "video before it's recorded (see video_fps below for the "
+            "second). Passed through as YAML so it must stay valid YAML "
+            "list syntax, e.g. '[1280, 720]'."
+        ),
+    )
+
+    video_fps_arg = DeclareLaunchArgument(
+        "video_fps",
+        default_value="10",
+        description=(
+            "Frame rate the topic_tools throttle node caps the compressed "
+            "video topic to before it's recorded -- the second of the two "
+            "downsampling steps (see video_image_size above for the "
+            "first). Applied downstream of v4l2_camera_node rather than "
+            "via a camera-driver frame-rate parameter so it works "
+            "regardless of what frame rates the attached camera actually "
+            "supports."
+        ),
+    )
+
+    video_jpeg_quality_arg = DeclareLaunchArgument(
+        "video_jpeg_quality",
+        default_value="60",
+        description=(
+            "JPEG quality (0-100) for compressed_image_transport's lazy "
+            ".../compressed publisher on v4l2_camera_node -- the default "
+            "95 is needlessly large for a study recording; 60 is "
+            "noticeably smaller with no visible quality loss at this "
+            "resolution. NOTE: parameter name assumed from "
+            "compressed_image_transport's documented convention "
+            "('<image_topic>.compressed.jpeg_quality') but not yet "
+            "verified live -- no camera attached to this dev machine and "
+            "the package isn't installed yet as of 2026-08-21 (see module "
+            "docstring). If it's wrong, the param is simply ignored (a "
+            "harmless unused-parameter warning), it won't error -- just "
+            "confirm the resulting file size actually drops before "
+            "relying on it for a long test run."
+        ),
+    )
+
     virtual_spring_node = Node(
         package="springcontroller",
         executable="virtual_spring_node",
@@ -420,24 +538,95 @@ def generate_launch_description():
         ],
     )
 
+    # mp3-encoded mic capture -- see record_audio_arg / module docstring.
+    # Already compressed at the source (no raw PCM ever hits a topic), so
+    # unlike video there's no separate downsampling stage needed downstream.
+    audio_capture_node = Node(
+        package="audio_capture",
+        executable="audio_capture_node",
+        name="audio_capture",
+        namespace="audio",
+        output="screen",
+        parameters=[{
+            "src": "alsasrc",
+            "dst": "appsink",
+            "device": LaunchConfiguration("audio_device"),
+            "format": "mp3",
+            "bitrate": LaunchConfiguration("audio_bitrate_kbps"),
+            "channels": 1,
+            "depth": 16,
+            "sample_rate": 16000,
+            "sample_format": "S16LE",
+        }],
+        condition=IfCondition(LaunchConfiguration("record_audio")),
+    )
+
+    # Captures at a reduced resolution (video_image_size) and republishes
+    # via image_transport, which -- once compressed_image_transport is
+    # installed -- lazily advertises a JPEG .../compressed sibling topic the
+    # instant something subscribes to it (the throttle node below does).
+    # Only ever publishes raw frames to a live subscriber of image_raw
+    # itself; nothing here subscribes to that, so the uncompressed stream
+    # never actually flows.
+    v4l2_camera_node = Node(
+        package="v4l2_camera",
+        executable="v4l2_camera_node",
+        name="camera",
+        output="screen",
+        parameters=[{
+            "video_device": LaunchConfiguration("video_device"),
+            "image_size": LaunchConfiguration("video_image_size"),
+            # See video_jpeg_quality_arg -- best-effort parameter name,
+            # not yet verified live.
+            "image_raw.compressed.jpeg_quality": LaunchConfiguration("video_jpeg_quality"),
+        }],
+        remappings=[
+            ("image_raw", "/camera/image_raw"),
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    # Second downsampling step (see module docstring): caps the compressed
+    # topic to video_fps before it's recorded, independent of whatever
+    # frame rate the camera hardware/driver actually produces. Subscribing
+    # to /camera/image_raw/compressed here is also what makes
+    # compressed_image_transport's lazy publisher on v4l2_camera_node
+    # actually turn on in the first place.
+    video_throttle_node = Node(
+        package="topic_tools",
+        executable="throttle",
+        name="camera_throttle",
+        output="screen",
+        arguments=[
+            "messages",
+            "/camera/image_raw/compressed",
+            LaunchConfiguration("video_fps"),
+            "/camera/image_raw/compressed_throttled",
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
     # Real rosbag of the key torque/state/status topics plus /rosout
     # (folds in every WARN/ERROR log line too, so recorded data and log
     # messages line up in one place) -- see record_rosbag_arg. Topics are
     # captured wherever they're published in the ROS graph, so this picks
     # up gen3_torque_control's joint_states_topic and
-    # /gen3_torque_control/status,
-    # and press_to_pin's /residuals and /press_events, even though neither
-    # node is started by this launch file -- covers a press_to_pin
-    # threshold-calibration pass (run press_to_pin.launch.py alongside this)
-    # with real recorded per-joint residual data, not just a live PlotJuggler
-    # view with nothing kept afterward.
+    # /gen3_torque_control/status.
     #
-    # /press_to_pin/test_marker has no publisher in this graph -- it's for
-    # `ros2 topic pub --once /press_to_pin/test_marker std_msgs/msg/String
-    # "{data: 'j2_link2_bottom_toward_base'}"` run by hand right before each
-    # calibration press, so the bag has a precise, labeled timestamp for
-    # what was pressed/where/which direction instead of relying on a
-    # stopwatch or memory to line presses up with residual peaks afterward.
+    # /virtual_spring_node/springs_updated is a latched std_msgs/String
+    # publishing the full current list of spring names as JSON on every
+    # add/remove/update (see virtual_spring_node.py's _publish_springs_
+    # updated) -- recording it gives a timestamped history of the spring
+    # roster for the run; diffing consecutive messages in the bag recovers
+    # exactly which spring was created or destroyed and when.
+    #
+    # /audio/audio and /camera/image_raw/compressed_throttled are recorded
+    # unconditionally here even though audio_capture_node/v4l2_camera_node/
+    # video_throttle_node above only actually run when record_audio:=true /
+    # record_video:=true -- same pattern as press_to_pin's topics used to
+    # follow (a bag recorder subscribed to a topic nobody's publishing on
+    # just records nothing for it, harmlessly) so record_audio/record_video
+    # can be toggled without also having to edit this topic list.
     record_rosbag = ExecuteProcess(
         cmd=[
             "ros2", "bag", "record",
@@ -453,11 +642,11 @@ def generate_launch_description():
             "/virtual_spring_node/joint_torques",
             "/virtual_spring_node/repulsion_torques",
             "/virtual_spring_node/safety_status",
+            "/virtual_spring_node/springs_updated",
             "/kinova/joint_torque_command",
             "/gen3_torque_control/status",
-            "/press_to_pin/residuals",
-            "/press_to_pin/press_events",
-            "/press_to_pin/test_marker",
+            "/audio/audio",
+            "/camera/image_raw/compressed_throttled",
             "/rosout",
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
@@ -496,11 +685,22 @@ def generate_launch_description():
         meshcat_port_arg,
         record_rosbag_arg,
         rosbag_dir_arg,
+        record_audio_arg,
+        audio_device_arg,
+        audio_bitrate_kbps_arg,
+        record_video_arg,
+        video_device_arg,
+        video_image_size_arg,
+        video_fps_arg,
+        video_jpeg_quality_arg,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
         load_collision_scene,
         meshcat_server_process,
         armviz_process,
+        audio_capture_node,
+        v4l2_camera_node,
+        video_throttle_node,
         record_rosbag,
     ])
