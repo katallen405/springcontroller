@@ -24,7 +24,7 @@ import yaml
 
 CM_TO_M = 0.01
 
-# Elbow-height band above the table (world z=0, see gen3_live_table_scene.yaml),
+# Elbow-height band above the table (world z=0, see gen3_collision_scene.yaml),
 # and the eye-level cone the workspace must stay within -- both are fixed
 # ergonomic specs for this study, independent of what unit measurements are
 # entered in.
