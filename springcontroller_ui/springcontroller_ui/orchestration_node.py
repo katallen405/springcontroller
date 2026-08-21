@@ -59,6 +59,7 @@ from rcl_interfaces.msg import ParameterType
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring, CheckCollisionAtAngles
 from springcontroller_ui_interfaces.srv import (
+    AssignConditionOrder,
     EnableTorqueControl,
     FinalizeStudyConditions,
     GetLinkPose,
@@ -69,6 +70,7 @@ from springcontroller_ui_interfaces.srv import (
 
 from springcontroller_ui.study_start_preset import load_preset, save_preset
 from springcontroller_ui.study_workspace_config import (
+    assign_condition_order,
     compute_candidate_center,
     compute_condition_params,
     log_measurement,
@@ -319,6 +321,8 @@ class StudyControlPanelNode(Node):
                              self._preview_workspace_center_cb, callback_group=cb_group)
         self.create_service(FinalizeStudyConditions, "~/finalize_study_conditions",
                              self._finalize_study_conditions_cb, callback_group=cb_group)
+        self.create_service(AssignConditionOrder, "~/assign_condition_order",
+                             self._assign_condition_order_cb, callback_group=cb_group)
 
         self.get_logger().info("study_control_panel_node ready.")
 
@@ -923,6 +927,34 @@ class StudyControlPanelNode(Node):
         response.condition1_path = condition1_path
         response.condition2_path = condition2_path
         response.warnings = condition_params["warnings"]
+        return response
+
+    def _assign_condition_order_cb(self, request, response):
+        if not request.participant_id.strip():
+            response.success = False
+            response.message = "participant_id is required."
+            response.first_condition = ""
+            response.already_assigned = False
+            return response
+
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        assignments_path = os.path.join(data_dir, "condition_order.csv")
+
+        try:
+            first_condition, already_assigned = assign_condition_order(
+                assignments_path, request.participant_id,
+            )
+        except OSError as e:
+            response.success = False
+            response.message = f"Failed reading/writing condition order assignments: {e}"
+            response.first_condition = ""
+            response.already_assigned = False
+            return response
+
+        response.success = True
+        response.message = "ok"
+        response.first_condition = first_condition
+        response.already_assigned = already_assigned
         return response
 
 

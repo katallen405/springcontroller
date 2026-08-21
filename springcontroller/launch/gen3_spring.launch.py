@@ -23,12 +23,50 @@ Prerequisites
       # 2026-08-19: virtual_spring_node's own remap was dropped in a WIP
       # snapshot commit on 2026-08-03 and never restored, while armviz's
       # matching remap was restored separately -- the two fell out of sync.
+
+Audio/video recording (record_audio:=true / record_video:=true)
+------------------------------------------------------------
+  Needs: sudo apt install ros-kilted-audio-capture ros-kilted-v4l2-camera \
+      ros-kilted-compressed-image-transport ros-kilted-topic-tools
+  audio_capture_node encodes straight to mp3 (mono, 16kHz, ~64kbps by
+  default) -- already small enough for the bag, no separate downsampling
+  step needed. Video is downsampled twice, once per camera (this file
+  drives two -- see video_device/video_device2 below): v4l2_camera_node
+  captures at video_image_size (default 640x480, well below most webcams'
+  native resolution) and publishes a lazy JPEG .../compressed topic (via
+  compressed_image_transport) the instant something subscribes to it; a
+  topic_tools throttle node then caps that to video_fps (default 10) before
+  it's recorded -- only the throttled+compressed topic goes in the bag,
+  never the raw feed. video_jpeg_quality is applied via a delayed
+  `ros2 param set` rather than a static launch parameter -- see
+  video_jpeg_quality_arg for why. Live-verified 2026-08-21 against two
+  real USB cameras + a mic; video size vs. quality tradeoff still being
+  tuned (see project memory for the running notes).
+
+Study-participant rosbag routing (participant_id:=... condition_name:=...)
+------------------------------------------------------------
+  If participant_id is set, the rosbag routes into
+  ~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- the same
+  directory orchestration_node's ~/finalize_study_conditions service (see
+  springcontroller_ui) writes condition1.yaml/condition2.yaml into.
+  condition_name (e.g. 'condition1') labels the bag's output directory
+  name. Assumes gen3_spring.launch.py gets relaunched fresh per condition
+  (Ctrl-C, then relaunch with config:=.../condition2.yaml
+  condition_name:=condition2) rather than one long-running launch
+  switching conditions live -- see participant_id_arg/condition_name_arg.
 """
 
 import os
+from datetime import datetime
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    OpaqueFunction,
+    SetEnvironmentVariable,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -285,7 +323,172 @@ def generate_launch_description():
         description=(
             "Directory bag files are written under (ros2 bag auto-names "
             "each run within it). A non-default override must already "
-            "exist -- only the default is created automatically."
+            "exist -- only the default is created automatically. Ignored "
+            "if participant_id is set (see participant_id_arg below) -- "
+            "that routes the bag into ~/gen3_study_data/<participant_id>/ "
+            "instead."
+        ),
+    )
+
+    participant_id_arg = DeclareLaunchArgument(
+        "participant_id",
+        default_value="",
+        description=(
+            "If set, routes the rosbag (see record_rosbag_arg) into "
+            "~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- "
+            "the same per-participant directory "
+            "orchestration_node's ~/finalize_study_conditions service "
+            "already writes condition1.yaml/condition2.yaml into (see "
+            "springcontroller_ui/orchestration_node.py), so a "
+            "participant's condition config and recordings end up side by "
+            "side. Empty (default) keeps the old flat rosbag_dir behavior "
+            "unchanged -- this launch file has no other dependency on "
+            "springcontroller_ui and doesn't require it to be running."
+        ),
+    )
+
+    condition_name_arg = DeclareLaunchArgument(
+        "condition_name",
+        default_value="",
+        description=(
+            "If set (and participant_id is too), labels the rosbag's "
+            "output directory name with this condition, e.g. 'condition1' "
+            "to match orchestration_node's fixed condition1.yaml/"
+            "condition2.yaml filenames -- plus a timestamp suffix so "
+            "re-running the same condition (a redo, an aborted run) "
+            "doesn't collide with `ros2 bag record`'s hard failure on an "
+            "already-existing output directory. Purely a label -- doesn't "
+            "need to match any file on disk, and can be any string (not "
+            "just 'condition1'/'condition2'). Ignored if participant_id "
+            "is empty."
+        ),
+    )
+
+    record_audio_arg = DeclareLaunchArgument(
+        "record_audio",
+        default_value="false",
+        description=(
+            "If true, launch audio_capture_node (package ros-kilted-"
+            "audio-capture, not installed on this dev machine as of "
+            "2026-08-21 -- see module docstring) and mic-capture audio for "
+            "the run. Defaults to false, same reasoning as armviz:= -- "
+            "needs real hardware/a package this box doesn't have yet, so "
+            "it's an explicit opt-in rather than something that fails "
+            "loudly on every plain control-code launch."
+        ),
+    )
+
+    audio_device_arg = DeclareLaunchArgument(
+        "audio_device",
+        default_value="",
+        description=(
+            "ALSA device string for audio_capture_node (empty = system "
+            "default capture device, e.g. whichever mic is plugged in). "
+            "Only used when record_audio:=true."
+        ),
+    )
+
+    audio_bitrate_kbps_arg = DeclareLaunchArgument(
+        "audio_bitrate_kbps",
+        default_value="64",
+        description=(
+            "mp3 encode bitrate audio_capture_node compresses to before "
+            "publishing -- mono/16kHz/64kbps is already small enough that "
+            "no further downsampling step is needed to keep a 15+ minute "
+            "run's audio out of the bag's way (roughly 7-8MB per 15 "
+            "minutes at this default)."
+        ),
+    )
+
+    record_video_arg = DeclareLaunchArgument(
+        "record_video",
+        default_value="false",
+        description=(
+            "If true, launch v4l2_camera_node plus a topic_tools throttle "
+            "node and record downsampled webcam video for the run. "
+            "Defaults to false, same reasoning as record_audio:= above -- "
+            "needs a camera and packages not installed on this dev machine "
+            "as of 2026-08-21 (see module docstring)."
+        ),
+    )
+
+    video_device_arg = DeclareLaunchArgument(
+        "video_device",
+        default_value="/dev/v4l/by-id/usb-USB_CAMERA_USB_CAMERA_240725172848-video-index0",
+        description=(
+            "V4L2 device path for the first camera (v4l2_camera_node). "
+            "Only used when record_video:=true. Defaults to a "
+            "/dev/v4l/by-id/... symlink (identifies this specific USB "
+            "device by its serial) rather than a plain /dev/videoN path -- "
+            "confirmed live 2026-08-21 this dev machine has two cameras "
+            "plugged in and plain /dev/videoN numbering depends on USB "
+            "enumeration order, which can shift after a reboot or "
+            "unplug/replug; the by-id symlink doesn't. Run `ls "
+            "/dev/v4l/by-id/` to find the right symlink for a given "
+            "machine/camera if this default doesn't match."
+        ),
+    )
+
+    video_device2_arg = DeclareLaunchArgument(
+        "video_device2",
+        default_value="/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_91E4D430-video-index0",
+        description=(
+            "V4L2 device path for the second camera (v4l2_camera_node2), "
+            "same reasoning as video_device above. Only used when "
+            "record_video:=true -- both cameras share that one toggle, "
+            "there's no way to enable just one from the command line."
+        ),
+    )
+
+    video_image_size_arg = DeclareLaunchArgument(
+        "video_image_size",
+        default_value="[640, 480]",
+        description=(
+            "Capture resolution both v4l2_camera_node and v4l2_camera_node2 "
+            "are told to request from their cameras, well below most "
+            "webcams' native resolution -- the first (and cheapest) of the "
+            "two downsampling steps applied to video before it's recorded "
+            "(see video_fps below for the second). Shared by both cameras, "
+            "no per-camera override. Passed through as YAML so it must "
+            "stay valid YAML list syntax, e.g. '[1280, 720]'."
+        ),
+    )
+
+    video_fps_arg = DeclareLaunchArgument(
+        "video_fps",
+        default_value="10",
+        description=(
+            "Frame rate the topic_tools throttle nodes (one per camera) "
+            "cap their compressed video topic to before it's recorded -- "
+            "the second of the two downsampling steps (see video_image_size "
+            "above for the first). Applied downstream of v4l2_camera_node "
+            "rather than via a camera-driver frame-rate parameter so it "
+            "works regardless of what frame rates the attached camera "
+            "actually supports. Shared by both cameras, no per-camera "
+            "override."
+        ),
+    )
+
+    video_jpeg_quality_arg = DeclareLaunchArgument(
+        "video_jpeg_quality",
+        default_value="60",
+        description=(
+            "JPEG quality (0-100) for compressed_image_transport's lazy "
+            ".../compressed publisher on v4l2_camera_node -- the default "
+            "95 is needlessly large for a study recording; 60 is meant to "
+            "be noticeably smaller with no visible quality loss at this "
+            "resolution. Applied via a delayed `ros2 param set` "
+            "(set_video_jpeg_quality below), not as a static launch "
+            "parameter -- confirmed live 2026-08-21: passing this as a "
+            "startup parameter override left it declared-but-NOT_SET "
+            "('ros2 param get' -> \"Parameter not set\"), since "
+            "compressed_image_transport only declares this parameter once "
+            "something actually subscribes to .../compressed, and the "
+            "override didn't survive to that late declare_parameter() "
+            "call. NOTE: still not confirmed that a live `ros2 param set` "
+            "actually changes subsequent frames' encoded size -- check "
+            "with a bag-size comparison across two quality values before "
+            "relying on it for a long/unattended run."
         ),
     )
 
@@ -420,50 +623,252 @@ def generate_launch_description():
         ],
     )
 
+    # mp3-encoded mic capture -- see record_audio_arg / module docstring.
+    # Already compressed at the source (no raw PCM ever hits a topic), so
+    # unlike video there's no separate downsampling stage needed downstream.
+    audio_capture_node = Node(
+        package="audio_capture",
+        executable="audio_capture_node",
+        name="audio_capture",
+        namespace="audio",
+        output="screen",
+        parameters=[{
+            "src": "alsasrc",
+            "dst": "appsink",
+            "device": LaunchConfiguration("audio_device"),
+            "format": "mp3",
+            "bitrate": LaunchConfiguration("audio_bitrate_kbps"),
+            "channels": 1,
+            "depth": 16,
+            "sample_rate": 16000,
+            "sample_format": "S16LE",
+        }],
+        condition=IfCondition(LaunchConfiguration("record_audio")),
+    )
+
+    # First of two cameras (see video_device2_arg / v4l2_camera_node2 below
+    # for the second) -- confirmed live 2026-08-21 this dev machine has two
+    # USB cameras plugged in and only one was ever being captured/recorded,
+    # so the second silently had no topic at all for rqt_image_view to show.
+    #
+    # Captures at a reduced resolution (video_image_size) and republishes
+    # via image_transport, which -- once compressed_image_transport is
+    # installed -- lazily advertises a JPEG .../compressed sibling topic the
+    # instant something subscribes to it (the throttle node below does).
+    # Only ever publishes raw frames to a live subscriber of image_raw
+    # itself; nothing here subscribes to that, so the uncompressed stream
+    # never actually flows.
+    v4l2_camera_node = Node(
+        package="v4l2_camera",
+        executable="v4l2_camera_node",
+        name="camera",
+        output="screen",
+        parameters=[{
+            "video_device": LaunchConfiguration("video_device"),
+            "image_size": LaunchConfiguration("video_image_size"),
+            # jpeg_quality is NOT set here -- see video_jpeg_quality_arg /
+            # set_video_jpeg_quality below for why a static override doesn't
+            # work for this particular parameter.
+        }],
+        remappings=[
+            ("image_raw", "/camera/image_raw"),
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    # Second downsampling step (see module docstring): caps the compressed
+    # topic to video_fps before it's recorded, independent of whatever
+    # frame rate the camera hardware/driver actually produces. Subscribing
+    # to /camera/image_raw/compressed here is also what makes
+    # compressed_image_transport's lazy publisher on v4l2_camera_node
+    # actually turn on in the first place.
+    #
+    # Output topic ends in /compressed, not /compressed_throttled -- confirmed
+    # live 2026-08-21: image_transport-aware viewers (rqt_image_view,
+    # image_view) parse a topic's *last* path segment as a transport-plugin
+    # name (<base_topic>/<transport>, e.g. .../compressed), so naming this
+    # .../compressed_throttled made them try to load a nonexistent
+    # "compressed_throttled" transport plugin and fail outright. Only "raw"
+    # and "compressed" are real registered transport suffixes -- putting
+    # "_throttled" on the base-topic segment instead keeps this a normal,
+    # viewer-compatible /<base>/compressed topic.
+    video_throttle_node = Node(
+        package="topic_tools",
+        executable="throttle",
+        name="camera_throttle",
+        output="screen",
+        arguments=[
+            "messages",
+            "/camera/image_raw/compressed",
+            LaunchConfiguration("video_fps"),
+            "/camera/image_raw_throttled/compressed",
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    # Sets JPEG quality via `ros2 param set` a few seconds after launch,
+    # rather than as a static launch parameter on v4l2_camera_node -- see
+    # video_jpeg_quality_arg for why the static form doesn't work
+    # (compressed_image_transport declares this parameter lazily, only once
+    # video_throttle_node above actually subscribes to .../compressed, and a
+    # startup-time override doesn't survive to that late declare_parameter()
+    # call). 5s gives the camera/throttle chain time to be fully up and the
+    # parameter actually declared first -- same delayed-call reasoning as
+    # load_collision_scene above, with extra margin since this depends on
+    # two nodes (camera + throttle) instead of one being ready.
+    set_video_jpeg_quality = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "param", "set", "/camera",
+                    "image_raw.compressed.jpeg_quality",
+                    LaunchConfiguration("video_jpeg_quality"),
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_video")),
+            )
+        ],
+    )
+
+    # Second camera -- mirrors v4l2_camera_node/video_throttle_node/
+    # set_video_jpeg_quality above exactly, just against video_device2 and
+    # topic names under /camera2 instead of /camera. Shares the single
+    # record_video toggle (see video_device2_arg) and the same
+    # video_image_size/video_fps/video_jpeg_quality settings -- no
+    # independent per-camera tuning.
+    v4l2_camera_node2 = Node(
+        package="v4l2_camera",
+        executable="v4l2_camera_node",
+        name="camera2",
+        output="screen",
+        parameters=[{
+            "video_device": LaunchConfiguration("video_device2"),
+            "image_size": LaunchConfiguration("video_image_size"),
+        }],
+        remappings=[
+            ("image_raw", "/camera2/image_raw"),
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    video_throttle_node2 = Node(
+        package="topic_tools",
+        executable="throttle",
+        name="camera2_throttle",
+        output="screen",
+        arguments=[
+            "messages",
+            "/camera2/image_raw/compressed",
+            LaunchConfiguration("video_fps"),
+            "/camera2/image_raw_throttled/compressed",
+        ],
+        condition=IfCondition(LaunchConfiguration("record_video")),
+    )
+
+    set_video_jpeg_quality2 = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "param", "set", "/camera2",
+                    "image_raw.compressed.jpeg_quality",
+                    LaunchConfiguration("video_jpeg_quality"),
+                ],
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_video")),
+            )
+        ],
+    )
+
     # Real rosbag of the key torque/state/status topics plus /rosout
     # (folds in every WARN/ERROR log line too, so recorded data and log
     # messages line up in one place) -- see record_rosbag_arg. Topics are
     # captured wherever they're published in the ROS graph, so this picks
     # up gen3_torque_control's joint_states_topic and
-    # /gen3_torque_control/status,
-    # and press_to_pin's /residuals and /press_events, even though neither
-    # node is started by this launch file -- covers a press_to_pin
-    # threshold-calibration pass (run press_to_pin.launch.py alongside this)
-    # with real recorded per-joint residual data, not just a live PlotJuggler
-    # view with nothing kept afterward.
+    # /gen3_torque_control/status.
     #
-    # /press_to_pin/test_marker has no publisher in this graph -- it's for
-    # `ros2 topic pub --once /press_to_pin/test_marker std_msgs/msg/String
-    # "{data: 'j2_link2_bottom_toward_base'}"` run by hand right before each
-    # calibration press, so the bag has a precise, labeled timestamp for
-    # what was pressed/where/which direction instead of relying on a
-    # stopwatch or memory to line presses up with residual peaks afterward.
-    record_rosbag = ExecuteProcess(
-        cmd=[
-            "ros2", "bag", "record",
-            # Write to disk immediately instead of batching in an in-memory
-            # cache -- trades a little write throughput for the bag actually
-            # being (mostly) readable if the recorder has to be hard-killed.
-            # Confirmed live 2026-08-19: rosbag2's writer needs a clean
-            # shutdown to finalize, so a Ctrl-\ during an e-stop incident
-            # meant the bag for that whole session was lost outright, even
-            # though the per-node ~/.ros/log/ text logs survived fine.
-            "--max-cache-size", "0",
-            LaunchConfiguration("joint_states_topic"),
-            "/virtual_spring_node/joint_torques",
-            "/virtual_spring_node/repulsion_torques",
-            "/virtual_spring_node/safety_status",
-            "/kinova/joint_torque_command",
-            "/gen3_torque_control/status",
-            "/press_to_pin/residuals",
-            "/press_to_pin/press_events",
-            "/press_to_pin/test_marker",
-            "/rosout",
-        ],
-        cwd=LaunchConfiguration("rosbag_dir"),
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("record_rosbag")),
-    )
+    # /virtual_spring_node/springs_updated is a latched std_msgs/String
+    # publishing the full current list of spring names as JSON on every
+    # add/remove/update (see virtual_spring_node.py's _publish_springs_
+    # updated) -- recording it gives a timestamped history of the spring
+    # roster for the run; diffing consecutive messages in the bag recovers
+    # exactly which spring was created or destroyed and when.
+    #
+    # /audio/audio and the two /cameraN/image_raw_throttled/compressed
+    # topics are recorded unconditionally here even though
+    # audio_capture_node/v4l2_camera_node(2)/video_throttle_node(2) above
+    # only actually run when record_audio:=true / record_video:=true --
+    # same pattern as press_to_pin's topics used to follow (a bag recorder
+    # subscribed to a topic nobody's publishing on just records nothing for
+    # it, harmlessly) so record_audio/record_video can be toggled without
+    # also having to edit this topic list.
+    #
+    # Wrapped in an OpaqueFunction (rather than a plain ExecuteProcess, like
+    # every other action in this file) because routing into
+    # ~/gen3_study_data/<participant_id>/ needs the *actual* participant_id
+    # string at launch time -- to build that path and os.makedirs() it
+    # before `ros2 bag record` starts (a bad cwd is an immediate hard
+    # failure, not a graceful retry, same as DEFAULT_ROSBAG_DIR's eager
+    # makedirs above). LaunchConfiguration substitutions aren't resolved to
+    # real strings until here, inside a function launch calls at launch
+    # time with a `context` to resolve against -- generate_launch_description
+    # itself only ever sees unresolved substitution objects.
+    def _make_record_rosbag_action(context, *args, **kwargs):
+        participant_id = LaunchConfiguration("participant_id").perform(context)
+        condition_name = LaunchConfiguration("condition_name").perform(context)
+
+        if participant_id:
+            bag_dir = os.path.join(
+                os.path.expanduser("~/gen3_study_data"), participant_id
+            )
+            os.makedirs(bag_dir, exist_ok=True)
+            output_name_args = []
+            if condition_name:
+                # Timestamp suffix so a redo/aborted-run retry under the same
+                # condition_name doesn't collide with `ros2 bag record -o`'s
+                # hard failure on an already-existing output directory --
+                # same format rosbag2's own default auto-naming uses.
+                ts = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+                output_name_args = ["-o", f"{condition_name}_{ts}"]
+        else:
+            bag_dir = LaunchConfiguration("rosbag_dir").perform(context)
+            output_name_args = []
+
+        return [
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "bag", "record",
+                    # Write to disk immediately instead of batching in an
+                    # in-memory cache -- trades a little write throughput
+                    # for the bag actually being (mostly) readable if the
+                    # recorder has to be hard-killed. Confirmed live
+                    # 2026-08-19: rosbag2's writer needs a clean shutdown to
+                    # finalize, so a Ctrl-\ during an e-stop incident meant
+                    # the bag for that whole session was lost outright,
+                    # even though the per-node ~/.ros/log/ text logs
+                    # survived fine.
+                    "--max-cache-size", "0",
+                    *output_name_args,
+                    LaunchConfiguration("joint_states_topic"),
+                    "/virtual_spring_node/joint_torques",
+                    "/virtual_spring_node/repulsion_torques",
+                    "/virtual_spring_node/safety_status",
+                    "/virtual_spring_node/springs_updated",
+                    "/kinova/joint_torque_command",
+                    "/gen3_torque_control/status",
+                    "/audio/audio",
+                    "/camera/image_raw_throttled/compressed",
+                    "/camera2/image_raw_throttled/compressed",
+                    "/rosout",
+                ],
+                cwd=bag_dir,
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("record_rosbag")),
+            )
+        ]
+
+    record_rosbag = OpaqueFunction(function=_make_record_rosbag_action)
 
     return LaunchDescription([
         # Keep all ROS2/DDS traffic on loopback, off the Gen3's dedicated
@@ -496,11 +901,29 @@ def generate_launch_description():
         meshcat_port_arg,
         record_rosbag_arg,
         rosbag_dir_arg,
+        participant_id_arg,
+        condition_name_arg,
+        record_audio_arg,
+        audio_device_arg,
+        audio_bitrate_kbps_arg,
+        record_video_arg,
+        video_device_arg,
+        video_device2_arg,
+        video_image_size_arg,
+        video_fps_arg,
+        video_jpeg_quality_arg,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
         load_collision_scene,
         meshcat_server_process,
         armviz_process,
+        audio_capture_node,
+        v4l2_camera_node,
+        video_throttle_node,
+        set_video_jpeg_quality,
+        v4l2_camera_node2,
+        video_throttle_node2,
+        set_video_jpeg_quality2,
         record_rosbag,
     ])
