@@ -1,0 +1,7 @@
+string participant_id
+string data_dir
+---
+bool success
+string message
+string first_condition
+bool already_assigned

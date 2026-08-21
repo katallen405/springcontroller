@@ -195,3 +195,51 @@ def log_measurement(
             writer.writeheader()
         writer.writerow(row)
         f.flush()
+
+
+def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[str, bool]:
+    """
+    Counterbalances which condition (condition1 vs condition2) a
+    participant should run first: alternates based on how many
+    participants have already been assigned, so roughly half the study
+    runs condition1-first and half condition2-first regardless of
+    enrollment order. Idempotent -- looking up a participant_id that's
+    already been assigned returns that same order again (never
+    re-randomizes/flip-flops on a repeat visit to the panel).
+
+    Kept in its own small append-only CSV rather than reusing
+    measurements.csv (see log_measurement) since assignment needs to
+    happen *before* the workspace-calibration flow that produces a
+    measurements.csv row -- an experimenter may open the panel to check
+    a participant's assigned order well before (or without ever)
+    finalizing that participant's condition files that session.
+
+    Returns (first_condition, already_assigned).
+    """
+    assignments_path = os.path.expanduser(assignments_path)
+    os.makedirs(os.path.dirname(assignments_path), exist_ok=True)
+
+    rows: list[dict] = []
+    if os.path.isfile(assignments_path):
+        with open(assignments_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+
+    for row in rows:
+        if row["participant_id"] == participant_id:
+            return row["first_condition"], True
+
+    first_condition = "condition1" if len(rows) % 2 == 0 else "condition2"
+    new_row = {
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "participant_id": participant_id,
+        "first_condition": first_condition,
+    }
+    is_new = not os.path.isfile(assignments_path)
+    with open(assignments_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(new_row.keys()))
+        if is_new:
+            writer.writeheader()
+        writer.writerow(new_row)
+        f.flush()
+
+    return first_condition, False
