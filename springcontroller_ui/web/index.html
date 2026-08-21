@@ -310,7 +310,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <div class="row">
           <label>Link
-            <select id="wc-link"></select>
+            <select id="wc-link" onchange="applyLinkPresetIfSelected('wc-link','wc-lx','wc-ly','wc-lz')"></select>
           </label>
           <label>local x <input type="number" step="0.01" id="wc-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="wc-ly" value="0"></label>
@@ -325,13 +325,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <button class="action off" onclick="captureCurrentAsWorkspaceTarget()">Capture current location as workspace target</button>
           <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
-        </div>
-        <p class="hint">Named locations (offset is world-frame, added to the link's current position -- see "Add / remove springs" below for saving one):</p>
-        <div class="row">
-          <label>Named location
-            <select id="wc-named-loc"></select>
-          </label>
-          <button class="action off" onclick="useNamedLocationForWorkspaceTarget()">Set workspace target from named location</button>
         </div>
       </div>
       <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
@@ -365,7 +358,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <div class="row">
           <label>Link
-            <select id="sp-link"></select>
+            <select id="sp-link" onchange="applyLinkPresetIfSelected('sp-link','sp-lx','sp-ly','sp-lz')"></select>
           </label>
           <label>offset x <input type="number" step="0.01" id="sp-off-x" value="0"></label>
           <label>offset y <input type="number" step="0.01" id="sp-off-y" value="0"></label>
@@ -373,14 +366,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <button class="action off" onclick="fetchCurrentPositionWithOffset()" style="padding:6px 10px;font-size:12.5px">Use current position of link + offset</button>
         </div>
         <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- leave all zero to just use the link's current position. Different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
-        <div class="row">
-          <label>Named location
-            <select id="sp-named-loc"></select>
-          </label>
-          <button class="action off" onclick="useNamedLocationForSpringTarget()">Use for target</button>
-          <label>save as <input type="text" id="sp-named-loc-name" value="" style="width:110px"></label>
-          <button class="action off" onclick="saveNamedLocationFromSpringPanel()">Save link + offset above as named location</button>
-        </div>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
           <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
@@ -446,8 +431,6 @@ const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
 const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type: 'springcontroller_ui_interfaces/srv/GetLinkPose' };
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
-const svcSaveNamedLocation  = { name: NODE + '/save_named_location',  type: 'springcontroller_ui_interfaces/srv/SaveNamedLocation' };
-const svcListNamedLocations = { name: NODE + '/list_named_locations', type: 'springcontroller_ui_interfaces/srv/ListNamedLocations' };
 const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
 const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
@@ -704,19 +687,54 @@ function updateSpringTypeFields() {
 // robot's link names.
 const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
 
+// Presets for the link dropdowns: a synthetic entry that's really a real
+// link name plus a fixed *local*-frame attachment offset -- i.e. it
+// defines the arm-side end of a spring (rotates with the link, like any
+// other local_point), not a target/point in world space. No UI to create
+// more of these yet -- just this one, hardcoded, since that's all that's
+// needed right now (world-space named locations were considered and
+// pushed past this study's 2026-09-18 deadline).
+const LINK_PRESETS = {
+  block: { link_name: 'end_effector_link', local_point: [0, 0, 0.15] },
+};
+
+// Every backend call needs a real URDF frame name -- resolves a dropdown's
+// selected value through LINK_PRESETS if it's a preset, otherwise passes a
+// real link name through unchanged.
+function resolveLinkName(value) {
+  return LINK_PRESETS[value] ? LINK_PRESETS[value].link_name : value;
+}
+
+// When a preset is selected, fill in the local x/y/z fields that go with
+// it (still just a starting point -- editable like any other value here).
+function applyLinkPresetIfSelected(linkSelId, lxId, lyId, lzId) {
+  const preset = LINK_PRESETS[document.getElementById(linkSelId).value];
+  if (!preset) return;
+  document.getElementById(lxId).value = preset.local_point[0];
+  document.getElementById(lyId).value = preset.local_point[1];
+  document.getElementById(lzId).value = preset.local_point[2];
+}
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
     const names = resp.link_names || [];
     const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
     const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
-    const addOption = function(parent, name) {
+    const addOption = function(parent, name, label) {
       const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
+      opt.value = name; opt.textContent = label || name;
       parent.appendChild(opt);
     };
     ['sp-link', 'wc-link'].forEach(function(selId) {
       const sel = document.getElementById(selId);
       sel.innerHTML = '';
+      const presetGroup = document.createElement('optgroup');
+      presetGroup.label = 'Presets';
+      Object.keys(LINK_PRESETS).forEach(function(name) {
+        const p = LINK_PRESETS[name];
+        addOption(presetGroup, name, name + ' (' + p.link_name + ' + ' + p.local_point.join(',') + ')');
+      });
+      sel.appendChild(presetGroup);
       if (favorites.length > 0 && rest.length > 0) {
         const favGroup = document.createElement('optgroup');
         favGroup.label = 'Likely tool/end-effector links';
@@ -741,8 +759,8 @@ function populateLinkDropdown() {
 // Resolves link's *current* position plus a world-frame (dx,dy,dz) offset --
 // doesn't rotate with the link, unlike get_link_pose's own local_point
 // field (that one's for a spring's own attachment point; this is for
-// defining a target/named-location relative to wherever some other link
-// happens to be right now).
+// defining a target relative to wherever some other link happens to be
+// right now).
 function resolveLinkWorldOffset(link, dx, dy, dz, onOk, onErr) {
   callService(svcGetLinkPose, { link_name: link }, function(resp) {
     if (!resp.success) { onErr(resp.message); return; }
@@ -751,7 +769,7 @@ function resolveLinkWorldOffset(link, dx, dy, dz, onOk, onErr) {
 }
 
 function fetchCurrentPositionWithOffset() {
-  const link = document.getElementById('sp-link').value;
+  const link = resolveLinkName(document.getElementById('sp-link').value);
   const dx = parseFloat(document.getElementById('sp-off-x').value);
   const dy = parseFloat(document.getElementById('sp-off-y').value);
   const dz = parseFloat(document.getElementById('sp-off-z').value);
@@ -767,88 +785,14 @@ function fetchCurrentPositionWithOffset() {
   }, function(msg) { showMsg('spring-msg', false, msg); });
 }
 
-// ---- named locations ---------------------------------------------------
-// A named location is (link_name, world-frame offset) -- saved server-side
-// so it's shared between this panel and the workspace-calibration panel
-// above, and re-resolved against the link's *current* position every time
-// it's used (see resolveLinkWorldOffset), not frozen at save time.
-let namedLocations = {};
-
-function populateNamedLocationsDropdown() {
-  callService(svcListNamedLocations, {}, function(resp) {
-    if (!resp.success) return;
-    namedLocations = {};
-    for (let i = 0; i < resp.names.length; i++) {
-      namedLocations[resp.names[i]] = {
-        link_name: resp.link_names[i],
-        offset: [resp.offset_x[i], resp.offset_y[i], resp.offset_z[i]],
-      };
-    }
-    ['sp-named-loc', 'wc-named-loc'].forEach(function(selId) {
-      const sel = document.getElementById(selId);
-      const previous = sel.value;
-      sel.innerHTML = '';
-      resp.names.forEach(function(name) {
-        const opt = document.createElement('option');
-        opt.value = name; opt.textContent = name;
-        sel.appendChild(opt);
-      });
-      if (resp.names.includes(previous)) sel.value = previous;
-    });
-  });
-}
-
-function saveNamedLocationFromSpringPanel() {
-  const name = document.getElementById('sp-named-loc-name').value.trim();
-  if (!name) { showMsg('spring-msg', false, 'Enter a name to save this location as.'); return; }
-  const link = document.getElementById('sp-link').value;
-  const offset = [parseFloat(document.getElementById('sp-off-x').value),
-                   parseFloat(document.getElementById('sp-off-y').value),
-                   parseFloat(document.getElementById('sp-off-z').value)];
-  if (!offset.every(isFinite)) { showMsg('spring-msg', false, 'Offset x/y/z must all be numbers.'); return; }
-  callService(svcSaveNamedLocation, { name: name, link_name: link, offset: offset }, function(resp) {
-    showMsg('spring-msg', resp.success, resp.message);
-    if (resp.success) populateNamedLocationsDropdown();
-  }, function(err) { showMsg('spring-msg', false, 'save_named_location failed: ' + err); });
-}
-
-function useNamedLocationForSpringTarget() {
-  const name = document.getElementById('sp-named-loc').value;
-  const loc = namedLocations[name];
-  if (!loc) { showMsg('spring-msg', false, 'No named locations saved yet.'); return; }
-  resolveLinkWorldOffset(loc.link_name, loc.offset[0], loc.offset[1], loc.offset[2], function(point) {
-    document.getElementById('sp-tx').value = point[0].toFixed(4);
-    document.getElementById('sp-ty').value = point[1].toFixed(4);
-    document.getElementById('sp-tz').value = point[2].toFixed(4);
-    showMsg('spring-msg', true, 'Filled target from named location "' + name + '".');
-  }, function(msg) { showMsg('spring-msg', false, msg); });
-}
-
-function useNamedLocationForWorkspaceTarget() {
-  const name = document.getElementById('wc-named-loc').value;
-  const loc = namedLocations[name];
-  if (!loc) { showMsg('workspace-msg', false, 'No named locations saved yet.'); return; }
-  if (!currentSprings.includes(WORKSPACE_DEMO_SPRING_NAME)) {
-    showMsg('workspace-msg', false, 'Preview workspace center first -- "' + WORKSPACE_DEMO_SPRING_NAME + '" doesn\'t exist yet.');
-    return;
-  }
-  resolveLinkWorldOffset(loc.link_name, loc.offset[0], loc.offset[1], loc.offset[2], function(point) {
-    const ok = publishRetarget(WORKSPACE_DEMO_SPRING_NAME, point);
-    showMsg('workspace-msg', ok, ok
-      ? ('Workspace target set from named location "' + name + '": [' + point.map(function(v) { return v.toFixed(4); }).join(', ') + '].')
-      : 'Not connected to rosbridge.');
-  }, function(msg) { showMsg('workspace-msg', false, msg); });
-}
-
 // Locks workspace_demo's target onto wherever its attachment point (Link +
-// local x/y/z above -- a link-local offset, unlike named locations' world
-// offset) currently is, e.g. after pushing the arm there by hand.
+// local x/y/z above) currently is, e.g. after pushing the arm there by hand.
 function captureCurrentAsWorkspaceTarget() {
   if (!currentSprings.includes(WORKSPACE_DEMO_SPRING_NAME)) {
     showMsg('workspace-msg', false, 'Preview workspace center first -- "' + WORKSPACE_DEMO_SPRING_NAME + '" doesn\'t exist yet.');
     return;
   }
-  const link = document.getElementById('wc-link').value;
+  const link = resolveLinkName(document.getElementById('wc-link').value);
   const localPoint = [parseFloat(document.getElementById('wc-lx').value),
                        parseFloat(document.getElementById('wc-ly').value),
                        parseFloat(document.getElementById('wc-lz').value)];
@@ -868,7 +812,7 @@ function addSpring() {
 
   const common = {
     name: name,
-    link_name: document.getElementById('sp-link').value,
+    link_name: resolveLinkName(document.getElementById('sp-link').value),
     stiffness: parseFloat(document.getElementById('sp-k').value),
     damping: parseFloat(document.getElementById('sp-b').value),
     local_point: [parseFloat(document.getElementById('sp-lx').value),
@@ -1086,7 +1030,7 @@ function previewWorkspaceCenter() {
     const c = resp.center;
     const addReq = {
       name: WORKSPACE_DEMO_SPRING_NAME,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       stiffness: 50.0,
       damping: 5.0,
       local_point: [parseFloat(document.getElementById('wc-lx').value),
@@ -1153,7 +1097,7 @@ function previewEyeLocation() {
     const eyeTarget = resp.eye_location;
     const addReq = {
       name: WORKSPACE_DEMO_EYE_SPRING_NAME,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       stiffness: 0.0,
       damping: 0.0,
       local_point: [parseFloat(document.getElementById('wc-lx').value),
@@ -1207,7 +1151,7 @@ function finalizeStudyConditions() {
       eye_height_cm: eyeHeight,
       arm_length_cm: armLength,
       ramp_margin_cm: rampMargin,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       local_point: [parseFloat(document.getElementById('wc-lx').value),
                     parseFloat(document.getElementById('wc-ly').value),
                     parseFloat(document.getElementById('wc-lz').value)],
@@ -1328,7 +1272,6 @@ function connectRos() {
     });
 
     populateLinkDropdown();
-    populateNamedLocationsDropdown();
     fetchLoadedConfigPath();
 
     // The meshcat iframe keeps its own websocket straight to meshcat-server
