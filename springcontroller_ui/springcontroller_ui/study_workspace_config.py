@@ -31,6 +31,15 @@ CM_TO_M = 0.01
 HEIGHT_BAND_CM = 20.32  # 8 inches
 EYE_ANGLE_DEG = 30.0
 
+# Condition 2's orientation-spring "look-at" target sits in front of the
+# participant's actual face, not above wherever the reach-center (used for
+# condition 1's position spring) happens to land -- those are two different
+# points on the participant's body. This is a fixed offset from the seat
+# mark along the same +y axis compute_candidate_center reaches across,
+# just much shorter than a full arm's reach. Confirmed wrong 2026-08-21:
+# it had been reusing the approved reach-center's x/y outright.
+EYE_TARGET_Y_OFFSET_CM = 15.0
+
 
 def _cm(value_cm: float) -> float:
     return value_cm * CM_TO_M
@@ -58,6 +67,24 @@ def compute_candidate_center(
         "x": seat_x,
         "y": seat_y + arm_length_m,
         "z": z,
+    }
+
+
+def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> dict:
+    """
+    Condition 2's orientation-spring target: directly in front of the
+    participant's face, at the chair's x, the chair's y plus a fixed
+    EYE_TARGET_Y_OFFSET_CM (toward the table -- same direction as
+    compute_candidate_center's reach, just much shorter), and eye height
+    above the table. Independent of arm_length_cm and of wherever the
+    reach-center (condition 1's position-spring target) ended up after
+    the human-in-the-loop push/adjust step -- the participant's face
+    doesn't move just because their hand did.
+    """
+    return {
+        "x": seat_x,
+        "y": seat_y + _cm(EYE_TARGET_Y_OFFSET_CM),
+        "z": _cm(eye_height_cm),
     }
 
 

@@ -12,8 +12,10 @@ import yaml
 
 from springcontroller_ui.study_workspace_config import (
     CM_TO_M,
+    EYE_TARGET_Y_OFFSET_CM,
     compute_candidate_center,
     compute_condition_params,
+    compute_eye_location,
     log_measurement,
     write_condition_yaml,
 )
@@ -25,6 +27,21 @@ def test_candidate_center_reaches_across_table_by_arm_length():
     center = compute_candidate_center(seat_x=0.5, seat_y=-0.1, eye_height_cm=71.0, arm_length_cm=46.0)
     assert center["x"] == pytest.approx(0.5)
     assert center["y"] == pytest.approx(-0.1 + 46.0 * CM_TO_M)
+
+
+def test_eye_location_uses_seat_xy_not_reach_center():
+    # The face is above the chair, not above wherever the reach-center
+    # (arm's-length across the table) ended up -- independent of arm_length.
+    eye = compute_eye_location(seat_x=0.5, seat_y=-0.1, eye_height_cm=71.0)
+    assert eye["x"] == pytest.approx(0.5)
+    assert eye["y"] == pytest.approx(-0.1 + EYE_TARGET_Y_OFFSET_CM * CM_TO_M)
+    assert eye["z"] == pytest.approx(71.0 * CM_TO_M)
+
+
+def test_eye_location_y_offset_much_smaller_than_a_full_arm_reach():
+    eye = compute_eye_location(seat_x=0.0, seat_y=0.0, eye_height_cm=71.0)
+    center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=71.0, arm_length_cm=46.0)
+    assert eye["y"] < center["y"]
 
 
 def test_candidate_center_z_is_half_eye_height_when_within_cone():

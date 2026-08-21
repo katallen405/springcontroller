@@ -73,9 +73,9 @@ from springcontroller_ui.study_workspace_config import (
     assign_condition_order,
     compute_candidate_center,
     compute_condition_params,
+    compute_eye_location,
     log_measurement,
     write_condition_yaml,
-    CM_TO_M,
 )
 
 
@@ -849,9 +849,15 @@ class StudyControlPanelNode(Node):
             self._workspace_seat_x, self._workspace_seat_y,
             request.eye_height_cm, request.arm_length_cm,
         )
+        eye_location = compute_eye_location(
+            self._workspace_seat_x, self._workspace_seat_y, request.eye_height_cm,
+        )
         response.success = True
         response.message = "ok"
         response.center = [float(center["x"]), float(center["y"]), float(center["z"])]
+        response.eye_location = [
+            float(eye_location["x"]), float(eye_location["y"]), float(eye_location["z"]),
+        ]
         return response
 
     def _finalize_study_conditions_cb(self, request, response):
@@ -871,10 +877,14 @@ class StudyControlPanelNode(Node):
         condition_params = compute_condition_params(
             center, request.eye_height_cm, request.arm_length_cm, request.ramp_margin_cm,
         )
-        # Straight above the final approved center, raised to eye height.
-        orientation_target = {
-            "x": center["x"], "y": center["y"], "z": request.eye_height_cm * CM_TO_M,
-        }
+        # In front of the participant's actual face (chair position),
+        # NOT above the approved reach-center -- those are two different
+        # points on the participant's body, see compute_eye_location's
+        # docstring. Confirmed wrong 2026-08-21: this used to reuse
+        # center's x/y outright.
+        orientation_target = compute_eye_location(
+            self._workspace_seat_x, self._workspace_seat_y, request.eye_height_cm,
+        )
 
         local_point = [float(v) for v in request.local_point]
         spring_params = {
