@@ -56,7 +56,7 @@ alongside `kinova_torque_control_node` (skip `ros2_control_node` and the
 controller spawners entirely) should be safe and would give springcontroller
 nodes a real `/robot_description` publisher instead of relying on the
 `urdf_path` fallback (see `fetch_robot_description()` in `press_to_pin.py`,
-`virtual_spring_node.py`, `equilibrium_mover.py`).
+`virtual_spring_node.py`).
 
 The thing that must never run at the same time as
 `kinova_torque_control_node` is `ros2_control_node` with the
