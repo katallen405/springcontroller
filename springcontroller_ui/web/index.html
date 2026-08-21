@@ -221,8 +221,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
 
-      <div class="panel">
-        <h2>Collision thresholds</h2>
+      <details class="panel" open>
+        <summary>Collision thresholds</summary>
         <div class="toggle-row" style="margin-bottom:8px">
           <span class="toggle-label">Repulsion field</span>
           <label class="switch">
@@ -243,10 +243,10 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="msg-box hidden" id="thresholds-msg" role="status" aria-live="polite"></div>
-      </div>
+      </details>
 
-      <div class="panel">
-        <h2>Position mode controls</h2>
+      <details class="panel" open>
+        <summary>Position mode controls</summary>
 
         <p class="status-line">Study start preset: <span class="val" id="start-defined">unknown</span></p>
         <div class="btn-row" style="margin-top:8px">
@@ -279,7 +279,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
         </div>
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
-      </div>
+      </details>
 
     </aside>
 
