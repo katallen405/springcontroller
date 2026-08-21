@@ -23,17 +23,16 @@ objects:
     dimensions: [1.52, 0.76, 0.05]
     frame_id: "world"
     pose:
-      # z = -half the box height so the *top* face lands at z=0, flush with
-      # base_link's origin -- matches the convention verified live in
-      # gen3_live_table_scene.yaml. Centering at z=0.0 (the old value) put
-      # the top face 2.5cm above the real table surface, so the box floated
-      # above the true table in meshcat and the collision clamp could trip
-      # on links that were actually still clear of the real table.
+      # z: top face at z=-0.02, not z=0 -- the robot's mounting hardware
+      # raises base_link's origin 2cm above the real table surface, so a
+      # flush-at-z=0 table (the old value, -0.025) actually floated 2cm
+      # above the true table. -0.045 = -0.02 (new top face) - 0.025 (half
+      # the box height) to land the top face there instead.
       # x/y measured live 2026-08-20: table is 60in (x) x 30in (y), with the
       # robot base 4.5in from the -x edge and 15.75in from the -y edge.
       # center = edge + half-dimension; rounded to the nearest cm since
       # nothing finer matters here.
-      position: [0.65, -0.02, -0.025]
+      position: [0.65, -0.02, -0.045]
       orientation: [0.0, 0.0, 0.0, 1.0]
     # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
     # URDF link names to exclude from collision pairs against this object,
@@ -43,6 +42,19 @@ objects:
     # near-miss against the table and blanket-scales torques for no real
     # reason. See add_environment_object()'s docstring.
     exclude_links: ["base_link"]
+
+  camera_tower:
+    shape: box
+    # 4cm x 4cm footprint, 1.5m tall.
+    dimensions: [0.04, 0.04, 1.5]
+    frame_id: "world"
+    pose:
+      # Sits in the table's -x/+y corner: x/y at that corner (table center
+      # [0.65, -0.02] +- half-dimensions [0.76, 0.38] above), z centered so
+      # the box's bottom face starts at the table top (-0.02, see table's
+      # pose comment) and extends up 1.5m: -0.02 + 1.5/2 = 0.73.
+      position: [-0.11, 0.36, 0.73]
+      orientation: [0.0, 0.0, 0.0, 1.0]
 
   # Example of a live-tracked obstacle's *initial* placement -- a perception
   # node can keep this moving afterward with MOVE messages on
