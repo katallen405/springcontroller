@@ -55,9 +55,10 @@ def test_end_effector_link_is_a_valid_frame(arm):
 
 def test_fk_at_zero_configuration(arm):
     # Gen3 fully "unfolded" straight up -- translation should be close to
-    # [0, 0, ~1.187] (the arm's reach).
+    # [0, 0, ~1.207] (the arm's ~1.187m reach plus world's +0.02 table-height
+    # offset from base_link, see base_joint in gen3_kinova_flat.urdf).
     T = arm.get_link_transform("end_effector_link")
-    np.testing.assert_allclose(T[:3, 3], [0.0, 0.0, 1.18738495], atol=1e-4)
+    np.testing.assert_allclose(T[:3, 3], [0.0, 0.0, 1.20738495], atol=1e-4)
     # NOTE: deliberately not asserting anything about the rotation block
     # here. At exactly the all-zero configuration this URDF/reduced-model
     # combination produces a degenerate (non-orthogonal, det=0) rotation for
@@ -84,7 +85,7 @@ def test_fk_at_nonzero_configuration(arm):
     arm.update_from_angles(angles)
     T = arm.get_link_transform("end_effector_link")
     np.testing.assert_allclose(
-        T[:3, 3], [-0.37604036, 0.1319885, 1.02789378], atol=1e-4)
+        T[:3, 3], [-0.37604036, 0.1319885, 1.04789378], atol=1e-4)
     np.testing.assert_allclose(
         T[:3, :3],
         [[-0.37846897, 0.59389771, -0.7099625],
