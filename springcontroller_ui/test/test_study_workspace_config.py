@@ -26,7 +26,7 @@ def test_candidate_center_reaches_across_table_by_arm_length():
     # across it (+y), not further along it (x stays at the seat's x).
     center = compute_candidate_center(seat_x=0.5, seat_y=-0.1, eye_height_cm=71.0, arm_length_cm=46.0)
     assert center["x"] == pytest.approx(0.5)
-    assert center["y"] == pytest.approx(-0.1 + 46.0 * CM_TO_M)
+    assert center["y"] == pytest.approx(-0.1 + 46.0 * CM_TO_M + 0.1)
 
 
 def test_eye_location_uses_seat_xy_not_reach_center():
@@ -44,22 +44,22 @@ def test_eye_location_y_offset_much_smaller_than_a_full_arm_reach():
     assert eye["y"] < center["y"]
 
 
-def test_candidate_center_z_is_half_eye_height_when_within_cone():
-    # Long arm -> half-eye-height isn't more than 30 deg below eye level,
+def test_candidate_center_z_is_third_eye_height_when_within_cone():
+    # Long arm -> third-eye-height isn't more than 30 deg below eye level,
     # so it's used unclamped.
     center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=40.0, arm_length_cm=100.0)
-    assert center["z"] == pytest.approx(20.0 * CM_TO_M)
+    assert center["z"] == pytest.approx(40.0 * CM_TO_M / 3.0)
 
 
-def test_candidate_center_z_clamped_to_30deg_cone_when_half_eye_height_too_steep():
-    # Typical measurements -- half-eye-height would be a >30 deg look-down
+def test_candidate_center_z_clamped_to_30deg_cone_when_third_eye_height_too_steep():
+    # Typical measurements -- third-eye-height would be a >30 deg look-down
     # at this reach, so z gets raised to exactly the 30 deg cutoff instead.
     eye_height_cm, arm_length_cm = 71.0, 46.0
     center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
-    half_eye_height_m = (eye_height_cm * CM_TO_M) / 2.0
+    third_eye_height_m = (eye_height_cm * CM_TO_M) / 3.0
     expected_z = (eye_height_cm * CM_TO_M) - (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
     assert center["z"] == pytest.approx(expected_z)
-    assert center["z"] > half_eye_height_m  # raised above the naive half-height point
+    assert center["z"] > third_eye_height_m  # raised above the naive third-height point
     elevation_deg = math.degrees(math.atan2((eye_height_cm * CM_TO_M) - center["z"], arm_length_cm * CM_TO_M))
     assert elevation_deg == pytest.approx(30.0)
 
