@@ -592,6 +592,16 @@ def generate_launch_description():
     # to /camera/image_raw/compressed here is also what makes
     # compressed_image_transport's lazy publisher on v4l2_camera_node
     # actually turn on in the first place.
+    #
+    # Output topic ends in /compressed, not /compressed_throttled -- confirmed
+    # live 2026-08-21: image_transport-aware viewers (rqt_image_view,
+    # image_view) parse a topic's *last* path segment as a transport-plugin
+    # name (<base_topic>/<transport>, e.g. .../compressed), so naming this
+    # .../compressed_throttled made them try to load a nonexistent
+    # "compressed_throttled" transport plugin and fail outright. Only "raw"
+    # and "compressed" are real registered transport suffixes -- putting
+    # "_throttled" on the base-topic segment instead keeps this a normal,
+    # viewer-compatible /<base>/compressed topic.
     video_throttle_node = Node(
         package="topic_tools",
         executable="throttle",
@@ -601,7 +611,7 @@ def generate_launch_description():
             "messages",
             "/camera/image_raw/compressed",
             LaunchConfiguration("video_fps"),
-            "/camera/image_raw/compressed_throttled",
+            "/camera/image_raw_throttled/compressed",
         ],
         condition=IfCondition(LaunchConfiguration("record_video")),
     )
@@ -620,7 +630,7 @@ def generate_launch_description():
     # roster for the run; diffing consecutive messages in the bag recovers
     # exactly which spring was created or destroyed and when.
     #
-    # /audio/audio and /camera/image_raw/compressed_throttled are recorded
+    # /audio/audio and /camera/image_raw_throttled/compressed are recorded
     # unconditionally here even though audio_capture_node/v4l2_camera_node/
     # video_throttle_node above only actually run when record_audio:=true /
     # record_video:=true -- same pattern as press_to_pin's topics used to
@@ -646,7 +656,7 @@ def generate_launch_description():
             "/kinova/joint_torque_command",
             "/gen3_torque_control/status",
             "/audio/audio",
-            "/camera/image_raw/compressed_throttled",
+            "/camera/image_raw_throttled/compressed",
             "/rosout",
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
