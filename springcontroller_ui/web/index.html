@@ -288,19 +288,24 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <p class="hint">
-        Enter the two participant measurements and preview to place a live,
-        0-deadband "<code>workspace_demo</code>" spring at the computed
-        center -- enable torque control (see "Torque control" panel), then
-        push the arm around or retarget <code>workspace_demo</code> in the
-        "Add / remove springs" list below to approve or adjust the
-        location. "Preview eye location" places a force-free
-        "<code>workspace_demo_eye</code>" marker straight above the
-        <em>current</em> <code>workspace_demo</code> position, at eye
-        height -- this is where condition 2's orientation spring will aim;
-        re-click it after adjusting the center to keep it in sync. Finalize
-        writes condition1.yaml/condition2.yaml from wherever
-        <code>workspace_demo</code> currently is and removes both demo
-        springs.
+        Enter the participant ID and click "Get condition order" first --
+        it counterbalances which condition (1 or 2) this participant runs
+        first, alternating with each new participant ID so it stays
+        balanced across the study regardless of enrollment order, and
+        remembers the assignment if you check the same participant ID
+        again. Then enter the two participant measurements and preview to
+        place a live, 0-deadband "<code>workspace_demo</code>" spring at
+        the computed center -- enable torque control (see "Torque control"
+        panel), then push the arm around or retarget
+        <code>workspace_demo</code> in the "Add / remove springs" list
+        below to approve or adjust the location. "Preview eye location"
+        places a force-free "<code>workspace_demo_eye</code>" marker
+        straight above the <em>current</em> <code>workspace_demo</code>
+        position, at eye height -- this is where condition 2's orientation
+        spring will aim; re-click it after adjusting the center to keep it
+        in sync. Finalize writes condition1.yaml/condition2.yaml from
+        wherever <code>workspace_demo</code> currently is and removes both
+        demo springs.
       </p>
       <div class="spring-form">
         <div class="row">
@@ -321,6 +326,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
         </div>
         <div class="btn-row">
+          <button class="action on" onclick="getConditionOrder()">Get condition order</button>
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
           <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
@@ -427,6 +433,7 @@ const svcGetLinkPose      = { name: NODE + '/get_link_pose',                type
 const svcListLinkNames    = { name: NODE + '/list_link_names',              type: 'springcontroller_ui_interfaces/srv/ListLinkNames' };
 const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
 const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
+const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
@@ -960,6 +967,21 @@ function previewWorkspaceCenter() {
     // "doesn't exist yet" (first preview) isn't an error here.
     callService(svcRemoveSpring, { name: WORKSPACE_DEMO_SPRING_NAME }, placeSpring, placeSpring);
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
+}
+
+function getConditionOrder() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
+  const req = {
+    participant_id: participantId,
+    data_dir: document.getElementById('wc-datadir').value.trim(),
+  };
+  callService(svcAssignConditionOrder, req, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const label = resp.first_condition === 'condition1' ? 'Condition 1' : 'Condition 2';
+    const note = resp.already_assigned ? ' (previously assigned -- unchanged)' : ' (newly assigned)';
+    showMsg('workspace-msg', true, participantId + ': run ' + label + ' first' + note + '.');
+  }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
 }
 
 // Places a force-free (0 stiffness/damping) marker straight above the
