@@ -157,6 +157,9 @@ ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
 ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
 ul.spring-list .adjust button { border-color: #999; color: #333; }
 ul.spring-list .adjust button:hover { background: #f0f0f0; }
+/* x/y/z retarget boxes need to fit e.g. "-0.1234" (7 chars) -- 52px (the
+   k/b boxes' width) clipped it unreadable. */
+ul.spring-list .adjust.retarget input { width: 70px; }
 
 iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
 .meshcat-row { display: flex; justify-content: space-between; align-items: center; }
@@ -894,7 +897,7 @@ function handleSpringsUpdated(msg) {
     adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
 
     const retarget = document.createElement('span');
-    retarget.className = 'adjust';
+    retarget.className = 'adjust retarget';
     const txInput = document.createElement('input');
     txInput.type = 'number'; txInput.step = '0.01'; txInput.placeholder = 'x';
     txInput.title = 'New target x (m) -- "look-at" point for an orientation spring';
