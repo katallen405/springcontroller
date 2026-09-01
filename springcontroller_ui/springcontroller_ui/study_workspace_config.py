@@ -36,8 +36,7 @@ EYE_ANGLE_DEG = 30.0
 # condition 1's position spring) happens to land -- those are two different
 # points on the participant's body. This is a fixed offset from the seat
 # mark along the same +y axis compute_candidate_center reaches across,
-# just much shorter than a full arm's reach. Confirmed wrong 2026-08-21:
-# it had been reusing the approved reach-center's x/y outright.
+# just much shorter than a full arm's reach.
 EYE_TARGET_Y_OFFSET_CM = 20.0
 
 
@@ -72,15 +71,13 @@ def compute_candidate_center(
 
 
 def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> dict:
-    """
-    Condition 2's orientation-spring target: directly in front of the
-    participant's face, at the chair's x, the chair's y plus a fixed
-    EYE_TARGET_Y_OFFSET_CM (toward the table -- same direction as
-    compute_candidate_center's reach, just much shorter), and eye height
+    """Condition 2's orientation-spring target: directly in front of
+    the participant's face, at the chair's x, the chair's y plus a
+    fixed EYE_TARGET_Y_OFFSET_CM (toward the table), and eye height
     above the table. Independent of arm_length_cm and of wherever the
-    reach-center (condition 1's position-spring target) ended up after
-    the human-in-the-loop push/adjust step -- the participant's face
-    doesn't move just because their hand did.
+    reach-center ended up after the human-in-the-loop push/adjust step
+    -- the participant's face doesn't move just because their hand
+    did.
     """
     return {
         "x": seat_x,
@@ -92,28 +89,24 @@ def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> 
 def compute_condition_params(
     center: dict, eye_height_cm: float, arm_length_cm: float, ramp_margin_cm: float = 2.54,
 ) -> dict:
-    """
-    Derive the condition-1 dead-zone sphere from the *final, approved*
-    center point.
-
-    inner_radius = min(half the 8" height band, the +-30 deg eye-level cone
-    converted to linear distance at the measured arm length) -- whichever
-    bound is tighter. outer_radius adds a small ramp margin rather than a
-    hard on/off. rest_length == inner_radius keeps VirtualSpring's force
-    continuous at the dead-zone boundary instead of jumping by
-    stiffness*inner_radius the instant a target leaves the dead zone (see
-    virtual_spring.py's force computation).
+    """Derive the dead-zone sphere from the *final, approved* center point.
+    inner_radius = min(half the 8" height band, the +-30 deg eye-level
+    cone converted to linear distance at the measured arm length) --
+    whichever bound is tighter. outer_radius adds a small ramp margin
+    rather than a hard on/off. rest length is 0 so that there will
+    always be a gentle pull to the center of the workspace.
 
     Returns radii/rest_length in meters plus a list of human-readable
     warning strings (empty if none) -- these are advisory, not blocking,
     since a person always reviews the candidate live before finalizing.
+
     """
     arm_length_m = _cm(arm_length_cm)
     eye_height_m = _cm(eye_height_cm)
 
     inner_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
     outer_radius = inner_radius + _cm(ramp_margin_cm)
-    rest_length = inner_radius
+    rest_length = 0
 
     warnings: list[str] = []
 
@@ -139,24 +132,6 @@ def compute_condition_params(
     }
 
 
-def condition2_spring_overrides() -> dict:
-    """
-    Condition 2's only deliberate departure from condition 1's position-spring
-    params (see compute_condition_params): rest_length is 0, not inner_radius.
-    inner_radius/outer_radius (the dead-zone/workspace-safety geometry) stay
-    identical to condition 1's -- this only moves the spring's long-range
-    equilibrium to the literal target point instead of a shell inner_radius
-    out, since condition 2 also runs the orientation spring (zero
-    translational force, see OrientationSpring's docstring) and needs the
-    position spring to actually anchor the block near the target rather than
-    going silent/equilibrating early. First-cut experiment (2026-09-01) to
-    observe live before any further tuning -- this reintroduces the force
-    discontinuity at outer_radius (magnitude stiffness*inner_radius) that
-    compute_condition_params's rest_length == inner_radius rule exists to
-    avoid, accepted deliberately here rather than smoothed over.
-    """
-    return {"rest_length": 0.0}
-
 
 class _NoAliasDumper(yaml.SafeDumper):
     """
@@ -167,12 +142,7 @@ class _NoAliasDumper(yaml.SafeDumper):
     data being dumped. write_condition_yaml's condition-2 output does
     exactly that: spring_params and orientation_params both carry the
     same local_point list object (see _finalize_study_conditions_cb in
-    orchestration_node.py). Confirmed live 2026-08-21: virtual_spring_node
-    crashed on startup ("Will not support aliasing at line 26") loading a
-    real condition2.yaml written before this fix. Disabling aliasing
-    entirely keeps every written condition YAML loadable regardless of
-    how a future caller happens to share (or not share) list/dict objects
-    -- cheaper than auditing every call site for accidental object reuse.
+    orchestration_node.py).
     """
     def ignore_aliases(self, data):
         return True
@@ -266,11 +236,9 @@ def log_measurement(
 
 def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[str, bool]:
     """
-    Counterbalances which condition (condition1 vs condition2) a
-    participant should run first: alternates based on how many
-    participants have already been assigned, so roughly half the study
-    runs condition1-first and half condition2-first regardless of
-    enrollment order. Idempotent -- looking up a participant_id that's
+    Counterbalances which condition (baseline vs condition1 vs condition2) a
+    participant should run first:
+    Idempotent -- looking up a participant_id that's
     already been assigned returns that same order again (never
     re-randomizes/flip-flops on a repeat visit to the panel).
 
@@ -295,7 +263,9 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         if row["participant_id"] == participant_id:
             return row["first_condition"], True
 
-    first_condition = "condition1" if len(rows) % 2 == 0 else "condition2"
+    conditions = ["baseline", "condition1", "condition2"]
+    first_condition = conditions[len(rows) % 3]
+        
     new_row = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "participant_id": participant_id,

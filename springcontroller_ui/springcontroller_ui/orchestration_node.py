@@ -74,7 +74,6 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
-    condition2_spring_overrides,
     log_measurement,
     write_condition_yaml,
 )
@@ -923,7 +922,7 @@ class StudyControlPanelNode(Node):
         csv_path = os.path.join(data_dir, "measurements.csv")
 
         condition2_spring_params = dict(spring_params)
-        condition2_spring_params.update(condition2_spring_overrides())
+        #condition2_spring_params.update(condition2_spring_overrides())
 
         try:
             write_condition_yaml(condition1_path, self._workspace_spring_name, spring_params)
