@@ -370,9 +370,9 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- leave all zero to just use the link's current position. Different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
-          <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
-          <label id="sp-target-y-label">target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
-          <label id="sp-target-z-label">target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+          <label id="sp-target-x-label">target x (m) <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label id="sp-target-y-label">target y (m) <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label id="sp-target-z-label">target z (m) <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
         </div>
         <div class="row">
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
@@ -382,9 +382,9 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b" value="5"></label>
         </div>
         <div class="row" id="sp-position-only">
-          <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
-          <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
-          <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
+          <label>rest length (m) <input type="number" step="0.01" id="sp-rest" value="0"></label>
+          <label>inner radius (m) <input type="number" step="0.01" id="sp-rin" value="0"></label>
+          <label>outer radius (m) <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
         <div class="row" id="sp-orientation-only" style="display:none">
           <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
@@ -678,9 +678,9 @@ function updateSpringTypeFields() {
   document.getElementById('sp-orientation-only').style.display = orientation ? '' : 'none';
   document.getElementById('sp-orientation-hint').style.display = orientation ? '' : 'none';
   const targetLabel = orientation ? 'look-at ' : 'target ';
-  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x ';
-  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y ';
-  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
+  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x (m) ';
+  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y (m) ';
+  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z (m) ';
 }
 
 // Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
