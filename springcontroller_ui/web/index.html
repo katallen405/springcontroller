@@ -135,7 +135,9 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.spring-form label { font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px; }
+.spring-form label, ul.spring-list .adjust label, ul.spring-list .retarget label {
+  font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px;
+}
 .spring-form input, .spring-form select {
   padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
 }
@@ -340,7 +342,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>name</dt><dd>Identifier used to remove/update this spring later -- must be unique.</dd>
           <dt>target x/y/z</dt><dd>World-frame point (m) the spring pulls the attachment point toward (position springs only).</dd>
           <dt>local x/y/z</dt><dd>Attachment point (m), in the link's own local frame -- e.g. (0,0,0) is the link origin.</dd>
-          <dt>offset x/y/z</dt><dd>World-frame offset (m) added to the Link's current position by "Use current position of link + offset" -- fills target x/y/z, doesn't rotate with the link.</dd>
           <dt>stiffness</dt><dd>Spring constant k (N/m). Force grows linearly with distance from target/rest length.</dd>
           <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
@@ -360,29 +361,25 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>Link
             <select id="sp-link" onchange="applyLinkPresetIfSelected('sp-link','sp-lx','sp-ly','sp-lz')"></select>
           </label>
-          <label>offset x <input type="number" step="0.01" id="sp-off-x" value="0"></label>
-          <label>offset y <input type="number" step="0.01" id="sp-off-y" value="0"></label>
-          <label>offset z <input type="number" step="0.01" id="sp-off-z" value="0"></label>
-          <button class="action off" onclick="fetchCurrentPositionWithOffset()" style="padding:6px 10px;font-size:12.5px">Use current position of link + offset</button>
+          <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
         </div>
-        <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- leave all zero to just use the link's current position. Different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
-          <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
-          <label id="sp-target-y-label">target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
-          <label id="sp-target-z-label">target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+          <label id="sp-target-x-label">target x (m) <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label id="sp-target-y-label">target y (m) <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label id="sp-target-z-label">target z (m) <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
         </div>
         <div class="row">
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
           <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
-          <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
-          <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
+          <label>stiffness (N/m) <input type="number" step="1" id="sp-k" value="50"></label>
+          <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b" value="5"></label>
         </div>
         <div class="row" id="sp-position-only">
-          <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
-          <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
-          <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
+          <label>rest length (m) <input type="number" step="0.01" id="sp-rest" value="0"></label>
+          <label>inner radius (m) <input type="number" step="0.01" id="sp-rin" value="0"></label>
+          <label>outer radius (m) <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
         <div class="row" id="sp-orientation-only" style="display:none">
           <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
@@ -676,9 +673,9 @@ function updateSpringTypeFields() {
   document.getElementById('sp-orientation-only').style.display = orientation ? '' : 'none';
   document.getElementById('sp-orientation-hint').style.display = orientation ? '' : 'none';
   const targetLabel = orientation ? 'look-at ' : 'target ';
-  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x ';
-  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y ';
-  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
+  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x (m) ';
+  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y (m) ';
+  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z (m) ';
 }
 
 // Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
@@ -756,33 +753,15 @@ function populateLinkDropdown() {
   });
 }
 
-// Resolves link's *current* position plus a world-frame (dx,dy,dz) offset --
-// doesn't rotate with the link, unlike get_link_pose's own local_point
-// field (that one's for a spring's own attachment point; this is for
-// defining a target relative to wherever some other link happens to be
-// right now).
-function resolveLinkWorldOffset(link, dx, dy, dz, onOk, onErr) {
-  callService(svcGetLinkPose, { link_name: link }, function(resp) {
-    if (!resp.success) { onErr(resp.message); return; }
-    onOk([resp.point[0] + dx, resp.point[1] + dy, resp.point[2] + dz]);
-  }, function(err) { onErr('get_link_pose failed: ' + err); });
-}
-
-function fetchCurrentPositionWithOffset() {
+function fetchCurrentPosition() {
   const link = resolveLinkName(document.getElementById('sp-link').value);
-  const dx = parseFloat(document.getElementById('sp-off-x').value);
-  const dy = parseFloat(document.getElementById('sp-off-y').value);
-  const dz = parseFloat(document.getElementById('sp-off-z').value);
-  if (![dx, dy, dz].every(isFinite)) {
-    showMsg('spring-msg', false, 'Offset x/y/z must all be numbers.');
-    return;
-  }
-  resolveLinkWorldOffset(link, dx, dy, dz, function(point) {
-    document.getElementById('sp-tx').value = point[0].toFixed(4);
-    document.getElementById('sp-ty').value = point[1].toFixed(4);
-    document.getElementById('sp-tz').value = point[2].toFixed(4);
-    showMsg('spring-msg', true, 'Filled target with current position of ' + link + ' + offset.');
-  }, function(msg) { showMsg('spring-msg', false, msg); });
+  callService(svcGetLinkPose, { link_name: link }, function(resp) {
+    if (!resp.success) { showMsg('spring-msg', false, resp.message); return; }
+    document.getElementById('sp-tx').value = resp.point[0].toFixed(4);
+    document.getElementById('sp-ty').value = resp.point[1].toFixed(4);
+    document.getElementById('sp-tz').value = resp.point[2].toFixed(4);
+    showMsg('spring-msg', true, 'Filled target with current position of ' + link + '.');
+  }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
 }
 
 // Locks workspace_demo's target onto wherever its attachment point (Link +
@@ -993,6 +972,16 @@ function retargetSpring(name, xInput, yInput, zInput) {
   showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
 }
 
+// Wraps an input in a small grey <label> (same look as the "Add spring"
+// form's field labels) so the live spring-list boxes show what they are
+// instead of relying solely on a title= tooltip and a one-letter placeholder.
+function labeledInput(labelText, input) {
+  const label = document.createElement('label');
+  label.appendChild(document.createTextNode(labelText));
+  label.appendChild(input);
+  return label;
+}
+
 function handleSpringsUpdated(msg) {
   let names;
   try { names = JSON.parse(msg.data); } catch (e) { return; }
@@ -1022,7 +1011,9 @@ function renderSpringList(typeMap) {
     const updateBtn = document.createElement('button');
     updateBtn.textContent = 'Update';
     updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
-    adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
+    adjust.appendChild(labeledInput('stiffness (N/m)', kInput));
+    adjust.appendChild(labeledInput('damping (N·s/m)', bInput));
+    adjust.appendChild(updateBtn);
 
     const retarget = document.createElement('span');
     retarget.className = 'adjust retarget';
@@ -1038,7 +1029,9 @@ function renderSpringList(typeMap) {
     const retargetBtn = document.createElement('button');
     retargetBtn.textContent = 'Retarget';
     retargetBtn.onclick = function() { retargetSpring(name, txInput, tyInput, tzInput); };
-    retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
+    retarget.appendChild(labeledInput('target x (m)', txInput));
+    retarget.appendChild(labeledInput('target y (m)', tyInput));
+    retarget.appendChild(labeledInput('target z (m)', tzInput));
     retarget.appendChild(retargetBtn);
 
     li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
