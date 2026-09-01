@@ -864,6 +864,7 @@ def generate_launch_description():
                     LaunchConfiguration("joint_states_topic"),
                     "/virtual_spring_node/joint_torques",
                     "/virtual_spring_node/repulsion_torques",
+                    "/virtual_spring_node/joint_limit_repulsion_torques",
                     "/virtual_spring_node/safety_status",
                     "/virtual_spring_node/springs_updated",
                     "/kinova/joint_torque_command",
