@@ -2492,11 +2492,19 @@ class VirtualSpringNode(Node):
         self, request: UpdateSpring.Request, response: UpdateSpring.Response
     ) -> UpdateSpring.Response:
         """
-        Adjust an existing spring's stiffness/damping in place -- unlike
+        Adjust an existing spring's stiffness/damping (and, for a position
+        spring, rest_length/inner_radius/outer_radius) in place -- unlike
         add_spring, which refuses if the name already exists, so this is
         the only way to change these without remove-then-re-add (which
         would also momentarily drop the spring's force entirely). Doesn't
-        change the spring's target/attachment/geometry, just k and b.
+        change the spring's target/attachment/geometry, just these scalars.
+
+        rest_length/inner_radius/outer_radius are VirtualSpring-only
+        (JointSpring/OrientationSpring have no such attributes -- see
+        virtual_spring.py) -- silently ignored for those types rather than
+        rejected, same "fields that don't apply are ignored, not an error"
+        convention as AddSpring's request carrying the same three fields
+        for every spring type.
         """
         name = request.name.strip()
         spring = next((s for s in self._springs if s.name == name), None)
@@ -2513,9 +2521,18 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = f"damping must be >= 0, got {request.damping}."
             return response
+        is_virtual = isinstance(spring, VirtualSpring)
+        if is_virtual and request.rest_length < 0:
+            response.success = False
+            response.message = f"rest_length must be >= 0, got {request.rest_length}."
+            return response
 
         spring.stiffness = request.stiffness
         spring.damping = request.damping
+        if is_virtual:
+            spring.rest_length = request.rest_length
+            spring.inner_radius = request.inner_radius
+            spring.outer_radius = request.outer_radius
 
         # Mirror into the parameter namespace, same as add_spring -- keeps
         # it in sync with the live spring instead of going stale. Prefix
@@ -2523,16 +2540,23 @@ class VirtualSpringNode(Node):
         # hardcoding springs.<name> here would silently write a bogus
         # parameter under the wrong prefix for a JointSpring/
         # OrientationSpring while leaving its real one stale.
-        if isinstance(spring, VirtualSpring):
+        if is_virtual:
             prefix = f"springs.{name}"
         elif isinstance(spring, JointSpring):
             prefix = f"joint_springs.{name}"
         else:  # OrientationSpring
             prefix = f"orientation_springs.{name}"
-        for key, value in [
-                (f"{prefix}.stiffness", request.stiffness),
-                (f"{prefix}.damping", request.damping),
-        ]:
+        params_to_mirror = [
+            (f"{prefix}.stiffness", request.stiffness),
+            (f"{prefix}.damping", request.damping),
+        ]
+        if is_virtual:
+            params_to_mirror += [
+                (f"{prefix}.rest_length", request.rest_length),
+                (f"{prefix}.inner_radius", request.inner_radius),
+                (f"{prefix}.outer_radius", request.outer_radius),
+            ]
+        for key, value in params_to_mirror:
             self._declare_or_ignore(key, value)
             self.set_parameters([
                 rclpy.parameter.Parameter(key, rclpy.parameter.Parameter.Type.DOUBLE, value)
@@ -2540,7 +2564,12 @@ class VirtualSpringNode(Node):
 
         response.success = True
         response.message = (
-            f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}."
+            f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}"
+            + (
+                f", rest_length={request.rest_length}, inner_radius={request.inner_radius}, "
+                f"outer_radius={request.outer_radius}."
+                if is_virtual else "."
+            )
         )
         self.get_logger().info(response.message)
         self._publish_springs_updated()

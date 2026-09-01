@@ -835,14 +835,32 @@ function removeSpring(name) {
 // (pre-filled by fetchSpringValues, see handleSpringsUpdated) and the "set
 // to" field for the buttons below -- editing one doesn't touch the other
 // until Update/Retarget is actually clicked.
-function updateSpring(name, kInput, bInput) {
+// restInput/innerInput/outerInput are null for a spring that isn't a
+// position spring (see renderSpringList) -- rest_length/inner_radius/
+// outer_radius are then sent as 0, which the backend ignores entirely for
+// a non-VirtualSpring (see _update_spring_cb's is_virtual gate).
+function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput) {
   const stiffness = parseFloat(kInput.value);
   const damping = parseFloat(bInput.value);
   if (!isFinite(stiffness) || !isFinite(damping)) {
     showMsg('spring-msg', false, 'Stiffness and damping must both be numbers.');
     return;
   }
-  callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
+  const req = { name: name, stiffness: stiffness, damping: damping,
+                rest_length: 0, inner_radius: 0, outer_radius: 0 };
+  if (restInput) {
+    const restLength = parseFloat(restInput.value);
+    const innerRadius = parseFloat(innerInput.value);
+    const outerRadius = parseFloat(outerInput.value);
+    if (!isFinite(restLength) || !isFinite(innerRadius) || !isFinite(outerRadius)) {
+      showMsg('spring-msg', false, 'Rest length, inner radius, and outer radius must all be numbers.');
+      return;
+    }
+    req.rest_length = restLength;
+    req.inner_radius = innerRadius;
+    req.outer_radius = outerRadius;
+  }
+  callService(svcUpdateSpring, req, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
 }
@@ -879,7 +897,10 @@ const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8,
 // anchorField: joint_springs anchor to a joint (joint_name), not a link --
 // springs/orientation_springs both anchor to link_name.
 const SPRING_PARAM_PREFIXES = [
-  { prefix: 'springs', hasTarget: true, anchorField: 'link_name' },
+  // hasRadius: only a position spring (VirtualSpring) has rest_length/
+  // inner_radius/outer_radius -- see AddSpring.srv/UpdateSpring.srv, both
+  // of which carry those fields for VirtualSpring alone.
+  { prefix: 'springs', hasTarget: true, anchorField: 'link_name', hasRadius: true },
   { prefix: 'orientation_springs', hasTarget: true, anchorField: 'link_name' },
   { prefix: 'joint_springs', hasTarget: false, anchorField: 'joint_name' },  // real target field is target_angle, not a 3-vector
 ];
@@ -919,12 +940,16 @@ function fetchSpringTypeMap(callback) {
 // anchorEl, when given, gets filled with "link: <name>" / "joint: <name>"
 // from the matched prefix's anchorField -- shows what a spring is actually
 // attached to without having to reopen Add/remove springs and re-derive it.
-function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix, anchorEl) {
+// restInput/innerInput/outerInput are only filled for a position spring
+// (see SPRING_PARAM_PREFIXES' hasRadius) -- callers pass null for an
+// orientation/joint spring, where they don't apply.
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix, anchorEl, restInput, innerInput, outerInput) {
   function tryPrefix(i) {
     if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
-    const { prefix, hasTarget, anchorField } = SPRING_PARAM_PREFIXES[i];
+    const { prefix, hasTarget, anchorField, hasRadius } = SPRING_PARAM_PREFIXES[i];
     const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping', prefix + '.' + name + '.' + anchorField];
     if (hasTarget) names.push(prefix + '.' + name + '.target');
+    if (hasRadius) names.push(prefix + '.' + name + '.rest_length', prefix + '.' + name + '.inner_radius', prefix + '.' + name + '.outer_radius');
     callService(svcGetSpringParams, { names: names }, function(resp) {
       const v = resp.values;
       if (!(v.length >= 3 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
@@ -933,11 +958,18 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, know
       if (anchorEl && v[2] && v[2].type === PARAM_TYPE_STRING) {
         anchorEl.textContent = (anchorField === 'joint_name' ? 'joint: ' : 'link: ') + v[2].string_value;
       }
-      const t = v[3];
+      let idx = 3;
+      const t = hasTarget ? v[idx++] : undefined;
       if (hasTarget && t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
         txInput.value = t.double_array_value[0].toFixed(4);
         tyInput.value = t.double_array_value[1].toFixed(4);
         tzInput.value = t.double_array_value[2].toFixed(4);
+      }
+      if (hasRadius && restInput) {
+        const rl = v[idx++], ir = v[idx++], orad = v[idx++];
+        if (rl && rl.type === PARAM_TYPE_DOUBLE) restInput.value = rl.double_value;
+        if (ir && ir.type === PARAM_TYPE_DOUBLE) innerInput.value = ir.double_value;
+        if (orad && orad.type === PARAM_TYPE_DOUBLE) outerInput.value = orad.double_value;
       }
     }, function(err) { tryPrefix(i + 1); });
   }
@@ -1021,11 +1053,34 @@ function renderSpringList(typeMap) {
     const bInput = document.createElement('input');
     bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
     bInput.title = 'New damping (N·s/m)';
-    const updateBtn = document.createElement('button');
-    updateBtn.textContent = 'Update';
-    updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
     adjust.appendChild(labeledInput('stiffness (N/m)', kInput));
     adjust.appendChild(labeledInput('damping (N·s/m)', bInput));
+
+    // rest_length/inner_radius/outer_radius only apply to a position
+    // spring (VirtualSpring) -- see SPRING_PARAM_PREFIXES' hasRadius and
+    // the field glossary above ("position springs only"). typeMap comes
+    // from fetchSpringTypeMap, always populated before this runs (see
+    // handleSpringsUpdated), so a missing/unknown entry means "don't know
+    // yet" -- leave the fields out rather than guess.
+    let restInput = null, innerInput = null, outerInput = null;
+    if (typeMap[name] === 'springs') {
+      restInput = document.createElement('input');
+      restInput.type = 'number'; restInput.step = '0.01'; restInput.placeholder = 'rest';
+      restInput.title = 'New rest length (m)';
+      innerInput = document.createElement('input');
+      innerInput.type = 'number'; innerInput.step = '0.01'; innerInput.placeholder = 'inner';
+      innerInput.title = 'New inner radius (m)';
+      outerInput = document.createElement('input');
+      outerInput.type = 'number'; outerInput.step = '0.01'; outerInput.placeholder = 'outer';
+      outerInput.title = 'New outer radius (m)';
+      adjust.appendChild(labeledInput('rest length (m)', restInput));
+      adjust.appendChild(labeledInput('inner radius (m)', innerInput));
+      adjust.appendChild(labeledInput('outer radius (m)', outerInput));
+    }
+
+    const updateBtn = document.createElement('button');
+    updateBtn.textContent = 'Update';
+    updateBtn.onclick = function() { updateSpring(name, kInput, bInput, restInput, innerInput, outerInput); };
     adjust.appendChild(updateBtn);
 
     const retarget = document.createElement('span');
@@ -1055,7 +1110,7 @@ function renderSpringList(typeMap) {
     li.appendChild(btn);
     ul.appendChild(li);
 
-    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name], anchorSpan);
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name], anchorSpan, restInput, innerInput, outerInput);
   });
 }
 
