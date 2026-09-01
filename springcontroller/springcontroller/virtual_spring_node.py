@@ -62,16 +62,18 @@ Publications
     Live joint_limit_repulsion_enabled state -- same "believed on but
     wasn't" reasoning as ~/repulsion_enabled_status.
 
-~/spring_forces (std_msgs/String, JSON)
+~/spring_forces (springcontroller_interfaces/SpringForces)
     Every active spring's current force/moment, throttled to
     spring_force_publish_interval_sec (default 0.1s -- independent of the
-    control loop's own rate, see _publish_spring_forces()):
-    [{"name", "kind": "force"|"moment"|"torque", "magnitude", "direction"}, ...].
+    control loop's own rate, see _publish_spring_forces()): a SpringForce[]
+    of {name, kind: "force"|"moment"|"torque", magnitude, force, distance}.
     A VirtualSpring reports a real 3D "force" (N); an OrientationSpring
     reports a 3D "moment" (N*m); a JointSpring reports a scalar "torque"
-    about its own joint axis with direction: null. A spring not currently
-    contributing (disabled, or hasn't computed a state yet) is omitted
-    rather than reported as zero.
+    about its own joint axis with force always [0, 0, 0]. distance is the
+    spring's current error from its target -- meters for a VirtualSpring,
+    radians (angular error) for an OrientationSpring/JointSpring. A spring
+    not currently contributing (disabled, or hasn't computed a state yet)
+    is omitted rather than reported as zero.
 
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
@@ -236,6 +238,7 @@ from springcontroller_interfaces.srv import (
     LoadCollisionScene, CheckCollisionAtAngles, UpdateSpring,
     UpdateCollisionThresholds,
 )
+from springcontroller_interfaces.msg import SpringForce, SpringForces
 
 
 import collections
@@ -401,9 +404,10 @@ class VirtualSpringNode(Node):
         # Same throttling reasoning as collision_check_interval_sec above:
         # ~/spring_forces publishes every active spring's force/moment
         # (already computed as part of compute_torques() -- no extra
-        # physics work, just JSON-encoding cached state), but building and
-        # publishing a String message every control-loop cycle is still
-        # unnecessary overhead a UI/rosbag consumer doesn't need at 100Hz.
+        # physics work, just message-encoding cached state), but building
+        # and publishing a SpringForces message every control-loop cycle is
+        # still unnecessary overhead a UI/rosbag consumer doesn't need at
+        # 100Hz.
         self.declare_parameter("spring_force_publish_interval_sec", 0.1)
         self._spring_force_publish_interval = (
             self.get_parameter("spring_force_publish_interval_sec").get_parameter_value().double_value
@@ -660,13 +664,14 @@ class VirtualSpringNode(Node):
         self._joint_limit_repulsion_torque_pub = self.create_publisher(
             JointState, "~/joint_limit_repulsion_torques", 10
         )
-        # Per-spring force/moment (magnitude + world-frame direction),
-        # throttled via spring_force_publish_interval_sec -- see
-        # _publish_spring_forces(). A JSON-in-String payload rather than a
-        # new .msg type, matching ~/springs_updated's existing convention
-        # for this kind of structured-but-small telemetry.
+        # Per-spring force/moment (magnitude + world-frame force vector +
+        # distance-to-target), throttled via spring_force_publish_interval_sec
+        # -- see _publish_spring_forces(). Structured SpringForces.msg rather
+        # than JSON-in-String -- a plain-text echo of the old payload could
+        # get silently truncated by CLI tools (e.g. `ros2 topic echo`'s
+        # default string-length cap) with no indication anything was cut.
         self._spring_forces_pub = self.create_publisher(
-            String, "~/spring_forces", 10
+            SpringForces, "~/spring_forces", 10
         )
 
         # (~/springs_updated publisher created earlier, above the
@@ -2560,13 +2565,13 @@ class VirtualSpringNode(Node):
 
     def _publish_spring_forces(self) -> None:
         """
-        Publish every active spring's current force/moment as a JSON array
-        on ~/spring_forces: [{"name", "kind", "magnitude", "direction"}, ...].
-        Reuses each spring's already-cached _last_state (set this cycle by
+        Publish every active spring's current force/moment as a
+        SpringForces (SpringForce[]) message on ~/spring_forces. Reuses
+        each spring's already-cached _last_state (set this cycle by
         compute_torques(), called earlier in _joint_state_cb) -- this is
-        pure JSON formatting, not new physics, so throttling the *call site*
-        (see spring_force_publish_interval_sec) is what actually saves
-        control-loop time, not anything in here. A spring with no
+        pure message formatting, not new physics, so throttling the *call
+        site* (see spring_force_publish_interval_sec) is what actually
+        saves control-loop time, not anything in here. A spring with no
         _last_state (disabled, or not computed yet) is omitted rather than
         reported as zero, so a consumer can tell "not contributing right
         now" apart from "not loaded yet".
@@ -2575,8 +2580,13 @@ class VirtualSpringNode(Node):
         for an OrientationSpring (real 3D moment, N*m -- distinguished
         from "force" so a consumer doesn't mix up units), or "torque" for
         a JointSpring (a scalar about a single joint axis, not a Cartesian
-        vector -- direction is null rather than inventing a 3D direction
-        for something that doesn't have one).
+        vector -- force is [0, 0, 0] rather than inventing a 3D vector for
+        something that doesn't have one).
+
+        distance reuses each state's existing duck-typed `.extension`
+        field (see SpringState/JointSpringState/OrientationSpringState in
+        virtual_spring.py): meters for a VirtualSpring, radians (angular
+        error) for an OrientationSpring/JointSpring.
         """
         entries = []
         for spring in self._springs:
@@ -2588,21 +2598,22 @@ class VirtualSpringNode(Node):
             elif isinstance(spring, OrientationSpring):
                 vec, kind = state.moment_world, "moment"
             elif isinstance(spring, JointSpring):
-                entries.append({
-                    "name": spring.name, "kind": "torque",
-                    "magnitude": float(state.torque), "direction": None,
-                })
+                entries.append(SpringForce(
+                    name=spring.name, kind="torque",
+                    magnitude=float(state.torque), force=[0.0, 0.0, 0.0],
+                    distance=float(state.extension),
+                ))
                 continue
             else:
                 continue
             magnitude = float(np.linalg.norm(vec))
-            direction = (vec / magnitude).tolist() if magnitude > 1e-9 else [0.0, 0.0, 0.0]
-            entries.append({
-                "name": spring.name, "kind": kind,
-                "magnitude": magnitude, "direction": direction,
-            })
-        msg = String()
-        msg.data = json.dumps(entries)
+            entries.append(SpringForce(
+                name=spring.name, kind=kind,
+                magnitude=magnitude, force=vec.tolist(),
+                distance=float(state.extension),
+            ))
+        msg = SpringForces()
+        msg.springs = entries
         self._spring_forces_pub.publish(msg)
 
     def _publish_collision_thresholds(self) -> None:
