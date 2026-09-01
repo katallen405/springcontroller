@@ -1128,17 +1128,25 @@ function getConditionOrder() {
   }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
 }
 
-// Places a force-free (0 stiffness/damping) marker at condition 2's real
-// orientation-spring target: in front of the participant's actual face
-// (chair position), NOT above wherever the reach-center ended up -- those
-// are two different points on the participant's body (the reach-center is
-// where their *hand* goes; this is where their *face* is). Computed
-// server-side by the same compute_eye_location() finalizeStudyConditions
-// uses, via preview_workspace_center's eye_location field, so it can never
-// drift out of sync with what finalize will actually write. Doesn't
-// depend on workspace_demo existing -- no need to preview the center
-// first (arm_length_cm is still sent since it's the same shared service
-// request as previewWorkspaceCenter, it's just unused for eye_location).
+// Places a force-free (0 stiffness/damping) REAL orientation spring at
+// condition 2's actual orientation-spring target: in front of the
+// participant's actual face (chair position), NOT above wherever the
+// reach-center ended up -- those are two different points on the
+// participant's body (the reach-center is where their *hand* goes; this
+// is where their *face* is). Target and local_face_normal are both
+// computed/read server-side (compute_eye_location() and
+// workspace_orientation_local_face_normal respectively -- same values
+// finalizeStudyConditions will actually write), via
+// preview_workspace_center's eye_location/orientation_local_face_normal
+// fields, so this can never drift out of sync with what finalize writes.
+// A genuine (if force-free) orientation spring rather than a disguised
+// zero-stiffness position spring -- confirmed live 2026-09-01 that armviz's
+// prefix-based purple-target coloring (added for real orientation springs)
+// never applied to the old position-spring-shaped marker, since it loaded
+// under the springs. prefix, not orientation_springs. Doesn't depend on
+// workspace_demo existing -- no need to preview the center first
+// (arm_length_cm is still sent since it's the same shared service request
+// as previewWorkspaceCenter, it's just unused for eye_location).
 function previewEyeLocation() {
   const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
   const armLength = parseFloat(document.getElementById('wc-arm').value);
@@ -1157,22 +1165,22 @@ function previewEyeLocation() {
       local_point: [parseFloat(document.getElementById('wc-lx').value),
                     parseFloat(document.getElementById('wc-ly').value),
                     parseFloat(document.getElementById('wc-lz').value)],
+      local_face_normal: resp.orientation_local_face_normal,
       target: eyeTarget,
-      rest_length: 0.0,
-      inner_radius: 0.0,
-      outer_radius: 0.0,
     };
     const placeSpring = function() {
-      callService(svcAddSpring, addReq, function(addResp) {
+      callService(svcAddOrientationSpring, addReq, function(addResp) {
         const eyeStr = eyeTarget.map(function(v) { return v.toFixed(4); }).join(', ');
         showMsg('workspace-msg', addResp.success,
           'Eye location: [' + eyeStr + ']. ' + (addResp.message ||
             (addResp.success
               ? '"' + WORKSPACE_DEMO_EYE_SPRING_NAME + '" marker placed (0 stiffness -- no force applied) -- this is where condition 2\'s orientation spring will aim.'
               : 'Failed to place eye marker.')));
-      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+      }, function(err) { showMsg('workspace-msg', false, 'add_orientation_spring failed: ' + err); });
     };
-    // Same re-add-over-existing pattern as previewWorkspaceCenter above.
+    // Same re-add-over-existing pattern as previewWorkspaceCenter above --
+    // remove_spring is generic across spring types (see
+    // virtual_spring_node.py), works the same for an orientation spring.
     callService(svcRemoveSpring, { name: WORKSPACE_DEMO_EYE_SPRING_NAME }, placeSpring, placeSpring);
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }

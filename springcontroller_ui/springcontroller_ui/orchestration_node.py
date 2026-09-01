@@ -867,6 +867,9 @@ class StudyControlPanelNode(Node):
         response.eye_location = [
             float(eye_location["x"]), float(eye_location["y"]), float(eye_location["z"]),
         ]
+        response.orientation_local_face_normal = [
+            float(v) for v in self._workspace_orientation_local_face_normal
+        ]
         return response
 
     def _finalize_study_conditions_cb(self, request, response):

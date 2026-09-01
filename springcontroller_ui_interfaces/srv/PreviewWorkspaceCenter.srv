@@ -5,3 +5,4 @@ bool success
 string message
 float64[3] center
 float64[3] eye_location
+float64[3] orientation_local_face_normal
