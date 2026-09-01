@@ -135,7 +135,9 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.spring-form label { font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px; }
+.spring-form label, ul.spring-list .adjust label, ul.spring-list .retarget label {
+  font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px;
+}
 .spring-form input, .spring-form select {
   padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
 }
@@ -376,8 +378,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
           <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
-          <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
-          <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
+          <label>stiffness (N/m) <input type="number" step="1" id="sp-k" value="50"></label>
+          <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b" value="5"></label>
         </div>
         <div class="row" id="sp-position-only">
           <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
@@ -956,6 +958,16 @@ function retargetSpring(name, xInput, yInput, zInput) {
   showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
 }
 
+// Wraps an input in a small grey <label> (same look as the "Add spring"
+// form's field labels) so the live spring-list boxes show what they are
+// instead of relying solely on a title= tooltip and a one-letter placeholder.
+function labeledInput(labelText, input) {
+  const label = document.createElement('label');
+  label.appendChild(document.createTextNode(labelText));
+  label.appendChild(input);
+  return label;
+}
+
 function handleSpringsUpdated(msg) {
   let names;
   try { names = JSON.parse(msg.data); } catch (e) { return; }
@@ -981,7 +993,9 @@ function handleSpringsUpdated(msg) {
     const updateBtn = document.createElement('button');
     updateBtn.textContent = 'Update';
     updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
-    adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
+    adjust.appendChild(labeledInput('stiffness (N/m)', kInput));
+    adjust.appendChild(labeledInput('damping (N·s/m)', bInput));
+    adjust.appendChild(updateBtn);
 
     const retarget = document.createElement('span');
     retarget.className = 'adjust retarget';
@@ -997,7 +1011,9 @@ function handleSpringsUpdated(msg) {
     const retargetBtn = document.createElement('button');
     retargetBtn.textContent = 'Retarget';
     retargetBtn.onclick = function() { retargetSpring(name, txInput, tyInput, tzInput); };
-    retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
+    retarget.appendChild(labeledInput('target x (m)', txInput));
+    retarget.appendChild(labeledInput('target y (m)', tyInput));
+    retarget.appendChild(labeledInput('target z (m)', tzInput));
     retarget.appendChild(retargetBtn);
 
     li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
