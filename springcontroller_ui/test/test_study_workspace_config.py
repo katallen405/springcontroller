@@ -16,6 +16,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    condition2_spring_overrides,
     log_measurement,
     write_condition_yaml,
 )
@@ -90,6 +91,13 @@ def test_outer_radius_adds_ramp_margin():
     center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
     params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0, ramp_margin_cm=5.0)
     assert params["outer_radius"] == pytest.approx(params["inner_radius"] + 5.0 * CM_TO_M)
+
+
+def test_condition2_overrides_only_rest_length_to_zero():
+    # Explicit equality, not just a rest_length check -- so a future edit that
+    # starts also overriding inner_radius/outer_radius (re-restricting
+    # condition 2's workspace) is caught by an exact diff, not silently passed.
+    assert condition2_spring_overrides() == {"rest_length": 0.0}
 
 
 def test_warns_when_center_height_outside_confirmed_band():

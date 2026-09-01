@@ -139,6 +139,25 @@ def compute_condition_params(
     }
 
 
+def condition2_spring_overrides() -> dict:
+    """
+    Condition 2's only deliberate departure from condition 1's position-spring
+    params (see compute_condition_params): rest_length is 0, not inner_radius.
+    inner_radius/outer_radius (the dead-zone/workspace-safety geometry) stay
+    identical to condition 1's -- this only moves the spring's long-range
+    equilibrium to the literal target point instead of a shell inner_radius
+    out, since condition 2 also runs the orientation spring (zero
+    translational force, see OrientationSpring's docstring) and needs the
+    position spring to actually anchor the block near the target rather than
+    going silent/equilibrating early. First-cut experiment (2026-09-01) to
+    observe live before any further tuning -- this reintroduces the force
+    discontinuity at outer_radius (magnitude stiffness*inner_radius) that
+    compute_condition_params's rest_length == inner_radius rule exists to
+    avoid, accepted deliberately here rather than smoothed over.
+    """
+    return {"rest_length": 0.0}
+
+
 class _NoAliasDumper(yaml.SafeDumper):
     """
     ROS 2's params-file YAML parser (rcl_yaml_param_parser) doesn't support
