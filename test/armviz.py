@@ -598,28 +598,59 @@ def safety_status_cb(msg):
         _active_collision_obj_id = collision_obj_id
 
 
-_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=12)
+_CLOSEST_LINE_MATERIAL = g.MeshBasicMaterial(color=0xff00ff)
+_CLOSEST_LINE_RADIUS = 0.008
+
+
+def _cylinder_transform_between(point_a, point_b):
+    """(4,4) world transform for a meshcat Cylinder (local +Y axis) spanning
+    point_a to point_b, plus its height. Returns (None, 0.0) if the two
+    points coincide (degenerate, zero-length)."""
+    direction = point_b - point_a
+    height = np.linalg.norm(direction)
+    if height < 1e-9:
+        return None, 0.0
+    y_axis = direction / height
+    # Any vector not parallel to y_axis works as a seed for an orthonormal frame.
+    seed = np.array([1.0, 0.0, 0.0]) if abs(y_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x_axis = np.cross(y_axis, seed)
+    x_axis /= np.linalg.norm(x_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    T = np.eye(4)
+    T[:3, 0], T[:3, 1], T[:3, 2] = x_axis, y_axis, z_axis
+    T[:3, 3] = (point_a + point_b) / 2.0
+    return T, height
 
 
 def closest_points_cb(msg):
     """
-    Draws a magenta line between the two witness points
+    Draws a magenta cylinder between the two witness points
     ~/closest_collision_points reports (see virtual_spring_node's
     _publish_safety_status) -- the actual detected closest pair's location,
-    not something inferred from geometry. Empty data (no collision model /
-    nothing to report) hides the line rather than leaving a stale one from
-    the last real reading.
+    not something inferred from geometry. A thin cylinder rather than a
+    Line: WebGL commonly ignores LineBasicMaterial's linewidth above 1px
+    regardless of the requested value (confirmed live 2026-09-01 -- bumping
+    it 4x had no visible effect), so this is drawn as real geometry instead,
+    the same way scene-object cylinders already are (see
+    _CYLINDER_AXIS_ALIGN above, though that one converts a different
+    axis convention -- this builds its transform directly from the two
+    world points instead). Empty data (no collision model / nothing to
+    report) deletes the object rather than leaving a stale one from the
+    last real reading.
     """
     if len(msg.data) < 6:
-        viz.viewer["debug/closest_collision_line"].set_property("visible", False)
+        viz.viewer["debug/closest_collision_line"].delete()
         return
     point_a = np.array(msg.data[0:3])
     point_b = np.array(msg.data[3:6])
-    vertices = np.column_stack([point_a, point_b])  # 3x2
+    T, height = _cylinder_transform_between(point_a, point_b)
+    if T is None:
+        viz.viewer["debug/closest_collision_line"].delete()
+        return
     viz.viewer["debug/closest_collision_line"].set_object(
-        g.Line(g.PointsGeometry(vertices), _CLOSEST_LINE_MATERIAL)
+        g.Cylinder(height, _CLOSEST_LINE_RADIUS), _CLOSEST_LINE_MATERIAL
     )
-    viz.viewer["debug/closest_collision_line"].set_property("visible", True)
+    viz.viewer["debug/closest_collision_line"].set_transform(T)
 
 
 def collision_thresholds_cb(msg):
