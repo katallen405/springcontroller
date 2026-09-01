@@ -599,7 +599,7 @@ def safety_status_cb(msg):
 
 
 _CLOSEST_LINE_MATERIAL = g.MeshBasicMaterial(color=0xff00ff)
-_CLOSEST_LINE_RADIUS = 0.008
+_CLOSEST_LINE_RADIUS = 0.004
 
 
 def _cylinder_transform_between(point_a, point_b):
