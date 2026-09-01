@@ -342,7 +342,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>name</dt><dd>Identifier used to remove/update this spring later -- must be unique.</dd>
           <dt>target x/y/z</dt><dd>World-frame point (m) the spring pulls the attachment point toward (position springs only).</dd>
           <dt>local x/y/z</dt><dd>Attachment point (m), in the link's own local frame -- e.g. (0,0,0) is the link origin.</dd>
-          <dt>offset x/y/z</dt><dd>World-frame offset (m) added to the Link's current position by "Use current position of link + offset" -- fills target x/y/z, doesn't rotate with the link.</dd>
           <dt>stiffness</dt><dd>Spring constant k (N/m). Force grows linearly with distance from target/rest length.</dd>
           <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
@@ -362,12 +361,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>Link
             <select id="sp-link" onchange="applyLinkPresetIfSelected('sp-link','sp-lx','sp-ly','sp-lz')"></select>
           </label>
-          <label>offset x <input type="number" step="0.01" id="sp-off-x" value="0"></label>
-          <label>offset y <input type="number" step="0.01" id="sp-off-y" value="0"></label>
-          <label>offset z <input type="number" step="0.01" id="sp-off-z" value="0"></label>
-          <button class="action off" onclick="fetchCurrentPositionWithOffset()" style="padding:6px 10px;font-size:12.5px">Use current position of link + offset</button>
+          <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
         </div>
-        <p class="hint">Offset above is world-frame (added directly to the link's current x/y/z, doesn't rotate with the link) -- leave all zero to just use the link's current position. Different from "local x/y/z" below, which is the spring's own attachment point in the link's local frame.</p>
         <div class="row">
           <label>name <input type="text" id="sp-name" value="my_spring"></label>
           <label id="sp-target-x-label">target x (m) <input type="number" step="0.01" id="sp-tx" value="0"></label>
@@ -758,33 +753,15 @@ function populateLinkDropdown() {
   });
 }
 
-// Resolves link's *current* position plus a world-frame (dx,dy,dz) offset --
-// doesn't rotate with the link, unlike get_link_pose's own local_point
-// field (that one's for a spring's own attachment point; this is for
-// defining a target relative to wherever some other link happens to be
-// right now).
-function resolveLinkWorldOffset(link, dx, dy, dz, onOk, onErr) {
-  callService(svcGetLinkPose, { link_name: link }, function(resp) {
-    if (!resp.success) { onErr(resp.message); return; }
-    onOk([resp.point[0] + dx, resp.point[1] + dy, resp.point[2] + dz]);
-  }, function(err) { onErr('get_link_pose failed: ' + err); });
-}
-
-function fetchCurrentPositionWithOffset() {
+function fetchCurrentPosition() {
   const link = resolveLinkName(document.getElementById('sp-link').value);
-  const dx = parseFloat(document.getElementById('sp-off-x').value);
-  const dy = parseFloat(document.getElementById('sp-off-y').value);
-  const dz = parseFloat(document.getElementById('sp-off-z').value);
-  if (![dx, dy, dz].every(isFinite)) {
-    showMsg('spring-msg', false, 'Offset x/y/z must all be numbers.');
-    return;
-  }
-  resolveLinkWorldOffset(link, dx, dy, dz, function(point) {
-    document.getElementById('sp-tx').value = point[0].toFixed(4);
-    document.getElementById('sp-ty').value = point[1].toFixed(4);
-    document.getElementById('sp-tz').value = point[2].toFixed(4);
-    showMsg('spring-msg', true, 'Filled target with current position of ' + link + ' + offset.');
-  }, function(msg) { showMsg('spring-msg', false, msg); });
+  callService(svcGetLinkPose, { link_name: link }, function(resp) {
+    if (!resp.success) { showMsg('spring-msg', false, resp.message); return; }
+    document.getElementById('sp-tx').value = resp.point[0].toFixed(4);
+    document.getElementById('sp-ty').value = resp.point[1].toFixed(4);
+    document.getElementById('sp-tz').value = resp.point[2].toFixed(4);
+    showMsg('spring-msg', true, 'Filled target with current position of ' + link + '.');
+  }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
 }
 
 // Locks workspace_demo's target onto wherever its attachment point (Link +
