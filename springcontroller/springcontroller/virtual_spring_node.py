@@ -179,10 +179,11 @@ joint_limit_repulsion_enabled : bool
     it nears its own position limit (see
     URDFArmConfiguration.get_joint_limit_repulsion_torques) -- a cheap
     proxy for the self-collision risk carried by joints 2/4/6 nearing their
-    limits (confirmed live 2026-09-01: a fault from self-collision).
-    Defaults to False pending hardware verification, same explicit-opt-in
-    policy as repulsion_enabled originally used (see
-    collision_recovery_torque_ramp project memory). ~/set_joint_limit_repulsion_enabled
+    limits. Defaults to True as of 2026-09-01: a study run faulted from
+    self-collision while this was still off (nothing was opposing the
+    springs at all, not a case of springs overpowering it -- its own 2 N*m
+    per-joint cap is deliberately just "a gentle nudge, not a hard wall",
+    never meant to out-muscle a strong spring by itself). ~/set_joint_limit_repulsion_enabled
     still overrides it either way.
 joint_limit_margin_rad : double
     Distance (rad) from a joint's position limit at which this field starts
@@ -327,12 +328,14 @@ class VirtualSpringNode(Node):
         # Cheap, joint-angle-only proxy for self-collision risk (see
         # get_joint_limit_repulsion_torques) -- distinct from the Cartesian
         # repulsion field above, which needs live scene objects and can't
-        # anticipate self-collision from arm posture alone. Off by default
-        # pending hardware verification, same explicit-opt-in policy as
-        # repulsion_enabled originally used (see
-        # collision_recovery_torque_ramp project memory) -- flip via
-        # ~/set_joint_limit_repulsion_enabled once verified live.
-        self.declare_parameter("joint_limit_repulsion_enabled", False)
+        # anticipate self-collision from arm posture alone. On by default
+        # as of 2026-09-01: a study run faulted from self-collision while
+        # this was off -- nothing was opposing the springs at all, not a
+        # case of springs overpowering it. Still just a soft per-joint
+        # nudge (2 N*m cap), not a substitute for the hard self-collision
+        # clamp -- flip off via ~/set_joint_limit_repulsion_enabled if it
+        # ever needs to come out for a session.
+        self.declare_parameter("joint_limit_repulsion_enabled", True)
         # ~10 degrees -- small enough to stay out of the way during normal
         # spring operation, large enough to start pushing back before the
         # joint is actually at its hard limit.
