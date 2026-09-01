@@ -52,6 +52,16 @@ Publications
     changes via add_spring/add_joint_spring/add_orientation_spring/
     remove_spring (supports spring_viz, maybe later UI).
 
+~/joint_limit_repulsion_torques (sensor_msgs/JointState)
+    Effort field carries the joint-limit repulsion field's own
+    contribution (zeros when disabled or nothing's within
+    joint_limit_margin_rad) -- always published, same "continuous signal
+    to plot against" reasoning as ~/repulsion_torques.
+
+~/joint_limit_repulsion_enabled_status (std_msgs/Bool, TRANSIENT_LOCAL)
+    Live joint_limit_repulsion_enabled state -- same "believed on but
+    wasn't" reasoning as ~/repulsion_enabled_status.
+
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
     "COLLISION" -- published every /joint_states callback, same cadence as
@@ -71,6 +81,11 @@ Services
     Toggle the repulsion_enabled field (see get_repulsion_torques) at
     runtime -- ros2 param set has no effect on it, same as every other
     parameter here; this is the only way to flip it without restarting.
+
+~/set_joint_limit_repulsion_enabled  (std_srvs/SetBool)
+    Toggle the joint_limit_repulsion_enabled field (see
+    get_joint_limit_repulsion_torques) at runtime -- same "ros2 param set
+    has no effect" reasoning as set_repulsion_enabled above.
 
 ~/update_collision_thresholds  (springcontroller_interfaces/UpdateCollisionThresholds)
     Live-tune danger_threshold and caution_threshold together (rejects the
@@ -159,6 +174,23 @@ orientation_spring_names, orientation_springs.<n>.* : per-OrientationSpring
     damping. `target` has no safe default (it's an external point, e.g. a
     person's face, not inferable from the arm's pose) and must be set
     explicitly.
+joint_limit_repulsion_enabled : bool
+    Low-strength per-joint field that pushes a joint back toward center as
+    it nears its own position limit (see
+    URDFArmConfiguration.get_joint_limit_repulsion_torques) -- a cheap
+    proxy for the self-collision risk carried by joints 2/4/6 nearing their
+    limits (confirmed live 2026-09-01: a fault from self-collision).
+    Defaults to False pending hardware verification, same explicit-opt-in
+    policy as repulsion_enabled originally used (see
+    collision_recovery_torque_ramp project memory). ~/set_joint_limit_repulsion_enabled
+    still overrides it either way.
+joint_limit_margin_rad : double
+    Distance (rad) from a joint's position limit at which this field starts
+    ramping up from zero.
+joint_limit_max_torque_nm : double
+    Torque (N*m) this field saturates at exactly on (or past) a limit.
+    Chosen small relative to torque_limit_nm on every limited joint (2, 4,
+    6) so it stays a gentle nudge, not a hard wall.
 """
 
 import csv
@@ -292,6 +324,24 @@ class VirtualSpringNode(Node):
         # tune down further if it still feels strong with several
         # simultaneous contacts.
         self.declare_parameter("repulsion_max_total_torque_nm", 5.0)
+        # Cheap, joint-angle-only proxy for self-collision risk (see
+        # get_joint_limit_repulsion_torques) -- distinct from the Cartesian
+        # repulsion field above, which needs live scene objects and can't
+        # anticipate self-collision from arm posture alone. Off by default
+        # pending hardware verification, same explicit-opt-in policy as
+        # repulsion_enabled originally used (see
+        # collision_recovery_torque_ramp project memory) -- flip via
+        # ~/set_joint_limit_repulsion_enabled once verified live.
+        self.declare_parameter("joint_limit_repulsion_enabled", False)
+        # ~10 degrees -- small enough to stay out of the way during normal
+        # spring operation, large enough to start pushing back before the
+        # joint is actually at its hard limit.
+        self.declare_parameter("joint_limit_margin_rad", 0.175)
+        # Well under torque_limit_nm on every limited joint (2, 4, 6) --
+        # joint_6's effort limit is 9 N*m (see
+        # flat_urdf_files/gen3_kinova_flat.urdf), the tightest of the
+        # three, so 2.0 stays a clear fraction of even that.
+        self.declare_parameter("joint_limit_max_torque_nm", 2.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -338,6 +388,15 @@ class VirtualSpringNode(Node):
         self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
         self._repulsion_max_total_torque_nm = (
             self.get_parameter("repulsion_max_total_torque_nm").get_parameter_value().double_value
+        )
+        self._joint_limit_repulsion_enabled = (
+            self.get_parameter("joint_limit_repulsion_enabled").get_parameter_value().bool_value
+        )
+        self._joint_limit_margin_rad = (
+            self.get_parameter("joint_limit_margin_rad").get_parameter_value().double_value
+        )
+        self._joint_limit_max_torque_nm = (
+            self.get_parameter("joint_limit_max_torque_nm").get_parameter_value().double_value
         )
         # Cached alongside _last_collision_status -- recomputed at the same
         # throttled cadence (collision_check_interval_sec) since it reuses
@@ -435,6 +494,7 @@ class VirtualSpringNode(Node):
         # cache altogether.
         self._collision_warn_log_last = -1.0
         self._repulsion_warn_log_last = -1.0
+        self._joint_limit_repulsion_warn_log_last = -1.0
         if self._collision_log_path:
             self._open_collision_log()
 
@@ -568,6 +628,11 @@ class VirtualSpringNode(Node):
         # than a sparse one that only appears while nonzero.
         self._repulsion_torque_pub = self.create_publisher(
             JointState, "~/repulsion_torques", 10
+        )
+        # Joint-limit repulsion field's own contribution -- same
+        # continuous-signal reasoning as ~/repulsion_torques above.
+        self._joint_limit_repulsion_torque_pub = self.create_publisher(
+            JointState, "~/joint_limit_repulsion_torques", 10
         )
 
         # (~/springs_updated publisher created earlier, above the
@@ -859,6 +924,19 @@ class VirtualSpringNode(Node):
             Bool, "~/repulsion_enabled_status", springs_updated_qos
         )
         self._repulsion_enabled_pub.publish(Bool(data=self._repulsion_enabled))
+        # Same enable-service/status-publisher pattern as repulsion above,
+        # for the same "ros2 param set has no effect" / "believed on but
+        # wasn't" reasons.
+        self._joint_limit_repulsion_enable_srv = self.create_service(
+            SetBool, "~/set_joint_limit_repulsion_enabled",
+            self._set_joint_limit_repulsion_enabled_cb,
+        )
+        self._joint_limit_repulsion_enabled_pub = self.create_publisher(
+            Bool, "~/joint_limit_repulsion_enabled_status", springs_updated_qos
+        )
+        self._joint_limit_repulsion_enabled_pub.publish(
+            Bool(data=self._joint_limit_repulsion_enabled)
+        )
         # Live [danger_threshold, caution_threshold, repulsion_max_force_n],
         # same TRANSIENT_LOCAL reasoning as the two publishers above --
         # confirmed live 2026-08-20 that without this, armviz's caution-halo
@@ -939,6 +1017,16 @@ class VirtualSpringNode(Node):
         )
         response.success = True
         response.message = f"repulsion_enabled = {request.data}"
+        return response
+
+    def _set_joint_limit_repulsion_enabled_cb(self, request, response):
+        self._joint_limit_repulsion_enabled = request.data
+        self._joint_limit_repulsion_enabled_pub.publish(Bool(data=request.data))
+        self.get_logger().info(
+            f"Joint-limit repulsion field {'enabled' if request.data else 'disabled'}"
+        )
+        response.success = True
+        response.message = f"joint_limit_repulsion_enabled = {request.data}"
         return response
 
     def _update_collision_thresholds_cb(self, request, response):
@@ -1491,6 +1579,30 @@ class VirtualSpringNode(Node):
             repulsion_msg.name = self._arm.joint_names
             repulsion_msg.effort = repulsion_out.tolist()
             self._repulsion_torque_pub.publish(repulsion_msg)
+
+            # Joint-limit repulsion field: same unconditionally-additive,
+            # independent-of-spring-enable-state treatment as the Cartesian
+            # repulsion field above -- cheap enough (no Jacobian/distance
+            # query) to compute every cycle rather than throttling it.
+            if self._joint_limit_repulsion_enabled:
+                joint_limit_out = self._arm.get_joint_limit_repulsion_torques(
+                    self._joint_limit_margin_rad, self._joint_limit_max_torque_nm,
+                )
+                torques = torques + joint_limit_out
+                joint_limit_norm = float(np.linalg.norm(joint_limit_out))
+                if (joint_limit_norm > 1e-6 and self._last_torque_status == "ENABLED"
+                        and elapsed - self._joint_limit_repulsion_warn_log_last >= 0.5):
+                    self.get_logger().warn(
+                        f"Joint-limit repulsion field active: |tau|={joint_limit_norm:.3f} N*m"
+                    )
+                    self._joint_limit_repulsion_warn_log_last = elapsed
+            else:
+                joint_limit_out = np.zeros(self._arm.n_dof)
+            joint_limit_msg = JointState()
+            joint_limit_msg.header.stamp = self.get_clock().now().to_msg()
+            joint_limit_msg.name = self._arm.joint_names
+            joint_limit_msg.effort = joint_limit_out.tolist()
+            self._joint_limit_repulsion_torque_pub.publish(joint_limit_msg)
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been

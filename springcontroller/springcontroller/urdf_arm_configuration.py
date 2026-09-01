@@ -620,6 +620,74 @@ class URDFArmConfiguration:
 
         return torques
 
+    def get_joint_limit_repulsion_torques(
+        self, margin_rad: float, max_torque_nm: float,
+    ) -> np.ndarray:
+        """
+        Low-strength per-joint torque field that pushes a joint back toward
+        its center as it nears its own position limit -- a cheap proxy for
+        self-collision risk on this arm, where the links that actually
+        collide (confirmed live 2026-09-01: a fault from self-collision)
+        are driven by joints 2/4/6 approaching their limits, not by
+        Cartesian proximity of arbitrary link pairs the way
+        get_repulsion_torques() checks.
+
+        Unlike get_repulsion_torques(), this needs no Jacobian or distance
+        query -- it acts directly on each limited joint's own DOF (same
+        "no Jacobian" shape as JointSpring in virtual_spring.py), so it's
+        cheap enough to run every cycle, not throttled.
+
+        Continuous joints (pinocchio nq==2, cos/sin-encoded -- joints 1, 3,
+        5, 7 on this arm) have no position limit and are skipped
+        entirely. Only revolute joints with a finite, non-degenerate
+        [lower, upper] range (joints 2, 4, 6 here, per
+        flat_urdf_files/gen3_kinova_flat.urdf -- read from the URDF rather
+        than hardcoded from Kinova's docs, so it can't drift out of sync
+        with the same model get_gravity_torques()/get_jacobian() already
+        trust) are considered.
+
+        Ramps quadratically from 0 at margin_rad away from a limit to
+        max_torque_nm exactly at (or past) the limit -- same t^2 falloff
+        shape as get_repulsion_torques(), for the same "gentle nudge, not a
+        hard wall" reasoning. Torque direction always points away from
+        whichever limit is closer, toward the joint's center.
+
+        Returns a zero vector if margin_rad or max_torque_nm is <= 0.
+        """
+        torques = np.zeros(self._model.nv)
+        if margin_rad <= 0.0 or max_torque_nm <= 0.0:
+            return torques
+
+        for i in range(self._model.nv):
+            joint = self._model.joints[i + 1]
+            if joint.nq != 1:
+                # Continuous joint -- no position limit to push away from.
+                continue
+            lower = self._model.lowerPositionLimit[joint.idx_q]
+            upper = self._model.upperPositionLimit[joint.idx_q]
+            if not (np.isfinite(lower) and np.isfinite(upper)) or upper <= lower:
+                continue
+
+            angle = self.get_joint_angle(i)
+            dist_to_upper = upper - angle
+            dist_to_lower = angle - lower
+
+            if dist_to_upper < dist_to_lower:
+                if dist_to_upper < margin_rad:
+                    # Clamp to [0, 1] both ends -- dist_to_upper can go
+                    # negative once the angle is actually past the limit,
+                    # which would otherwise push t (and t^2) past 1 and let
+                    # the torque overshoot max_torque_nm instead of
+                    # saturating there.
+                    t = min(1.0, max(0.0, (margin_rad - dist_to_upper) / margin_rad))
+                    torques[i] = -max_torque_nm * t * t
+            else:
+                if dist_to_lower < margin_rad:
+                    t = min(1.0, max(0.0, (margin_rad - dist_to_lower) / margin_rad))
+                    torques[i] = max_torque_nm * t * t
+
+        return torques
+
     # ------------------------------------------------------------------
     # Environment (scene) collision objects
     # ------------------------------------------------------------------
