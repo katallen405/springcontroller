@@ -1115,7 +1115,14 @@ function getConditionOrder() {
   };
   callService(svcAssignConditionOrder, req, function(resp) {
     if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
-    const label = resp.first_condition === 'condition1' ? 'Condition 1' : 'Condition 2';
+    // Explicit per-value map, not a binary ternary -- assign_condition_order
+    // rotates through three values (baseline/condition1/condition2, see
+    // study_workspace_config.py), and a two-way ternary silently mislabeled
+    // "baseline" as "Condition 2" (whatever wasn't 'condition1') 1 time in 3.
+    const CONDITION_LABELS = {
+      baseline: 'Baseline', condition1: 'Condition 1', condition2: 'Condition 2',
+    };
+    const label = CONDITION_LABELS[resp.first_condition] || resp.first_condition;
     const note = resp.already_assigned ? ' (previously assigned -- unchanged)' : ' (newly assigned)';
     showMsg('workspace-msg', true, participantId + ': run ' + label + ' first' + note + '.');
   }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
