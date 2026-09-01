@@ -141,22 +141,29 @@ def get_all_frames():
 # armviz treats them the same everywhere except this prefix lookup.
 SPRING_PARAM_PREFIXES = ["springs", "orientation_springs"]
 
-def _get_spring_param(name, key):
-    """Try each known spring-type prefix in turn; return the raw `ros2
-    param get` output from whichever one actually has this parameter."""
-    for prefix in SPRING_PARAM_PREFIXES:
+def _get_spring_param(name, key, prefix=None):
+    """Fetch `<prefix>.<name>.<key>` via `ros2 param get`. When `prefix` is
+    known (the caller already knows this spring's type -- see
+    load_springs_from_params) it's queried directly, no guessing. Otherwise
+    falls back to trying each known spring-type prefix in turn -- this is
+    the only path left that generates the "Invalid access to undeclared
+    parameter(s)" WARN on the node side, and it only fires for a spring
+    whose type wasn't known when it was first tracked (e.g. one added after
+    startup, seen only via ~/springs_updated)."""
+    prefixes = [prefix] if prefix is not None else SPRING_PARAM_PREFIXES
+    for p in prefixes:
         try:
             return subprocess.check_output([
                 'ros2', 'param', 'get', SPRING_NODE,
-                f'{prefix}.{name}.{key}'
+                f'{p}.{name}.{key}'
             ], timeout=5).decode()
         except Exception:
             continue
     return None
 
-def get_param_target(name):
+def get_param_target(name, prefix=None):
     """Read initial spring target from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'target')
+    out = _get_spring_param(name, 'target', prefix)
     if out is None:
         print(f"[viz] could not read target for '{name}'")
         return None
@@ -165,7 +172,7 @@ def get_param_target(name):
         return np.array([float(x) for x in nums])
     return None
 
-def get_param_local_point(name):
+def get_param_local_point(name, prefix=None):
     """Read initial local_point (attachment offset within the link's own
     frame) from the spring node's ROS parameters. Unlike target/link_name,
     this was never fetched at all before -- the blue attachment sphere
@@ -173,7 +180,7 @@ def get_param_local_point(name):
     confirmed live 2026-08-21 (a (0,0,0.1) local_point still drew the ball
     at (0,0,0) in the link frame). Same "None means not resolved yet, no
     hardcoded fallback" contract as get_param_target/get_param_link."""
-    out = _get_spring_param(name, 'local_point')
+    out = _get_spring_param(name, 'local_point', prefix)
     if out is None:
         print(f"[viz] could not read local_point for '{name}'")
         return None
@@ -182,9 +189,9 @@ def get_param_local_point(name):
         return np.array([float(x) for x in nums])
     return None
 
-def get_param_link(name):
+def get_param_link(name, prefix=None):
     """Read initial link_name from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'link_name')
+    out = _get_spring_param(name, 'link_name', prefix)
     if out is None:
         print(f"[viz] could not read link_name for '{name}'")
         # None, not a hardcoded fallback -- this script is robot-agnostic
@@ -200,7 +207,7 @@ def get_param_link(name):
         return None
     return out.split(':')[-1].strip()
 
-def _track_spring(name):
+def _track_spring(name, prefix=None):
     """Ensure `name` is present in `springs` with a resolved target,
     (re)trying the target fetch if it's still missing from a previous
     attempt. Creates the runtime ~/target/<name> subscription the first
@@ -217,16 +224,27 @@ def _track_spring(name):
     tip_spring showed up (arm was genuinely pulling toward it) but never
     appeared in meshcat. Calling this again for an already-tracked name is
     what gives a later retry (bootstrap loop, or another ~/springs_updated
-    message) a chance to actually recover from that."""
+    message) a chance to actually recover from that.
+
+    `prefix`, when given, is this spring's already-known parameter-name
+    prefix (see SPRING_PARAM_PREFIXES) -- load_springs_from_params knows it
+    from which of spring_names/orientation_spring_names/joint_spring_names
+    it found the name under, so passing it here skips straight to the
+    right one instead of guessing "springs" first and eating a guaranteed
+    "Invalid access to undeclared parameter(s)" WARN for every non-Cartesian
+    spring. Once resolved (here or on a later call), it's cached on the
+    entry so retries reuse it even if a later caller (e.g. springs_updated_cb,
+    which only gets a bare name with no type) doesn't pass one."""
     entry = springs.get(name)
     if entry is None:
-        target      = get_param_target(name)
-        link_name   = get_param_link(name)
-        local_point = get_param_local_point(name)
+        target      = get_param_target(name, prefix)
+        link_name   = get_param_link(name, prefix)
+        local_point = get_param_local_point(name, prefix)
         springs[name] = entry = {
             "target":      target,
             "link_name":   link_name,
             "local_point": local_point,
+            "prefix":      prefix,
         }
         # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
         # publisher -- see _latched_qos below for why a plain VOLATILE
@@ -241,15 +259,18 @@ def _track_spring(name):
         target_subs[name] = sub
         print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
     else:
+        p = prefix if prefix is not None else entry.get("prefix")
         if entry.get("target") is None:
-            entry["target"] = get_param_target(name)
+            entry["target"] = get_param_target(name, p)
             print(f"[viz] retried target for '{name}': {entry['target']}")
         if entry.get("link_name") is None:
-            entry["link_name"] = get_param_link(name)
+            entry["link_name"] = get_param_link(name, p)
             print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
         if entry.get("local_point") is None:
-            entry["local_point"] = get_param_local_point(name)
+            entry["local_point"] = get_param_local_point(name, p)
             print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
+        if entry.get("prefix") is None:
+            entry["prefix"] = p
     # local_point isn't part of the resolved-gate: draw_springs falls back
     # to zero for it (the ball just sits at the link origin, same as
     # before this was tracked at all) rather than blocking the whole
@@ -263,6 +284,10 @@ def load_springs_from_params():
     target -- see _track_spring."""
     any_found = False
     all_resolved = True
+    names_param_prefix = {
+        "spring_names":             "springs",
+        "orientation_spring_names": "orientation_springs",
+    }
     for names_param in ("spring_names", "orientation_spring_names"):
         try:
             out = subprocess.check_output([
@@ -281,7 +306,8 @@ def load_springs_from_params():
         # List comprehension, not all(gen) -- must attempt every name
         # (each with its own retry) rather than short-circuiting on the
         # first one still missing a target.
-        if not all([_track_spring(name) for name in names]):
+        prefix = names_param_prefix[names_param]
+        if not all([_track_spring(name, prefix) for name in names]):
             all_resolved = False
     return any_found and all_resolved
 # ---------------------------------------------------------------------------

@@ -894,13 +894,47 @@ function updateCollisionThresholds() {
 // populated for any spring, ever. Splitting into one call per prefix means
 // an empty response just means "wrong prefix, try the next one" instead of
 // silently emptying out every time.
-const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8,
+      PARAM_TYPE_STRING_ARRAY = 9;
 const SPRING_PARAM_PREFIXES = [
   { prefix: 'springs', hasTarget: true },
   { prefix: 'orientation_springs', hasTarget: true },
   { prefix: 'joint_springs', hasTarget: false },  // real field is target_angle, not a 3-vector
 ];
-function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
+
+// Maps every currently-known spring name to its parameter-name prefix (see
+// SPRING_PARAM_PREFIXES), by reading spring_names/orientation_spring_names/
+// joint_spring_names -- these three are always declared (with an empty-ish
+// default) regardless of whether any springs exist, so batching them into
+// one GetParameters call is safe, unlike the per-spring prefix guessing
+// below. Used so fetchSpringValues can go straight to the right prefix
+// instead of guessing "springs" first for every spring and eating a
+// guaranteed "Invalid access to undeclared parameter(s)" WARN on the node
+// side for every orientation/joint spring, every refresh.
+function fetchSpringTypeMap(callback) {
+  callService(svcGetSpringParams,
+    { names: ['spring_names', 'orientation_spring_names', 'joint_spring_names'] },
+    function(resp) {
+      const v = resp.values;
+      const prefixByIndex = ['springs', 'orientation_springs', 'joint_springs'];
+      const map = {};
+      prefixByIndex.forEach(function(prefix, i) {
+        const val = v[i];
+        if (val && val.type === PARAM_TYPE_STRING_ARRAY) {
+          (val.string_array_value || []).forEach(function(n) { if (n) map[n] = prefix; });
+        }
+      });
+      callback(map);
+    },
+    function(err) { callback({}); });
+}
+
+// `knownPrefix`, when given (see fetchSpringTypeMap), skips straight to that
+// prefix instead of starting the guess-and-fallback loop at 'springs' --
+// falls through to later prefixes on failure exactly as the no-prefix path
+// does, so a stale/missing type-map entry still degrades to the old
+// behavior rather than leaving the fields blank.
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix) {
   function tryPrefix(i) {
     if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
     const { prefix, hasTarget } = SPRING_PARAM_PREFIXES[i];
@@ -919,7 +953,10 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
       }
     }, function(err) { tryPrefix(i + 1); });
   }
-  tryPrefix(0);
+  const startIdx = knownPrefix
+    ? SPRING_PARAM_PREFIXES.findIndex(function(e) { return e.prefix === knownPrefix; })
+    : -1;
+  tryPrefix(startIdx >= 0 ? startIdx : 0);
 }
 
 // config_path is a load-time-only parameter (set once when virtual_spring_node
@@ -963,6 +1000,10 @@ function handleSpringsUpdated(msg) {
   document.getElementById('springs-list-inline').textContent =
     currentSprings.length ? currentSprings.join(', ') : '(none)';
 
+  fetchSpringTypeMap(function(typeMap) { renderSpringList(typeMap); });
+}
+
+function renderSpringList(typeMap) {
   const ul = document.getElementById('spring-list');
   ul.innerHTML = '';
   currentSprings.forEach(function(name) {
@@ -1008,7 +1049,7 @@ function handleSpringsUpdated(msg) {
     li.appendChild(btn);
     ul.appendChild(li);
 
-    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name]);
   });
 }
 
