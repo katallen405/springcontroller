@@ -598,7 +598,7 @@ def safety_status_cb(msg):
         _active_collision_obj_id = collision_obj_id
 
 
-_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=3)
+_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=12)
 
 
 def closest_points_cb(msg):
@@ -691,19 +691,23 @@ def draw_springs(q):
         T_attach = np.eye(4)
         T_attach[:3, 3] = attachment
         viz.viewer[f"springs/{name}/attachment"].set_object(
-            g.Sphere(0.05),
+            g.Sphere(0.025),
             g.MeshLambertMaterial(color=0x0088ff, transparent=False)
         )
         viz.viewer[f"springs/{name}/attachment"].set_transform(T_attach)
 
         if target is not None:
             _no_target_warned.discard(name)
-            # Red sphere at target
+            # Red sphere at target -- purple for an orientation spring's
+            # look-at point, so it's visually distinguishable at a glance
+            # from a position spring's target (both were previously
+            # identical red spheres, easy to confuse in a screenshot).
+            target_color = 0x9c27b0 if spring.get("prefix") == "orientation_springs" else 0xff0000
             T_target = np.eye(4)
             T_target[:3, 3] = target
             viz.viewer[f"springs/{name}/target"].set_object(
-                g.Sphere(0.05),
-                g.MeshLambertMaterial(color=0xff0000, transparent=False)
+                g.Sphere(0.025),
+                g.MeshLambertMaterial(color=target_color, transparent=False)
             )
             viz.viewer[f"springs/{name}/target"].set_transform(T_target)
 
