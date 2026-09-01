@@ -62,6 +62,17 @@ Publications
     Live joint_limit_repulsion_enabled state -- same "believed on but
     wasn't" reasoning as ~/repulsion_enabled_status.
 
+~/spring_forces (std_msgs/String, JSON)
+    Every active spring's current force/moment, throttled to
+    spring_force_publish_interval_sec (default 0.1s -- independent of the
+    control loop's own rate, see _publish_spring_forces()):
+    [{"name", "kind": "force"|"moment"|"torque", "magnitude", "direction"}, ...].
+    A VirtualSpring reports a real 3D "force" (N); an OrientationSpring
+    reports a 3D "moment" (N*m); a JointSpring reports a scalar "torque"
+    about its own joint axis with direction: null. A spring not currently
+    contributing (disabled, or hasn't computed a state yet) is omitted
+    rather than reported as zero.
+
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
     "COLLISION" -- published every /joint_states callback, same cadence as
@@ -195,6 +206,7 @@ joint_limit_max_torque_nm : double
 """
 
 import csv
+import json
 import math
 import os
 
@@ -386,6 +398,17 @@ class VirtualSpringNode(Node):
         )
         self._last_collision_check_time = None
         self._last_collision_status = None
+        # Same throttling reasoning as collision_check_interval_sec above:
+        # ~/spring_forces publishes every active spring's force/moment
+        # (already computed as part of compute_torques() -- no extra
+        # physics work, just JSON-encoding cached state), but building and
+        # publishing a String message every control-loop cycle is still
+        # unnecessary overhead a UI/rosbag consumer doesn't need at 100Hz.
+        self.declare_parameter("spring_force_publish_interval_sec", 0.1)
+        self._spring_force_publish_interval = (
+            self.get_parameter("spring_force_publish_interval_sec").get_parameter_value().double_value
+        )
+        self._last_spring_force_publish_time = None
         self._repulsion_enabled = self.get_parameter("repulsion_enabled").get_parameter_value().bool_value
         self._caution_threshold = self.get_parameter("caution_threshold").get_parameter_value().double_value
         self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
@@ -636,6 +659,14 @@ class VirtualSpringNode(Node):
         # continuous-signal reasoning as ~/repulsion_torques above.
         self._joint_limit_repulsion_torque_pub = self.create_publisher(
             JointState, "~/joint_limit_repulsion_torques", 10
+        )
+        # Per-spring force/moment (magnitude + world-frame direction),
+        # throttled via spring_force_publish_interval_sec -- see
+        # _publish_spring_forces(). A JSON-in-String payload rather than a
+        # new .msg type, matching ~/springs_updated's existing convention
+        # for this kind of structured-but-small telemetry.
+        self._spring_forces_pub = self.create_publisher(
+            String, "~/spring_forces", 10
         )
 
         # (~/springs_updated publisher created earlier, above the
@@ -1571,8 +1602,19 @@ class VirtualSpringNode(Node):
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
                 if (repulsion_norm > 1e-6 and self._last_torque_status == "ENABLED"
                         and elapsed - self._repulsion_warn_log_last >= 0.5):
+                    # get_repulsion_torques() can sum contributions from
+                    # every pair within caution_threshold, but the globally
+                    # closest pair (collision, already computed this cycle
+                    # above) is almost always what's actually driving it --
+                    # naming it turns "something is pushing back" into
+                    # "X is near Y", without a second geometry pass just for
+                    # this log line.
+                    pair_note = ""
+                    if collision is not None:
+                        a, b = collision.closest_pair
+                        pair_note = f" (closest: {a}/{b} dist={collision.min_distance:.3f}m)"
                     self.get_logger().warn(
-                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
+                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m{pair_note}"
                     )
                     self._repulsion_warn_log_last = elapsed
             else:
@@ -1595,8 +1637,14 @@ class VirtualSpringNode(Node):
                 joint_limit_norm = float(np.linalg.norm(joint_limit_out))
                 if (joint_limit_norm > 1e-6 and self._last_torque_status == "ENABLED"
                         and elapsed - self._joint_limit_repulsion_warn_log_last >= 0.5):
+                    active_joints = ", ".join(
+                        f"{name}={val:.3f}"
+                        for name, val in zip(self._arm.joint_names, joint_limit_out)
+                        if abs(val) > 1e-6
+                    )
                     self.get_logger().warn(
-                        f"Joint-limit repulsion field active: |tau|={joint_limit_norm:.3f} N*m"
+                        f"Joint-limit repulsion field active: |tau|={joint_limit_norm:.3f} N*m "
+                        f"({active_joints})"
                     )
                     self._joint_limit_repulsion_warn_log_last = elapsed
             else:
@@ -1606,6 +1654,15 @@ class VirtualSpringNode(Node):
             joint_limit_msg.name = self._arm.joint_names
             joint_limit_msg.effort = joint_limit_out.tolist()
             self._joint_limit_repulsion_torque_pub.publish(joint_limit_msg)
+
+            # ~/spring_forces: throttled independently of the control loop
+            # itself (same reasoning as collision_check_interval_sec above)
+            # -- see _publish_spring_forces().
+            if (self._last_spring_force_publish_time is None or
+                    (now - self._last_spring_force_publish_time).nanoseconds / 1e9
+                    >= self._spring_force_publish_interval):
+                self._publish_spring_forces()
+                self._last_spring_force_publish_time = now
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
@@ -2500,6 +2557,53 @@ class VirtualSpringNode(Node):
         first = next(iter(self._springs), None)
         enabled = first.enabled if first is not None else True
         self._springs_enabled_pub.publish(Bool(data=enabled))
+
+    def _publish_spring_forces(self) -> None:
+        """
+        Publish every active spring's current force/moment as a JSON array
+        on ~/spring_forces: [{"name", "kind", "magnitude", "direction"}, ...].
+        Reuses each spring's already-cached _last_state (set this cycle by
+        compute_torques(), called earlier in _joint_state_cb) -- this is
+        pure JSON formatting, not new physics, so throttling the *call site*
+        (see spring_force_publish_interval_sec) is what actually saves
+        control-loop time, not anything in here. A spring with no
+        _last_state (disabled, or not computed yet) is omitted rather than
+        reported as zero, so a consumer can tell "not contributing right
+        now" apart from "not loaded yet".
+
+        kind is "force" for a VirtualSpring (real 3D force, N), "moment"
+        for an OrientationSpring (real 3D moment, N*m -- distinguished
+        from "force" so a consumer doesn't mix up units), or "torque" for
+        a JointSpring (a scalar about a single joint axis, not a Cartesian
+        vector -- direction is null rather than inventing a 3D direction
+        for something that doesn't have one).
+        """
+        entries = []
+        for spring in self._springs:
+            state = spring._last_state
+            if state is None:
+                continue
+            if isinstance(spring, VirtualSpring):
+                vec, kind = state.force_world, "force"
+            elif isinstance(spring, OrientationSpring):
+                vec, kind = state.moment_world, "moment"
+            elif isinstance(spring, JointSpring):
+                entries.append({
+                    "name": spring.name, "kind": "torque",
+                    "magnitude": float(state.torque), "direction": None,
+                })
+                continue
+            else:
+                continue
+            magnitude = float(np.linalg.norm(vec))
+            direction = (vec / magnitude).tolist() if magnitude > 1e-9 else [0.0, 0.0, 0.0]
+            entries.append({
+                "name": spring.name, "kind": kind,
+                "magnitude": magnitude, "direction": direction,
+            })
+        msg = String()
+        msg.data = json.dumps(entries)
+        self._spring_forces_pub.publish(msg)
 
     def _publish_collision_thresholds(self) -> None:
         # [danger_threshold, caution_threshold, repulsion_max_force_n], in
