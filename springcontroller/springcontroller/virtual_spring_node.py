@@ -205,6 +205,12 @@ joint_limit_max_torque_nm : double
     Torque (N*m) this field saturates at exactly on (or past) a limit.
     Chosen small relative to torque_limit_nm on every limited joint (2, 4,
     6) so it stays a gentle nudge, not a hard wall.
+max_orientation_spring_stiffness_nm_per_rad : double
+    Sanity ceiling on an OrientationSpring's stiffness, enforced in
+    ~/add_orientation_spring and ~/update_spring -- rejects a value this
+    high as a likely position-spring-units (N/m) mistake rather than a
+    genuine N*m/rad value. See its declare_parameter call for the live
+    incident this guards against.
 """
 
 import csv
@@ -360,6 +366,20 @@ class VirtualSpringNode(Node):
         # flat_urdf_files/gen3_kinova_flat.urdf), the tightest of the
         # three, so 2.0 stays a clear fraction of even that.
         self.declare_parameter("joint_limit_max_torque_nm", 2.0)
+        # Sanity ceiling on an OrientationSpring's stiffness (N*m/rad),
+        # enforced in _add_orientation_spring_cb and _update_spring_cb --
+        # 5x the 2.0 N*m/rad used throughout this repo's own configs
+        # (workspace_orientation_stiffness, face_participant), generous
+        # headroom for real tuning while still catching a units mix-up
+        # with a *position* spring's stiffness (N/m, typically 50-300).
+        # Added after a live incident (2026-09-02): a web-UI form bug sent
+        # stiffness=50 N*m/rad for a newly-added orientation spring (25x
+        # this default), producing a 71 N*m torque spike within 5ms of
+        # the spring being added and a collision/fault ~1.2s later -- far
+        # too fast for the repulsion field (collision_check_interval_sec
+        # throttling) to catch. This is defense-in-depth independent of
+        # that UI fix: it catches the same mistake from any client.
+        self.declare_parameter("max_orientation_spring_stiffness_nm_per_rad", 10.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -427,6 +447,10 @@ class VirtualSpringNode(Node):
         )
         self._joint_limit_max_torque_nm = (
             self.get_parameter("joint_limit_max_torque_nm").get_parameter_value().double_value
+        )
+        self._max_orientation_spring_stiffness = (
+            self.get_parameter("max_orientation_spring_stiffness_nm_per_rad")
+            .get_parameter_value().double_value
         )
         # Cached alongside _last_collision_status -- recomputed at the same
         # throttled cadence (collision_check_interval_sec) since it reuses
@@ -2297,6 +2321,18 @@ class VirtualSpringNode(Node):
             response.message = f"Spring '{name}' already exists."
             return response
 
+        if request.stiffness > self._max_orientation_spring_stiffness:
+            response.success = False
+            response.message = (
+                f"stiffness={request.stiffness} N*m/rad exceeds "
+                f"max_orientation_spring_stiffness_nm_per_rad="
+                f"{self._max_orientation_spring_stiffness} -- this looks "
+                f"like a position-spring value (N/m) sent by mistake. "
+                f"Orientation springs are typically ~0.5-5 N*m/rad; raise "
+                f"the parameter if a larger value is genuinely intended."
+            )
+            return response
+
         try:
             self._arm.validate_link_name(request.link_name)
             spring = OrientationSpring(
@@ -2520,6 +2556,16 @@ class VirtualSpringNode(Node):
         if request.damping < 0:
             response.success = False
             response.message = f"damping must be >= 0, got {request.damping}."
+            return response
+        if (isinstance(spring, OrientationSpring)
+                and request.stiffness > self._max_orientation_spring_stiffness):
+            response.success = False
+            response.message = (
+                f"stiffness={request.stiffness} N*m/rad exceeds "
+                f"max_orientation_spring_stiffness_nm_per_rad="
+                f"{self._max_orientation_spring_stiffness} for orientation "
+                f"spring '{name}'. See _add_orientation_spring_cb for why."
+            )
             return response
         is_virtual = isinstance(spring, VirtualSpring)
         if is_virtual and request.rest_length < 0:

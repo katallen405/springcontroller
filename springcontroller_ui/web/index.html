@@ -384,15 +384,27 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
           <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
-          <label>stiffness (N/m) <input type="number" step="1" id="sp-k" value="50"></label>
-          <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b" value="5"></label>
         </div>
+        <!-- Stiffness/damping live in these type-gated rows, not the shared
+             row above -- position (N/m) and orientation (N*m/rad) springs
+             are 25x apart in what a sane value looks like (see
+             gen3_study_data configs' stiffness: 50 vs. 2.0), and sharing
+             one box with one label meant selecting "Orientation" and
+             leaving the field at its position-spring default of 50 sent
+             stiffness: 50 N*m/rad -- confirmed live 2026-09-02 as the
+             direct cause of a collision/fault within ~1.2s of adding an
+             orientation spring: 25x the normal 2.0 N*m/rad produced a
+             71 N*m torque spike the instant the spring was added. -->
         <div class="row" id="sp-position-only">
+          <label>stiffness (N/m) <input type="number" step="1" id="sp-k-position" value="50"></label>
+          <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b-position" value="5"></label>
           <label>rest length (m) <input type="number" step="0.01" id="sp-rest" value="0"></label>
           <label>inner radius (m) <input type="number" step="0.01" id="sp-rin" value="0"></label>
           <label>outer radius (m) <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
         <div class="row" id="sp-orientation-only" style="display:none">
+          <label>stiffness (N&middot;m/rad) <input type="number" step="0.1" id="sp-k-orientation" value="2.0"></label>
+          <label>damping (N&middot;m&middot;s/rad) <input type="number" step="0.1" id="sp-b-orientation" value="0.2"></label>
           <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
           <label>normal y <input type="number" step="0.01" id="sp-ny" value="0"></label>
           <label>normal z <input type="number" step="0.01" id="sp-nz" value="1"></label>
@@ -912,8 +924,6 @@ function addSpring() {
   const common = {
     name: name,
     link_name: resolveLinkName(document.getElementById('sp-link').value),
-    stiffness: parseFloat(document.getElementById('sp-k').value),
-    damping: parseFloat(document.getElementById('sp-b').value),
     local_point: [parseFloat(document.getElementById('sp-lx').value),
                   parseFloat(document.getElementById('sp-ly').value),
                   parseFloat(document.getElementById('sp-lz').value)],
@@ -922,8 +932,16 @@ function addSpring() {
              parseFloat(document.getElementById('sp-tz').value)],
   };
 
+  // Stiffness/damping are read from separate, type-specific boxes (see
+  // sp-position-only/sp-orientation-only) -- NOT a shared field. Position
+  // (N/m) and orientation (N*m/rad) stiffness live on completely
+  // different scales; a shared box previously carried whatever value was
+  // left over from the other type. See sp-orientation-only's HTML comment
+  // for the live incident this caused.
   if (currentSpringType() === 'orientation') {
     const req = Object.assign({}, common, {
+      stiffness: parseFloat(document.getElementById('sp-k-orientation').value),
+      damping: parseFloat(document.getElementById('sp-b-orientation').value),
       local_face_normal: [parseFloat(document.getElementById('sp-nx').value),
                            parseFloat(document.getElementById('sp-ny').value),
                            parseFloat(document.getElementById('sp-nz').value)],
@@ -935,6 +953,8 @@ function addSpring() {
   }
 
   const req = Object.assign({}, common, {
+    stiffness: parseFloat(document.getElementById('sp-k-position').value),
+    damping: parseFloat(document.getElementById('sp-b-position').value),
     rest_length: parseFloat(document.getElementById('sp-rest').value),
     inner_radius: parseFloat(document.getElementById('sp-rin').value),
     outer_radius: parseFloat(document.getElementById('sp-rout').value),
@@ -1166,14 +1186,22 @@ function renderSpringList(typeMap) {
 
     const adjust = document.createElement('span');
     adjust.className = 'adjust';
+    // Position (N/m) and orientation (N*m/rad) stiffness/damping are on
+    // completely different scales -- these boxes are pre-filled with the
+    // spring's real current value (see fetchSpringValues below), so
+    // there's no dangerous default here, but the label/tooltip units were
+    // previously hardcoded to N/m regardless of kind, which could mislead
+    // whoever's about to type a new value in. Same "orientation_springs"
+    // typeMap check used everywhere else in this function.
+    const isOrientation = typeMap[name] === 'orientation_springs';
     const kInput = document.createElement('input');
-    kInput.type = 'number'; kInput.step = '1'; kInput.placeholder = 'k';
-    kInput.title = 'New stiffness (N/m)';
+    kInput.type = 'number'; kInput.step = isOrientation ? '0.1' : '1'; kInput.placeholder = 'k';
+    kInput.title = isOrientation ? 'New stiffness (N*m/rad)' : 'New stiffness (N/m)';
     const bInput = document.createElement('input');
-    bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
-    bInput.title = 'New damping (N·s/m)';
-    adjust.appendChild(labeledInput('stiffness (N/m)', kInput));
-    adjust.appendChild(labeledInput('damping (N·s/m)', bInput));
+    bInput.type = 'number'; bInput.step = isOrientation ? '0.1' : '0.5'; bInput.placeholder = 'b';
+    bInput.title = isOrientation ? 'New damping (N*m*s/rad)' : 'New damping (N·s/m)';
+    adjust.appendChild(labeledInput(isOrientation ? 'stiffness (N·m/rad)' : 'stiffness (N/m)', kInput));
+    adjust.appendChild(labeledInput(isOrientation ? 'damping (N·m·s/rad)' : 'damping (N·s/m)', bInput));
 
     // rest_length/inner_radius/outer_radius only apply to a position
     // spring (VirtualSpring) -- see SPRING_PARAM_PREFIXES' hasRadius and
