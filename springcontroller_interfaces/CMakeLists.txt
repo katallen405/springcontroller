@@ -10,7 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddSpring.srv"
   "srv/RemoveSpring.srv"
   "srv/AddJointSpring.srv"
-  "srv/AddOrientationSpring.srv"
+  "srv/AddPoseSpring.srv"
   "srv/LoadCollisionScene.srv"
   "srv/CheckCollisionAtAngles.srv"
   "srv/UpdateSpring.srv"

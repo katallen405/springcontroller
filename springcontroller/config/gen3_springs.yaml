@@ -34,14 +34,17 @@
       #   outer_radius: 0.0
 
     # Uncomment to keep the gripper's held block facing a fixed world
-    # point (e.g. a study participant's face) -- pure rotational torque,
-    # no positional pull. Unlike springs/joint_springs above, `target`
-    # has no safe default and must be measured/set explicitly: see
-    # OrientationSpring in virtual_spring.py.
-    # orientation_spring_names:
+    # point (e.g. a study participant's face) while staying within a
+    # bounded radius of a position goal -- EXPERIMENTAL hybrid
+    # position-and-orientation spring, see PoseSpring in virtual_spring.py.
+    # Unlike springs/joint_springs above, `target` has no safe default and
+    # must be measured/set explicitly -- neither do position_center /
+    # position_radius, which have no old-behavior-preserving default
+    # either.
+    # pose_spring_names:
     #   - face_participant
     #
-    # orientation_springs:
+    # pose_springs:
     #   face_participant:
     #     link_name:          "end_effector_link"
     #     local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
@@ -49,3 +52,5 @@
     #     target:             [0.6, 0.4, 0.5]   # participant's measured face position (m)
     #     stiffness:          2.0                # N*m/rad (start low for safety)
     #     damping:            0.2                # N*m*s/rad
+    #     position_center:    [0.3, 0.0, 0.4]   # e.g. same target as tip_spring above (m)
+    #     position_radius:    0.12                # m
