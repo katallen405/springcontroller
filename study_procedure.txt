@@ -25,24 +25,24 @@ http://localhost:8090/
 6. Push the arm around and/or retarget "workspace_demo" in the "Add /
    remove springs" list below until the location is approved.
 7. Click "Finalize study conditions" -- writes
-   ~/gen3_study_data/<participant ID>/condition1.yaml and condition2.yaml,
+   ~/gen3_study_data/<participant ID>/position.yaml and pose.yaml,
    logs the session to ~/gen3_study_data/measurements.csv, and removes the
    demo spring.
 
 --- The participant's 3 conditions, in whatever random order they draw ---
 each of these requires a relaunch
 
-Baseline (no torque controller):
+KT (no torque controller):
   Don't enable torque control for this condition -- gravity comp/springs
   never engage. (Or relaunch step 2 above with
   config:=.../springcontroller/config/gen3_springs_none.yaml if the panel
   is currently pointed at a different config.)
 
-Condition 1 (relaunch springcontroller above with):
-  config:=~/gen3_study_data/<participant ID>/condition1.yaml
+Position (relaunch springcontroller above with):
+  config:=~/gen3_study_data/<participant ID>/position.yaml
 
-Condition 2 (relaunch springcontrollerabove with):
-  config:=~/gen3_study_data/<participant ID>/condition2.yaml
+Pose (relaunch springcontroller above with):
+  config:=~/gen3_study_data/<participant ID>/pose.yaml
 
 -------------------------
 study instructions

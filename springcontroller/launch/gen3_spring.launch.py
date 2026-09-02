@@ -48,11 +48,11 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
   If participant_id is set, the rosbag routes into
   ~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- the same
   directory orchestration_node's ~/finalize_study_conditions service (see
-  springcontroller_ui) writes condition1.yaml/condition2.yaml into.
-  condition_name (e.g. 'condition1') labels the bag's output directory
+  springcontroller_ui) writes position.yaml/pose.yaml into.
+  condition_name (e.g. 'position') labels the bag's output directory
   name. Assumes gen3_spring.launch.py gets relaunched fresh per condition
-  (Ctrl-C, then relaunch with config:=.../condition2.yaml
-  condition_name:=condition2) rather than one long-running launch
+  (Ctrl-C, then relaunch with config:=.../pose.yaml
+  condition_name:=pose) rather than one long-running launch
   switching conditions live -- see participant_id_arg/condition_name_arg.
 """
 
@@ -338,7 +338,7 @@ def generate_launch_description():
             "~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- "
             "the same per-participant directory "
             "orchestration_node's ~/finalize_study_conditions service "
-            "already writes condition1.yaml/condition2.yaml into (see "
+            "already writes position.yaml/pose.yaml into (see "
             "springcontroller_ui/orchestration_node.py), so a "
             "participant's condition config and recordings end up side by "
             "side. Empty (default) keeps the old flat rosbag_dir behavior "
@@ -352,14 +352,14 @@ def generate_launch_description():
         default_value="",
         description=(
             "If set (and participant_id is too), labels the rosbag's "
-            "output directory name with this condition, e.g. 'condition1' "
-            "to match orchestration_node's fixed condition1.yaml/"
-            "condition2.yaml filenames -- plus a timestamp suffix so "
+            "output directory name with this condition, e.g. 'position' "
+            "to match orchestration_node's fixed position.yaml/"
+            "pose.yaml filenames -- plus a timestamp suffix so "
             "re-running the same condition (a redo, an aborted run) "
             "doesn't collide with `ros2 bag record`'s hard failure on an "
             "already-existing output directory. Purely a label -- doesn't "
             "need to match any file on disk, and can be any string (not "
-            "just 'condition1'/'condition2'). Ignored if participant_id "
+            "just 'position'/'pose'/'KT'). Ignored if participant_id "
             "is empty."
         ),
     )
