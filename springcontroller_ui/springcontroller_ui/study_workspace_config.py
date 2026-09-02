@@ -31,7 +31,7 @@ CM_TO_M = 0.01
 HEIGHT_BAND_CM = 20.32  # 8 inches
 EYE_ANGLE_DEG = 30.0
 
-# Condition 2's orientation-spring "look-at" target sits in front of the
+# Condition 2's pose-spring "look-at" target sits in front of the
 # participant's actual face, not above wherever the reach-center (used for
 # condition 1's position spring) happens to land -- those are two different
 # points on the participant's body. This is a fixed offset from the seat
@@ -71,7 +71,7 @@ def compute_candidate_center(
 
 
 def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> dict:
-    """Condition 2's orientation-spring target: directly in front of
+    """Condition 2's pose-spring target: directly in front of
     the participant's face, at the chair's x, the chair's y plus a
     fixed EYE_TARGET_Y_OFFSET_CM (toward the table), and eye height
     above the table. Independent of arm_length_cm and of wherever the
@@ -144,7 +144,7 @@ class _NoAliasDumper(yaml.SafeDumper):
     PyYAML's default SafeDumper auto-emits them whenever the *same*
     Python list/dict object (by identity) appears more than once in the
     data being dumped. write_condition_yaml's condition-2 output does
-    exactly that: spring_params and orientation_params both carry the
+    exactly that: spring_params and pose_params both carry the
     same local_point list object (see _finalize_study_conditions_cb in
     orchestration_node.py).
     """
@@ -165,26 +165,28 @@ def write_condition_yaml(
     path: str,
     spring_name: str,
     spring_params: dict,
-    include_orientation: bool = False,
-    orientation_name: str = "",
-    orientation_params: dict | None = None,
+    include_pose: bool = False,
+    pose_name: str = "",
+    pose_params: dict | None = None,
 ) -> None:
     """
     Write one condition's springs.yaml, matching the schema
     virtual_spring_node._load_springs_from_params expects (see
-    gen3_springs.yaml / gen3_orientation_spring_test.yaml). `spring_params`
+    gen3_springs.yaml / gen3_pose_spring_test.yaml). `spring_params`
     keys: link_name, local_point, target, stiffness, damping, rest_length,
-    inner_radius, outer_radius. `orientation_params` keys (condition 2
+    inner_radius, outer_radius. `pose_params` keys (condition 2
     only): link_name, local_point, local_face_normal, target, stiffness,
-    damping.
+    damping, position_center, position_radius -- the last two
+    (EXPERIMENTAL, see PoseSpring in virtual_spring.py) are required by
+    the loader just like the others, no safe default.
     """
     params: dict = {
         "spring_names": [spring_name],
         "springs": {spring_name: dict(spring_params)},
     }
-    if include_orientation:
-        params["orientation_spring_names"] = [orientation_name]
-        params["orientation_springs"] = {orientation_name: dict(orientation_params)}
+    if include_pose:
+        params["pose_spring_names"] = [pose_name]
+        params["pose_springs"] = {pose_name: dict(pose_params)}
 
     data = {"/**": {"ros__parameters": params}}
     _atomic_write_yaml(path, data)
@@ -197,7 +199,7 @@ def log_measurement(
     arm_length_cm: float,
     center: dict,
     condition_params: dict,
-    orientation_target: dict,
+    pose_target: dict,
     condition1_path: str,
     condition2_path: str,
 ) -> None:
@@ -222,9 +224,9 @@ def log_measurement(
         "inner_radius": condition_params["inner_radius"],
         "outer_radius": condition_params["outer_radius"],
         "rest_length": condition_params["rest_length"],
-        "orientation_target_x": orientation_target["x"],
-        "orientation_target_y": orientation_target["y"],
-        "orientation_target_z": orientation_target["z"],
+        "pose_target_x": pose_target["x"],
+        "pose_target_y": pose_target["y"],
+        "pose_target_z": pose_target["z"],
         "warnings": "; ".join(condition_params["warnings"]),
         "condition1_path": condition1_path,
         "condition2_path": condition2_path,
