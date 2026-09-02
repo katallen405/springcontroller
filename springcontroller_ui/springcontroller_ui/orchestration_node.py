@@ -175,10 +175,10 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("workspace_spring_name", "tip_spring")
         self.declare_parameter("workspace_spring_stiffness", 50.0)
         self.declare_parameter("workspace_spring_damping", 5.0)
-        self.declare_parameter("workspace_orientation_spring_name", "face_participant")
-        self.declare_parameter("workspace_orientation_local_face_normal", [0.0, 0.0, 1.0])
-        self.declare_parameter("workspace_orientation_stiffness", 2.0)
-        self.declare_parameter("workspace_orientation_damping", 0.2)
+        self.declare_parameter("workspace_pose_spring_name", "face_participant")
+        self.declare_parameter("workspace_pose_local_face_normal", [0.0, 0.0, 1.0])
+        self.declare_parameter("workspace_pose_stiffness", 2.0)
+        self.declare_parameter("workspace_pose_damping", 0.2)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -212,10 +212,10 @@ class StudyControlPanelNode(Node):
         self._workspace_spring_name = gp("workspace_spring_name")
         self._workspace_spring_stiffness = float(gp("workspace_spring_stiffness"))
         self._workspace_spring_damping = float(gp("workspace_spring_damping"))
-        self._workspace_orientation_spring_name = gp("workspace_orientation_spring_name")
-        self._workspace_orientation_local_face_normal = list(gp("workspace_orientation_local_face_normal"))
-        self._workspace_orientation_stiffness = float(gp("workspace_orientation_stiffness"))
-        self._workspace_orientation_damping = float(gp("workspace_orientation_damping"))
+        self._workspace_pose_spring_name = gp("workspace_pose_spring_name")
+        self._workspace_pose_local_face_normal = list(gp("workspace_pose_local_face_normal"))
+        self._workspace_pose_stiffness = float(gp("workspace_pose_stiffness"))
+        self._workspace_pose_damping = float(gp("workspace_pose_damping"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -495,17 +495,17 @@ class StudyControlPanelNode(Node):
 
     def _list_current_spring_names(self) -> Optional[list[str]]:
         """Live query of virtual_spring_node's spring_names/
-        orientation_spring_names/joint_spring_names parameters (not a
+        pose_spring_names/joint_spring_names parameters (not a
         cached topic value -- ~/springs_updated is only published on
         add/remove, so a cache could easily be stale/empty just because
         this node started after the last change). Returns None if the
         parameter service is unavailable (virtual_spring_node not
-        running). orientation_spring_names was missing here until
-        2026-08-19 -- meant _reset_springs_cb silently left any
-        orientation spring in place instead of actually resetting to a
-        single tip anchor."""
+        running). pose_spring_names (then orientation_spring_names, pre-
+        rename) was missing here until 2026-08-19 -- meant
+        _reset_springs_cb silently left any pose spring in place instead
+        of actually resetting to a single tip anchor."""
         req = GetParameters.Request()
-        req.names = ["spring_names", "orientation_spring_names", "joint_spring_names"]
+        req.names = ["spring_names", "pose_spring_names", "joint_spring_names"]
         resp = self._call_sync(self._spring_params_client, req, timeout_sec=2.0)
         if resp is None:
             return None
@@ -868,7 +868,7 @@ class StudyControlPanelNode(Node):
             float(eye_location["x"]), float(eye_location["y"]), float(eye_location["z"]),
         ]
         response.orientation_local_face_normal = [
-            float(v) for v in self._workspace_orientation_local_face_normal
+            float(v) for v in self._workspace_pose_local_face_normal
         ]
         return response
 
@@ -894,7 +894,7 @@ class StudyControlPanelNode(Node):
         # points on the participant's body, see compute_eye_location's
         # docstring. Confirmed wrong 2026-08-21: this used to reuse
         # center's x/y outright.
-        orientation_target = compute_eye_location(
+        pose_target = compute_eye_location(
             self._workspace_seat_x, self._workspace_seat_y, request.eye_height_cm,
         )
 
@@ -909,13 +909,24 @@ class StudyControlPanelNode(Node):
             "inner_radius": condition_params["inner_radius"],
             "outer_radius": condition_params["outer_radius"],
         }
-        orientation_params = {
+        # position_center/position_radius (EXPERIMENTAL, see PoseSpring in
+        # virtual_spring.py) reuse the SAME center/outer_radius spring_params
+        # above already computed for tip_spring -- this is the actual
+        # coupling: condition 2's pose spring is bounded to the identical
+        # region tip_spring is already anchored to, by construction, not by
+        # an operator manually copying two numbers between two places.
+        # Added 2026-09-02 after a live incident where an orientation
+        # spring with no position bound pulled the tip well outside
+        # tip_spring's own workspace.
+        pose_params = {
             "link_name": request.link_name,
             "local_point": local_point,
-            "local_face_normal": list(self._workspace_orientation_local_face_normal),
-            "target": [orientation_target["x"], orientation_target["y"], orientation_target["z"]],
-            "stiffness": self._workspace_orientation_stiffness,
-            "damping": self._workspace_orientation_damping,
+            "local_face_normal": list(self._workspace_pose_local_face_normal),
+            "target": [pose_target["x"], pose_target["y"], pose_target["z"]],
+            "stiffness": self._workspace_pose_stiffness,
+            "damping": self._workspace_pose_damping,
+            "position_center": [center["x"], center["y"], center["z"]],
+            "position_radius": condition_params["outer_radius"],
         }
 
         data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
@@ -931,13 +942,13 @@ class StudyControlPanelNode(Node):
             write_condition_yaml(condition1_path, self._workspace_spring_name, spring_params)
             write_condition_yaml(
                 condition2_path, self._workspace_spring_name, condition2_spring_params,
-                include_orientation=True,
-                orientation_name=self._workspace_orientation_spring_name,
-                orientation_params=orientation_params,
+                include_pose=True,
+                pose_name=self._workspace_pose_spring_name,
+                pose_params=pose_params,
             )
             log_measurement(
                 csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
-                center, condition_params, orientation_target, condition1_path, condition2_path,
+                center, condition_params, pose_target, condition1_path, condition2_path,
             )
         except OSError as e:
             response.success = False
