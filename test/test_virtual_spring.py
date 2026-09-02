@@ -101,6 +101,65 @@ def test_rest_length_no_force_at_natural_length():
     np.testing.assert_allclose(torques, 0.0, atol=1e-10)
 
 
+def test_deadband_continuous_at_outer_radius_regardless_of_rest_length():
+    # Regression for a live incident (2026-09-02): with rest_length=0 and a
+    # deadband (inner_radius=0.1016, outer_radius=0.127), extension sitting
+    # right at outer_radius made the commanded force jump ~5x depending on
+    # which side of the boundary floating-point noise landed on. The force
+    # magnitude just inside vs. just outside outer_radius must now match to
+    # within the size of the probe step, however rest_length is configured.
+    inner, outer = 0.1016, 0.127
+    for rest_length in (0.0, inner, outer, 5.0):
+        arm = StubArm()
+        spring = make_spring(
+            target_world_point=np.array([outer, 0.0, 0.0]),
+            stiffness=50.0,
+            rest_length=rest_length,
+            inner_radius=inner,
+            outer_radius=outer,
+        )
+
+        eps = 1e-9
+        spring.target_world_point = np.array([outer - eps, 0.0, 0.0])
+        torques_inside = spring.compute_torques(arm)
+
+        spring.target_world_point = np.array([outer + eps, 0.0, 0.0])
+        torques_outside = spring.compute_torques(arm)
+
+        np.testing.assert_allclose(
+            torques_outside, torques_inside, atol=1e-4,
+            err_msg=f"discontinuous at outer_radius with rest_length={rest_length}",
+        )
+
+
+def test_deadband_beyond_outer_radius_ignores_rest_length():
+    # Beyond outer_radius, the plain-spring region must be anchored at
+    # inner_radius, not rest_length -- rest_length is irrelevant whenever a
+    # deadband is configured (outer_radius > inner_radius).
+    inner, outer = 0.1016, 0.127
+    arm = StubArm()
+    extension = 0.2
+    s1 = make_spring(
+        target_world_point=np.array([extension, 0.0, 0.0]),
+        stiffness=50.0,
+        rest_length=0.0,
+        inner_radius=inner,
+        outer_radius=outer,
+    )
+    s2 = make_spring(
+        target_world_point=np.array([extension, 0.0, 0.0]),
+        stiffness=50.0,
+        rest_length=5.0,
+        inner_radius=inner,
+        outer_radius=outer,
+    )
+    t1 = s1.compute_torques(arm)
+    t2 = s2.compute_torques(arm)
+    np.testing.assert_allclose(t1, t2, rtol=1e-9)
+    expected = 50.0 * (extension - inner)
+    np.testing.assert_allclose(t1[0], expected, rtol=1e-9)
+
+
 def test_potential_energy():
     arm = StubArm()
     spring = make_spring(stiffness=10.0, rest_length=0.0)
