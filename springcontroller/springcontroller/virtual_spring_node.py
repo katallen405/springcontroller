@@ -11,10 +11,10 @@ Subscriptions
     Current joint positions and velocities from the arm.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Move a Cartesian or orientation spring's target at runtime.
+    Move a Cartesian or pose spring's target at runtime.
 
 ~/attachment/<spring_name>  (geometry_msgs/PointStamped)
-    Move a Cartesian or orientation spring's attachment point at runtime.
+    Move a Cartesian or pose spring's attachment point at runtime.
 
 ~/joint_target/<joint_spring_name>  (std_msgs/Float64)
     Move a JointSpring's target angle (rad) at runtime.
@@ -40,16 +40,16 @@ Publications
     Effort field carries the summed virtual-spring torques.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Broadcasts a Cartesian or orientation spring's current target -- once
+    Broadcasts a Cartesian or pose spring's current target -- once
     at load (if configured), on resolving a deferred one against the arm's
-    real pose (see springs.<n>.target / orientation_springs.<n>.target
+    real pose (see springs.<n>.target / pose_springs.<n>.target
     below) on the first /joint_states callback, and on add_spring/
-    add_orientation_spring -- and again on every runtime update via the
+    add_pose_spring -- and again on every runtime update via the
     subscription above.
 
 ~/springs_updated (std_msgs/String)
     Publishes the current spring name list (JSON, any type) whenever it
-    changes via add_spring/add_joint_spring/add_orientation_spring/
+    changes via add_spring/add_joint_spring/add_pose_spring/
     remove_spring (supports spring_viz, maybe later UI).
 
 ~/joint_limit_repulsion_torques (sensor_msgs/JointState)
@@ -67,11 +67,11 @@ Publications
     spring_force_publish_interval_sec (default 0.1s -- independent of the
     control loop's own rate, see _publish_spring_forces()): a SpringForce[]
     of {name, kind: "force"|"moment"|"torque", magnitude, force, distance}.
-    A VirtualSpring reports a real 3D "force" (N); an OrientationSpring
+    A VirtualSpring reports a real 3D "force" (N); a PoseSpring
     reports a 3D "moment" (N*m); a JointSpring reports a scalar "torque"
     about its own joint axis with force always [0, 0, 0]. distance is the
     spring's current error from its target -- meters for a VirtualSpring,
-    radians (angular error) for an OrientationSpring/JointSpring. A spring
+    radians (angular error) for a PoseSpring/JointSpring. A spring
     not currently contributing (disabled, or hasn't computed a state yet)
     is omitted rather than reported as zero.
 
@@ -112,8 +112,9 @@ Services
 ~/add_joint_spring  (springcontroller_interfaces/AddJointSpring)
     Add a joint spring.
 
-~/add_orientation_spring  (springcontroller_interfaces/AddOrientationSpring)
-    Add an orientation spring.
+~/add_pose_spring  (springcontroller_interfaces/AddPoseSpring)
+    Add a pose spring (position-and-orientation hybrid -- see PoseSpring
+    in virtual_spring.py).
 
 ~/remove_spring (springcontroller_interfaces/RemoveSpring)
     Remove a spring (any type, name-based) from the torque calculations.
@@ -130,7 +131,7 @@ urdf_path : str
     arrive within a few seconds of startup.
 config_path : str
     Path to the springs YAML file (checked at startup; populates the
-    springs.<n>.* / joint_springs.<n>.* / orientation_springs.<n>.*
+    springs.<n>.* / joint_springs.<n>.* / pose_springs.<n>.*
     parameters below).
 publish_rate_hz : double
     Declared but currently unused -- torques publish once per
@@ -182,11 +183,14 @@ spring_names, springs.<n>.* : per-VirtualSpring config (see
 joint_spring_names, joint_springs.<n>.* : per-JointSpring config --
     joint_name, target_angle, stiffness, damping. `target_angle` left
     unconfigured defers the same way, to the joint's real current angle.
-orientation_spring_names, orientation_springs.<n>.* : per-OrientationSpring
-    config -- link_name, local_point, local_face_normal, target, stiffness,
-    damping. `target` has no safe default (it's an external point, e.g. a
-    person's face, not inferable from the arm's pose) and must be set
-    explicitly.
+pose_spring_names, pose_springs.<n>.* : per-PoseSpring config (position-
+    and-orientation hybrid, see virtual_spring.py) -- link_name,
+    local_point, local_face_normal, target, stiffness, damping,
+    position_center, position_radius. `target` has no safe default (it's
+    an external point, e.g. a person's face, not inferable from the arm's
+    pose) and must be set explicitly. `position_center`/`position_radius`
+    are likewise required -- no default reproduces the old (pre-2026-09-02)
+    unconstrained-drift behavior; see PoseSpring's docstring.
 joint_limit_repulsion_enabled : bool
     Low-strength per-joint field that pushes a joint back toward center as
     it nears its own position limit (see
@@ -205,9 +209,9 @@ joint_limit_max_torque_nm : double
     Torque (N*m) this field saturates at exactly on (or past) a limit.
     Chosen small relative to torque_limit_nm on every limited joint (2, 4,
     6) so it stays a gentle nudge, not a hard wall.
-max_orientation_spring_stiffness_nm_per_rad : double
-    Sanity ceiling on an OrientationSpring's stiffness, enforced in
-    ~/add_orientation_spring and ~/update_spring -- rejects a value this
+max_pose_spring_stiffness_nm_per_rad : double
+    Sanity ceiling on a PoseSpring's rotational stiffness, enforced in
+    ~/add_pose_spring and ~/update_spring -- rejects a value this
     high as a likely position-spring-units (N/m) mistake rather than a
     genuine N*m/rad value. See its declare_parameter call for the live
     incident this guards against.
@@ -235,12 +239,12 @@ from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
 
 from springcontroller.virtual_spring import (
-    VirtualSpring, JointSpring, OrientationSpring, SpringCollection,
+    VirtualSpring, JointSpring, PoseSpring, SpringCollection,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
 from springcontroller_interfaces.srv import (
-    AddSpring, RemoveSpring, AddJointSpring, AddOrientationSpring,
+    AddSpring, RemoveSpring, AddJointSpring, AddPoseSpring,
     LoadCollisionScene, CheckCollisionAtAngles, UpdateSpring,
     UpdateCollisionThresholds,
 )
@@ -366,20 +370,20 @@ class VirtualSpringNode(Node):
         # flat_urdf_files/gen3_kinova_flat.urdf), the tightest of the
         # three, so 2.0 stays a clear fraction of even that.
         self.declare_parameter("joint_limit_max_torque_nm", 2.0)
-        # Sanity ceiling on an OrientationSpring's stiffness (N*m/rad),
-        # enforced in _add_orientation_spring_cb and _update_spring_cb --
+        # Sanity ceiling on a PoseSpring's rotational stiffness (N*m/rad),
+        # enforced in _add_pose_spring_cb and _update_spring_cb --
         # 5x the 2.0 N*m/rad used throughout this repo's own configs
-        # (workspace_orientation_stiffness, face_participant), generous
+        # (workspace_pose_stiffness, face_participant), generous
         # headroom for real tuning while still catching a units mix-up
         # with a *position* spring's stiffness (N/m, typically 50-300).
         # Added after a live incident (2026-09-02): a web-UI form bug sent
-        # stiffness=50 N*m/rad for a newly-added orientation spring (25x
+        # stiffness=50 N*m/rad for a newly-added pose spring (25x
         # this default), producing a 71 N*m torque spike within 5ms of
         # the spring being added and a collision/fault ~1.2s later -- far
         # too fast for the repulsion field (collision_check_interval_sec
         # throttling) to catch. This is defense-in-depth independent of
         # that UI fix: it catches the same mistake from any client.
-        self.declare_parameter("max_orientation_spring_stiffness_nm_per_rad", 10.0)
+        self.declare_parameter("max_pose_spring_stiffness_nm_per_rad", 10.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -448,8 +452,8 @@ class VirtualSpringNode(Node):
         self._joint_limit_max_torque_nm = (
             self.get_parameter("joint_limit_max_torque_nm").get_parameter_value().double_value
         )
-        self._max_orientation_spring_stiffness = (
-            self.get_parameter("max_orientation_spring_stiffness_nm_per_rad")
+        self._max_pose_spring_stiffness = (
+            self.get_parameter("max_pose_spring_stiffness_nm_per_rad")
             .get_parameter_value().double_value
         )
         # Cached alongside _last_collision_status -- recomputed at the same
@@ -740,15 +744,15 @@ class VirtualSpringNode(Node):
             RemoveSpring, "~/remove_spring", self._remove_spring_cb
 )
         # Removal/update are shared: both are name-based and don't care
-        # about spring type, so they work for joint/orientation springs too.
+        # about spring type, so they work for joint/pose springs too.
         self._update_spring_srv = self.create_service(
             UpdateSpring, "~/update_spring", self._update_spring_cb
         )
         self._add_joint_spring_srv = self.create_service(
             AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
         )
-        self._add_orientation_spring_srv = self.create_service(
-            AddOrientationSpring, "~/add_orientation_spring", self._add_orientation_spring_cb
+        self._add_pose_spring_srv = self.create_service(
+            AddPoseSpring, "~/add_pose_spring", self._add_pose_spring_cb
         )
 
         # Scene collision objects (safety hard-clamp): same wire format
@@ -836,7 +840,7 @@ class VirtualSpringNode(Node):
                 f"torque-enable, keyed off {torque_status_topic}."
             )
         # Stored on self, not just a local -- _add_spring_cb/
-        # _add_orientation_spring_cb need this same profile for springs
+        # _add_pose_spring_cb need this same profile for springs
         # added at runtime (see their own create_publisher calls), not
         # just the ones loaded here at startup.
         self._target_qos = target_qos = QoSProfile(
@@ -893,10 +897,10 @@ class VirtualSpringNode(Node):
                     10,
                 )
                 self.get_logger().info(f"Listening for target updates on {topic}")
-            elif isinstance(spring, OrientationSpring):
+            elif isinstance(spring, PoseSpring):
                 # Reuses VirtualSpring's target/attachment topics and
                 # callbacks -- both duck-type on target_world_point /
-                # local_attachment_point, which OrientationSpring has too.
+                # local_attachment_point, which PoseSpring has too.
                 topic = f"~/target/{spring.name}"
                 self.create_subscription(
                     PointStamped,
@@ -914,8 +918,8 @@ class VirtualSpringNode(Node):
                     10,
                 )
 
-                # Unlike VirtualSpring, an OrientationSpring's target is
-                # never pending (_load_one_orientation_spring requires it
+                # Unlike VirtualSpring, a PoseSpring's target is
+                # never pending (_load_one_pose_spring requires it
                 # explicitly) -- always safe to broadcast immediately.
                 # TRANSIENT_LOCAL for the same reason as VirtualSpring's
                 # publisher above -- a late subscriber (e.g. armviz.py)
@@ -1271,9 +1275,9 @@ class VirtualSpringNode(Node):
         spring._target_pending = target_pending
         return spring
 
-    def _load_one_orientation_spring(self, name: str) -> OrientationSpring:
-        """Load a single orientation spring by name from current parameters. Raises on error."""
-        prefix = f"orientation_springs.{name}"
+    def _load_one_pose_spring(self, name: str) -> PoseSpring:
+        """Load a single pose spring by name from current parameters. Raises on error."""
+        prefix = f"pose_springs.{name}"
         self._declare_or_ignore(f"{prefix}.link_name", "")
         self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
         self._declare_or_ignore(f"{prefix}.local_face_normal", [0.0, 0.0, 1.0])
@@ -1289,6 +1293,14 @@ class VirtualSpringNode(Node):
         )
         self._declare_or_ignore(f"{prefix}.stiffness", 0.0)
         self._declare_or_ignore(f"{prefix}.damping", 0.0)
+        # position_center/position_radius are just as required as target,
+        # for the same reason: no safe default reproduces the old
+        # (pre-2026-09-02) unconstrained-drift behavior -- see PoseSpring's
+        # docstring in virtual_spring.py for what this bounds and why.
+        self._declare_or_ignore(
+            f"{prefix}.position_center", [float("nan"), float("nan"), float("nan")]
+        )
+        self._declare_or_ignore(f"{prefix}.position_radius", float("nan"))
 
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
@@ -1300,17 +1312,30 @@ class VirtualSpringNode(Node):
         target = np.array(_get("target", [float("nan")] * 3), dtype=float)
         if np.any(np.isnan(target)):
             raise ValueError(
-                f"Orientation spring '{name}': 'target' must be set "
+                f"Pose spring '{name}': 'target' must be set "
                 f"explicitly (e.g. the participant's measured face "
                 f"position) -- there's no safe default to infer it from."
             )
 
-        spring = OrientationSpring(
+        position_center = np.array(_get("position_center", [float("nan")] * 3), dtype=float)
+        position_radius = float(_get("position_radius", float("nan")))
+        if np.any(np.isnan(position_center)) or math.isnan(position_radius):
+            raise ValueError(
+                f"Pose spring '{name}': 'position_center' and "
+                f"'position_radius' must both be set explicitly -- "
+                f"typically the same target/outer_radius a paired "
+                f"position spring is already using. No safe default "
+                f"reproduces the old unconstrained-drift behavior."
+            )
+
+        spring = PoseSpring(
             link_name=link_name,
             local_attachment_point=np.array(_get("local_point", [0, 0, 0]), dtype=float),
             local_face_normal=np.array(_get("local_face_normal", [0, 0, 1]), dtype=float),
             target_world_point=target,
             stiffness=float(_get("stiffness", 0.0)),
+            position_center=position_center,
+            position_radius=position_radius,
             damping=float(_get("damping", 0.0)),
             name=name,
         )
@@ -1440,7 +1465,7 @@ class VirtualSpringNode(Node):
             # _load_one_spring / _load_one_joint_spring), set target =
             # current position/angle so the spring starts at zero
             # extension/force instead of pulling toward wherever the zero
-            # pose happens to put it. OrientationSpring never sets
+            # pose happens to put it. PoseSpring never sets
             # _target_pending (its target has no safe default and is
             # required at load time), so it never matches either branch
             # here.
@@ -1848,7 +1873,7 @@ class VirtualSpringNode(Node):
 
     def _publish_target(self, spring) -> None:
         """Broadcast a Cartesian-target spring's (VirtualSpring or
-        OrientationSpring) current target on ~/target/<name>.
+        PoseSpring) current target on ~/target/<name>.
 
         Only call this for a target this node set on its own initiative
         (load-time, or resolving a pending one against the arm's real
@@ -2081,8 +2106,8 @@ class VirtualSpringNode(Node):
         # that parameter's very first declaration -- from the generic
         # config-file loader in __init__, which runs before any spring is
         # loaded -- locked in as an INTEGER parameter rather than DOUBLE.
-        # Every caller here (spring loading, add_spring/add_orientation_
-        # spring/add_joint_spring, update_spring) always passes a properly
+        # Every caller here (spring loading, add_spring/add_pose_spring/
+        # add_joint_spring, update_spring) always passes a properly
         # -typed `default`, so it's the correct source of truth to compare
         # against. ROS parameters are statically typed once declared, so
         # a later set_parameters() call with the right type but against
@@ -2332,13 +2357,13 @@ class VirtualSpringNode(Node):
         self._publish_springs_updated()
         return response
 
-    def _add_orientation_spring_cb(
-        self, request: AddOrientationSpring.Request, response: AddOrientationSpring.Response
-    ) -> AddOrientationSpring.Response:
+    def _add_pose_spring_cb(
+        self, request: AddPoseSpring.Request, response: AddPoseSpring.Response
+    ) -> AddPoseSpring.Response:
         name = request.name.strip()
         if not name:
             response.success = False
-            response.message = "Orientation spring name must not be empty."
+            response.message = "Pose spring name must not be empty."
             return response
 
         if any(s.name == name for s in self._springs):
@@ -2346,27 +2371,29 @@ class VirtualSpringNode(Node):
             response.message = f"Spring '{name}' already exists."
             return response
 
-        if request.stiffness > self._max_orientation_spring_stiffness:
+        if request.stiffness > self._max_pose_spring_stiffness:
             response.success = False
             response.message = (
                 f"stiffness={request.stiffness} N*m/rad exceeds "
-                f"max_orientation_spring_stiffness_nm_per_rad="
-                f"{self._max_orientation_spring_stiffness} -- this looks "
+                f"max_pose_spring_stiffness_nm_per_rad="
+                f"{self._max_pose_spring_stiffness} -- this looks "
                 f"like a position-spring value (N/m) sent by mistake. "
-                f"Orientation springs are typically ~0.5-5 N*m/rad; raise "
+                f"Pose springs are typically ~0.5-5 N*m/rad; raise "
                 f"the parameter if a larger value is genuinely intended."
             )
             return response
 
         try:
             self._arm.validate_link_name(request.link_name)
-            spring = OrientationSpring(
+            spring = PoseSpring(
                 name=name,
                 link_name=request.link_name,
                 local_attachment_point=np.array(request.local_point),
                 local_face_normal=np.array(request.local_face_normal),
                 target_world_point=np.array(request.target),
                 stiffness=request.stiffness,
+                position_center=np.array(request.position_center),
+                position_radius=request.position_radius,
                 damping=request.damping,
             )
         except ValueError as e:
@@ -2376,7 +2403,7 @@ class VirtualSpringNode(Node):
 
         # Mirror the parameter namespace so external tools (e.g. visualisation)
         # can see this spring the same way as one loaded from YAML
-        prefix = f"orientation_springs.{name}"
+        prefix = f"pose_springs.{name}"
         params = {
             f"{prefix}.link_name":         (rclpy.parameter.Parameter.Type.STRING,       request.link_name),
             f"{prefix}.local_point":       (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
@@ -2384,18 +2411,20 @@ class VirtualSpringNode(Node):
             f"{prefix}.target":            (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
             f"{prefix}.stiffness":         (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
             f"{prefix}.damping":           (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
+            f"{prefix}.position_center":   (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
+            f"{prefix}.position_radius":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
         }
         for key, (ptype, value) in params.items():
             self._declare_or_ignore(key, value)
             self.set_parameters([rclpy.parameter.Parameter(key, ptype, value)])
 
-        # Also add the name to orientation_spring_names so it shows up if someone lists params
+        # Also add the name to pose_spring_names so it shows up if someone lists params
         current_names = list(
-            self.get_parameter("orientation_spring_names").get_parameter_value().string_array_value
+            self.get_parameter("pose_spring_names").get_parameter_value().string_array_value
         )
         if name not in current_names:
             self.set_parameters([
-                rclpy.parameter.Parameter("orientation_spring_names",
+                rclpy.parameter.Parameter("pose_spring_names",
                                           rclpy.Parameter.Type.STRING_ARRAY,
                                           current_names + [name])
             ])
@@ -2418,7 +2447,7 @@ class VirtualSpringNode(Node):
         self._publish_target(spring)
 
         response.success = True
-        response.message = f"Orientation spring '{name}' added."
+        response.message = f"Pose spring '{name}' added."
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
@@ -2461,23 +2490,23 @@ class VirtualSpringNode(Node):
             self._springs.add(joint_spring)
             self.get_logger().info(f"Loaded joint spring: {joint_spring}")
 
-        self._declare_or_ignore("orientation_spring_names", [""])
-        orientation_spring_names = (
-            self.get_parameter("orientation_spring_names")
+        self._declare_or_ignore("pose_spring_names", [""])
+        pose_spring_names = (
+            self.get_parameter("pose_spring_names")
             .get_parameter_value()
             .string_array_value
         )
-        self.get_logger().info(f"Orientation spring names from params: {list(orientation_spring_names)}")
-        for name in orientation_spring_names:
+        self.get_logger().info(f"Pose spring names from params: {list(pose_spring_names)}")
+        for name in pose_spring_names:
             if not name:
                 continue
             try:
-                orientation_spring = self._load_one_orientation_spring(name)
+                pose_spring = self._load_one_pose_spring(name)
             except (ValueError, RuntimeError) as e:
-                self.get_logger().fatal(f"Orientation spring '{name}' failed to load: {e}")
+                self.get_logger().fatal(f"Pose spring '{name}' failed to load: {e}")
                 raise
-            self._springs.add(orientation_spring)
-            self.get_logger().info(f"Loaded orientation spring: {orientation_spring}")
+            self._springs.add(pose_spring)
+            self.get_logger().info(f"Loaded pose spring: {pose_spring}")
 
     def _remove_spring_cb(
         self, request: RemoveSpring.Request, response: RemoveSpring.Response
@@ -2495,12 +2524,12 @@ class VirtualSpringNode(Node):
         # Which names-list parameter and per-spring parameter keys to clean
         # up depends on the spring's type -- each type lives under its own
         # prefix and its own <type>_names list (spring_names / joint_spring_
-        # names / orientation_spring_names). Previously this always assumed
+        # names / pose_spring_names). Previously this always assumed
         # VirtualSpring's springs.<name>.* prefix and only ever edited
         # spring_names, so removing a JointSpring left it in
         # joint_spring_names (it would reload on restart) and its
         # joint_springs.<name>.* parameters undeclared -- never actually
-        # exercised until OrientationSpring made the type-specific cleanup
+        # exercised until PoseSpring made the type-specific cleanup
         # unavoidable to get right for a third type too.
         if isinstance(spring, VirtualSpring):
             names_param = "spring_names"
@@ -2517,13 +2546,14 @@ class VirtualSpringNode(Node):
                 f"{prefix}.joint_name", f"{prefix}.target_angle",
                 f"{prefix}.stiffness", f"{prefix}.damping",
             ]
-        else:  # OrientationSpring
-            names_param = "orientation_spring_names"
-            prefix = f"orientation_springs.{name}"
+        else:  # PoseSpring
+            names_param = "pose_spring_names"
+            prefix = f"pose_springs.{name}"
             keys = [
                 f"{prefix}.link_name", f"{prefix}.local_point",
                 f"{prefix}.local_face_normal", f"{prefix}.target",
                 f"{prefix}.stiffness", f"{prefix}.damping",
+                f"{prefix}.position_center", f"{prefix}.position_radius",
             ]
 
         current_names = list(
@@ -2561,11 +2591,12 @@ class VirtualSpringNode(Node):
         change the spring's target/attachment/geometry, just these scalars.
 
         rest_length/inner_radius/outer_radius are VirtualSpring-only
-        (JointSpring/OrientationSpring have no such attributes -- see
+        (JointSpring/PoseSpring have no such attributes -- see
         virtual_spring.py) -- silently ignored for those types rather than
         rejected, same "fields that don't apply are ignored, not an error"
         convention as AddSpring's request carrying the same three fields
-        for every spring type.
+        for every spring type. position_center/position_radius are
+        PoseSpring-only, same convention.
         """
         name = request.name.strip()
         spring = next((s for s in self._springs if s.name == name), None)
@@ -2582,20 +2613,25 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = f"damping must be >= 0, got {request.damping}."
             return response
-        if (isinstance(spring, OrientationSpring)
-                and request.stiffness > self._max_orientation_spring_stiffness):
+        if (isinstance(spring, PoseSpring)
+                and request.stiffness > self._max_pose_spring_stiffness):
             response.success = False
             response.message = (
                 f"stiffness={request.stiffness} N*m/rad exceeds "
-                f"max_orientation_spring_stiffness_nm_per_rad="
-                f"{self._max_orientation_spring_stiffness} for orientation "
-                f"spring '{name}'. See _add_orientation_spring_cb for why."
+                f"max_pose_spring_stiffness_nm_per_rad="
+                f"{self._max_pose_spring_stiffness} for pose "
+                f"spring '{name}'. See _add_pose_spring_cb for why."
             )
             return response
         is_virtual = isinstance(spring, VirtualSpring)
+        is_pose = isinstance(spring, PoseSpring)
         if is_virtual and request.rest_length < 0:
             response.success = False
             response.message = f"rest_length must be >= 0, got {request.rest_length}."
+            return response
+        if is_pose and request.position_radius <= 0:
+            response.success = False
+            response.message = f"position_radius must be > 0, got {request.position_radius}."
             return response
 
         spring.stiffness = request.stiffness
@@ -2604,33 +2640,44 @@ class VirtualSpringNode(Node):
             spring.rest_length = request.rest_length
             spring.inner_radius = request.inner_radius
             spring.outer_radius = request.outer_radius
+        if is_pose:
+            spring.position_center = np.array(request.position_center)
+            spring.position_radius = request.position_radius
 
         # Mirror into the parameter namespace, same as add_spring -- keeps
         # it in sync with the live spring instead of going stale. Prefix
         # depends on spring type (same dispatch as _remove_spring_cb) --
         # hardcoding springs.<name> here would silently write a bogus
         # parameter under the wrong prefix for a JointSpring/
-        # OrientationSpring while leaving its real one stale.
+        # PoseSpring while leaving its real one stale.
         if is_virtual:
             prefix = f"springs.{name}"
         elif isinstance(spring, JointSpring):
             prefix = f"joint_springs.{name}"
-        else:  # OrientationSpring
-            prefix = f"orientation_springs.{name}"
+        else:  # PoseSpring
+            prefix = f"pose_springs.{name}"
+        # (ptype, value) pairs, not just value -- position_center is a
+        # DOUBLE_ARRAY, not a DOUBLE like every other field mirrored here,
+        # so the type can't be hardcoded the way a single-type loop would.
         params_to_mirror = [
-            (f"{prefix}.stiffness", request.stiffness),
-            (f"{prefix}.damping", request.damping),
+            (f"{prefix}.stiffness", rclpy.parameter.Parameter.Type.DOUBLE, request.stiffness),
+            (f"{prefix}.damping",   rclpy.parameter.Parameter.Type.DOUBLE, request.damping),
         ]
         if is_virtual:
             params_to_mirror += [
-                (f"{prefix}.rest_length", request.rest_length),
-                (f"{prefix}.inner_radius", request.inner_radius),
-                (f"{prefix}.outer_radius", request.outer_radius),
+                (f"{prefix}.rest_length",  rclpy.parameter.Parameter.Type.DOUBLE, request.rest_length),
+                (f"{prefix}.inner_radius", rclpy.parameter.Parameter.Type.DOUBLE, request.inner_radius),
+                (f"{prefix}.outer_radius", rclpy.parameter.Parameter.Type.DOUBLE, request.outer_radius),
             ]
-        for key, value in params_to_mirror:
+        if is_pose:
+            params_to_mirror += [
+                (f"{prefix}.position_center", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
+                (f"{prefix}.position_radius", rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
+            ]
+        for key, ptype, value in params_to_mirror:
             self._declare_or_ignore(key, value)
             self.set_parameters([
-                rclpy.parameter.Parameter(key, rclpy.parameter.Parameter.Type.DOUBLE, value)
+                rclpy.parameter.Parameter(key, ptype, value)
             ])
 
         response.success = True
@@ -2639,8 +2686,14 @@ class VirtualSpringNode(Node):
             + (
                 f", rest_length={request.rest_length}, inner_radius={request.inner_radius}, "
                 f"outer_radius={request.outer_radius}."
-                if is_virtual else "."
+                if is_virtual else ""
             )
+            + (
+                f", position_center={list(request.position_center)}, "
+                f"position_radius={request.position_radius}."
+                if is_pose else ""
+            )
+            + ("." if not (is_virtual or is_pose) else "")
         )
         self.get_logger().info(response.message)
         self._publish_springs_updated()
@@ -2677,16 +2730,16 @@ class VirtualSpringNode(Node):
         now" apart from "not loaded yet".
 
         kind is "force" for a VirtualSpring (real 3D force, N), "moment"
-        for an OrientationSpring (real 3D moment, N*m -- distinguished
+        for a PoseSpring (real 3D moment, N*m -- distinguished
         from "force" so a consumer doesn't mix up units), or "torque" for
         a JointSpring (a scalar about a single joint axis, not a Cartesian
         vector -- force is [0, 0, 0] rather than inventing a 3D vector for
         something that doesn't have one).
 
         distance reuses each state's existing duck-typed `.extension`
-        field (see SpringState/JointSpringState/OrientationSpringState in
+        field (see SpringState/JointSpringState/PoseSpringState in
         virtual_spring.py): meters for a VirtualSpring, radians (angular
-        error) for an OrientationSpring/JointSpring.
+        error) for a PoseSpring/JointSpring.
         """
         entries = []
         for spring in self._springs:
@@ -2695,7 +2748,7 @@ class VirtualSpringNode(Node):
                 continue
             if isinstance(spring, VirtualSpring):
                 vec, kind = state.force_world, "force"
-            elif isinstance(spring, OrientationSpring):
+            elif isinstance(spring, PoseSpring):
                 vec, kind = state.moment_world, "moment"
             elif isinstance(spring, JointSpring):
                 entries.append(SpringForce(
