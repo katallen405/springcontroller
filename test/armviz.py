@@ -678,6 +678,13 @@ def collision_thresholds_cb(msg):
             set_halo_visible(obj_id, True)
 
 
+# Triad line length for an orientation spring's attachment marker (see
+# draw_springs) -- comparable to the 0.025 sphere radius used for a
+# VirtualSpring's attachment point (5cm diameter), so neither marker style
+# dominates the scene when both spring kinds are loaded together.
+_ORIENTATION_TRIAD_SCALE = 0.06
+
+
 def draw_springs(q):
     pin.forwardKinematics(model, data, q)
     pin.updateFramePlacements(model, data)
@@ -718,13 +725,34 @@ def draw_springs(q):
             local_point = np.zeros(3)
         attachment = placement.translation + placement.rotation @ local_point
 
-        # Blue sphere at attachment point
+        # Hoisted once, used both for the attachment marker (below) and the
+        # target-sphere color (below) -- was checked twice with the same
+        # `spring.get("prefix") == "orientation_springs"` expression.
+        is_orientation = spring.get("prefix") == "orientation_springs"
+
+        # Attachment marker: blue sphere for a position (VirtualSpring)
+        # attachment point, same as always -- but an RGB axis triad for an
+        # orientation spring, showing the link's actual world orientation
+        # there (a bare dot never could -- and couldn't have shown, at a
+        # glance, that a live incident's orientation spring was rotating
+        # the link far more violently than intended, 2026-09-02). Uses
+        # placement.rotation directly (the link's raw world rotation, from
+        # the same FK already computed above) rather than aligning to the
+        # spring's configured local_face_normal -- armviz doesn't fetch
+        # local_face_normal at all today, and in the common default-normal
+        # case (+Z) the triad's blue axis already approximates it.
         T_attach = np.eye(4)
         T_attach[:3, 3] = attachment
-        viz.viewer[f"springs/{name}/attachment"].set_object(
-            g.Sphere(0.025),
-            g.MeshLambertMaterial(color=0x0088ff, transparent=False)
-        )
+        if is_orientation:
+            T_attach[:3, :3] = placement.rotation
+            viz.viewer[f"springs/{name}/attachment"].set_object(
+                g.triad(scale=_ORIENTATION_TRIAD_SCALE)
+            )
+        else:
+            viz.viewer[f"springs/{name}/attachment"].set_object(
+                g.Sphere(0.025),
+                g.MeshLambertMaterial(color=0x0088ff, transparent=False)
+            )
         viz.viewer[f"springs/{name}/attachment"].set_transform(T_attach)
 
         if target is not None:
@@ -733,7 +761,7 @@ def draw_springs(q):
             # look-at point, so it's visually distinguishable at a glance
             # from a position spring's target (both were previously
             # identical red spheres, easy to confuse in a screenshot).
-            target_color = 0x9c27b0 if spring.get("prefix") == "orientation_springs" else 0xff0000
+            target_color = 0x9c27b0 if is_orientation else 0xff0000
             T_target = np.eye(4)
             T_target[:3, 3] = target
             viz.viewer[f"springs/{name}/target"].set_object(
