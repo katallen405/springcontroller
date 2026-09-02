@@ -230,6 +230,16 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
 
+      <div class="panel">
+        <h2>Gripper control</h2>
+        <p class="hint" id="gripper-hint">If torque control is on, it's automatically disabled to move the gripper and re-enabled afterward (see GRIPPER_MOVE_WAIT_MS below for the re-enable delay).</p>
+        <div class="btn-row">
+          <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
+          <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
+        </div>
+        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
+      </div>
+
       <details class="panel" open>
         <summary>Collision thresholds</summary>
         <div class="toggle-row" style="margin-bottom:8px">
@@ -281,13 +291,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
-
-        <p class="hint" style="margin-top:12px" id="gripper-hint">Gripper can't move while torque control is on.</p>
-        <div class="btn-row" style="margin-top:4px">
-          <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
-          <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
-        </div>
-        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </details>
 
     </aside>
@@ -650,13 +653,90 @@ function fetchCurrentJointAngles() {
 }
 
 // ---- gripper -----------------------------------------------------
-// close=true closes the gripper, close=false opens it -- fire-and-forget,
-// same as gen3_torque_control's own gripper_command service (no completion
-// feedback, just an ack that Kortex accepted the command).
+// close=true closes the gripper, close=false opens it. Kortex's gripper
+// can't move while torque control is on, so this is a one-click cycle
+// rather than requiring the operator to flip torque control off, click
+// open/close, then remember to flip it back on: drop out of torque
+// control first (if it's currently on), send the gripper command, wait
+// for the physical motion to finish, then restore torque control to
+// whatever it was before.
+//
+// The gripper command itself is fire-and-forget, same as
+// gen3_torque_control's own gripper_command service -- no completion
+// feedback, just an ack that Kortex accepted the command -- so
+// GRIPPER_MOVE_WAIT_MS is a trial-and-error guess at how long the
+// physical open/close takes. Tune it up if torque control re-engages
+// mid-motion, or down if the cycle feels sluggish.
+const GRIPPER_MOVE_WAIT_MS = 2000;
+
+// Guards against a second click firing mid-cycle -- handleTorqueStatus no
+// longer disables these buttons based on torque state (see its own
+// comment), so this is the only thing preventing overlap.
+let gripperCycleInProgress = false;
+
+function setGripperButtonsEnabled(enabled) {
+  document.getElementById('btn-gripper-open').disabled = !enabled;
+  document.getElementById('btn-gripper-close').disabled = !enabled;
+}
+
 function gripperCommand(close) {
-  callService(svcGripperCommand, { data: close },
-    function(resp) { showMsg('gripper-msg', resp.success, resp.message); },
-    function(err) { showMsg('gripper-msg', false, 'Gripper command failed: ' + err); });
+  if (gripperCycleInProgress) return;
+  gripperCycleInProgress = true;
+  setGripperButtonsEnabled(false);
+
+  const wasTorqueEnabled = document.getElementById('torque-toggle-switch').checked;
+  if (!wasTorqueEnabled) {
+    sendGripperCommand(close, false);
+    return;
+  }
+
+  showMsg('gripper-msg', true, 'Disabling torque control to move the gripper...');
+  callService(svcEnablePosition, {}, function(resp) {
+    if (!resp.success) {
+      showMsg('gripper-msg', false, 'Could not disable torque control: ' + resp.message);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+      return;
+    }
+    sendGripperCommand(close, true);
+  }, function(err) {
+    showMsg('gripper-msg', false, 'Could not disable torque control: ' + err);
+    gripperCycleInProgress = false;
+    setGripperButtonsEnabled(true);
+  });
+}
+
+function sendGripperCommand(close, reenableTorqueAfter) {
+  callService(svcGripperCommand, { data: close }, function(resp) {
+    showMsg('gripper-msg', resp.success, resp.message);
+    finishGripperCycle(reenableTorqueAfter);
+  }, function(err) {
+    showMsg('gripper-msg', false, 'Gripper command failed: ' + err);
+    // Still restore torque control even if the gripper command itself
+    // failed -- an operator shouldn't get stuck in position mode just
+    // because Kortex rejected the command.
+    finishGripperCycle(reenableTorqueAfter);
+  });
+}
+
+function finishGripperCycle(reenableTorqueAfter) {
+  if (!reenableTorqueAfter) {
+    gripperCycleInProgress = false;
+    setGripperButtonsEnabled(true);
+    return;
+  }
+  setTimeout(function() {
+    const allowDanger = document.getElementById('allow-danger').checked;
+    callService(svcEnableTorque, { allow_danger: allowDanger }, function(resp) {
+      showMsg('mode-msg', resp.success, resp.message);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+    }, function(err) {
+      showMsg('mode-msg', false, 'Torque control on failed: ' + err);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+    });
+  }, GRIPPER_MOVE_WAIT_MS);
 }
 
 // ---- reset springs -----------------------------------------------------
@@ -1307,10 +1387,14 @@ function handleTorqueStatus(msg) {
   el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
   const isEnabled = msg.data === 'ENABLED';
   updateTorqueToggleSwitch(isEnabled);
-  // Position-mode-only actions -- moving to a pose or the gripper -- can't
-  // run while torque control is on, so grey them out instead of letting
-  // them fail silently against the robot.
-  ['btn-move-study-start', 'btn-move-joint-angles', 'btn-gripper-open', 'btn-gripper-close']
+  // Position-mode-only actions -- moving to a pose -- can't run while
+  // torque control is on, so grey them out instead of letting them fail
+  // silently against the robot. The gripper buttons are deliberately NOT
+  // in this list -- gripperCommand() below handles dropping out of (and
+  // back into) torque control itself, so they stay clickable regardless
+  // of torque state; it manages its own disabled state while a cycle is
+  // in flight (see gripperCycleInProgress).
+  ['btn-move-study-start', 'btn-move-joint-angles']
     .forEach(function(id) { document.getElementById(id).disabled = isEnabled; });
 }
 function handleSafetyStatus(msg) {
