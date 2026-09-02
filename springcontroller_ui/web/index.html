@@ -465,11 +465,24 @@ const WORKSPACE_DEMO_EYE_SPRING_NAME = 'workspace_demo_eye';
 // allow-danger has no live server-side state to reflect, so plain false is
 // correct; the two toggle switches instead go to an explicit "unknown"
 // state (not a false "OFF" claim) until a real status arrives post-connect.
+//
+// Same restore behavior hits plain number inputs, not just checkboxes --
+// confirmed live 2026-09-02: the collision-thresholds panel showed a
+// stale danger_threshold of 16 (from some earlier typed value) on load,
+// nowhere close to either the HTML default (0.01) or anything the node
+// would ever report -- this panel never had a live subscription to
+// correct it either (see the collision_thresholds_status subscription in
+// connectRos, added the same day). Reset these to the HTML defaults here
+// too so a stale browser-restored value can't sit in the box ready to be
+// silently Applied before that subscription's first message arrives.
 function resetPersistedFormState() {
   document.getElementById('allow-danger').checked = false;
   document.getElementById('torque-toggle-switch').checked = false;
   document.getElementById('springs-toggle-switch').checked = false;
   document.getElementById('repulsion-toggle-switch').checked = false;
+  document.getElementById('ct-danger').value = '0.01';
+  document.getElementById('ct-caution').value = '0.05';
+  document.getElementById('ct-max-force').value = '5.0';
 }
 resetPersistedFormState();
 // A bfcache restore (browser back/forward, some tab-freeze/resume cases)
@@ -1458,6 +1471,21 @@ function connectRos() {
     // been enabled this run, and nothing in the UI could have caught that.
     sub('/virtual_spring_node/repulsion_enabled_status', 'std_msgs/msg/Bool', function(msg) {
       updateRepulsionToggleSwitch(msg.data);
+    });
+    // Live [danger_threshold, caution_threshold, repulsion_max_force_n] --
+    // same "authoritative over whatever's sitting in the form" reasoning
+    // as springs_enabled above. TRANSIENT_LOCAL, so this arrives once
+    // immediately on connect (correcting resetPersistedFormState's plain
+    // HTML-default guess to the node's real configured values -- see that
+    // function's comment for why the boxes couldn't be trusted before
+    // this existed) and again on any live ~/update_collision_thresholds
+    // change from any client.
+    sub('/virtual_spring_node/collision_thresholds_status', 'std_msgs/msg/Float64MultiArray', function(msg) {
+      const data = msg.data || [];
+      if (data.length < 3) return;
+      document.getElementById('ct-danger').value = data[0];
+      document.getElementById('ct-caution').value = data[1];
+      document.getElementById('ct-max-force').value = data[2];
     });
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
