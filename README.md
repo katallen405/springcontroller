@@ -155,23 +155,33 @@ mirroring `~/target/<name>` for Cartesian springs. Add/remove at runtime via
 `~/add_joint_spring` (`springcontroller_interfaces/AddJointSpring`) and the
 existing `~/remove_spring` (name-based, works for either spring type).
 
-### Orientation springs
+### Pose springs (EXPERIMENTAL)
 
 A `VirtualSpring` pulls a point toward a target -- it can't express "keep
 this face pointed at that point" without also dragging the attachment point
-toward it. `OrientationSpring` does the opposite: it aligns a direction
-fixed in a link's local frame (a "face normal") with the direction from the
+toward it. `PoseSpring` does the opposite: it aligns a direction fixed in a
+link's local frame (a "face normal") with the direction from the
 attachment point to a target world point, using only the rotational
-Jacobian. It produces pure restoring torque and zero translational force,
-and re-aims every cycle from the *current* attachment position, so it keeps
-pointing at the target as the arm/block moves rather than holding a
-rotation frozen at load time.
+Jacobian to build the restoring torque, and re-aims every cycle from the
+*current* attachment position, so it keeps pointing at the target as the
+arm/block moves rather than holding a rotation frozen at load time.
+
+Unlike a pure orientation-only spring, this torque is not guaranteed to
+leave the attachment point still -- on a serial chain, most joint-torque
+directions that correct orientation also move the point. `PoseSpring` is a
+hybrid: it couples the orientation correction to an explicit position
+constraint (`position_center`/`position_radius`), splitting the torque
+into a null-space-safe part (provably never moves the point, always
+applied at full strength) and the remainder, which is scaled down only
+once the attachment point would be pulled outside `position_radius` of
+`position_center`. Both fields are **required**, same as `target` -- there
+is no default that reproduces unconstrained drift.
 
 ```yaml
 /**:
   ros__parameters:
-    orientation_spring_names: [face_participant]
-    orientation_springs:
+    pose_spring_names: [face_participant]
+    pose_springs:
       face_participant:
         link_name:         "end_effector_link"
         local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
@@ -179,17 +189,20 @@ rotation frozen at load time.
         target:              [0.6, 0.4, 0.5]   # e.g. the participant's measured face position (m)
         stiffness:          2.0                # N*m/rad
         damping:            0.2                # N*m*s/rad
+        position_center:    [0.3, 0.0, 0.4]   # e.g. a paired VirtualSpring's own target (m)
+        position_radius:    0.12                # m
 ```
 
-Unlike `joint_springs`' `target_angle` or `springs`' `target`, `target` here
-has **no safe default** and must be set explicitly -- it's an external
-real-world point (e.g. a person's face), not something inferable from the
-arm's own pose, so an unconfigured spring fails to load rather than aiming
-at whatever the zero/neutral pose happens to imply. Add it to the same
-config file as `springs`/`joint_springs` to sum all three into one total
-torque. Runtime target updates: `~/target/<name>` (`geometry_msgs/
+Unlike `joint_springs`' `target_angle` or `springs`' `target`, `target`
+here has **no safe default** and must be set explicitly -- it's an
+external real-world point (e.g. a person's face), not something inferable
+from the arm's own pose, so an unconfigured spring fails to load rather
+than aiming at whatever the zero/neutral pose happens to imply. The same
+applies to `position_center`/`position_radius`. Add it to the same config
+file as `springs`/`joint_springs` to sum all three into one total torque.
+Runtime target updates: `~/target/<name>` (`geometry_msgs/
 PointStamped`), same topic Cartesian springs use. Add/remove at runtime via
-`~/add_orientation_spring` (`springcontroller_interfaces/AddOrientationSpring`)
+`~/add_pose_spring` (`springcontroller_interfaces/AddPoseSpring`)
 and the existing `~/remove_spring`.
 
 ## Launch
@@ -467,9 +480,9 @@ frame as a labeled dot -- useful for picking a `link_name` for a spring.
 |---|---|---|
 | `/joint_states` (sub) | `sensor_msgs/JointState` | Arm joint positions + velocities. Global, not private (`/joint_states`, not `~/joint_states`) — remapped on Gen3 via the `joint_states_topic` launch argument (default `/kinova/joint_states_lowlevel`), see [Kinova Gen3](#kinova-gen3-via-gen3_torque_control-node) |
 | `~/joint_torques` (pub) | `sensor_msgs/JointState` | Spring torques in effort field |
-| `~/springs_updated` (pub, transient-local) | `std_msgs/String` | JSON array of every currently-loaded spring name (Cartesian, joint, or orientation), republished in full on every add/remove — a late-joining consumer like `armviz.py` sees the current list immediately instead of missing whatever was already loaded |
-| `~/target/<spring_name>` (sub + pub, transient-local) | `geometry_msgs/PointStamped` | Sub: move a Cartesian or orientation spring's target at runtime. Pub: broadcasts the resolved target (on load, on resolution against the arm's real pose, and on `add_spring`/`add_orientation_spring`) so a late-joining consumer sees the current target instead of missing it |
-| `~/attachment/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian or orientation spring's attachment point at runtime |
+| `~/springs_updated` (pub, transient-local) | `std_msgs/String` | JSON array of every currently-loaded spring name (Cartesian, joint, or pose), republished in full on every add/remove — a late-joining consumer like `armviz.py` sees the current list immediately instead of missing whatever was already loaded |
+| `~/target/<spring_name>` (sub + pub, transient-local) | `geometry_msgs/PointStamped` | Sub: move a Cartesian or pose spring's target at runtime. Pub: broadcasts the resolved target (on load, on resolution against the arm's real pose, and on `add_spring`/`add_pose_spring`) so a late-joining consumer sees the current target instead of missing it |
+| `~/attachment/<spring_name>` (sub) | `geometry_msgs/PointStamped` | Move a Cartesian or pose spring's attachment point at runtime |
 | `~/joint_target/<spring_name>` (sub) | `std_msgs/Float64` | Move a joint spring's target angle (rad) at runtime |
 | `~/collision_object` (sub) | `moveit_msgs/CollisionObject` | ADD/MOVE/REMOVE a scene collision object at runtime — see [Collision scene objects](#collision-scene-objects) |
 | `~/collision_object_state` (pub, transient-local) | `moveit_msgs/CollisionObject` | Echoes every applied ADD/APPEND/MOVE/REMOVE (from either the topic above or the YAML loader), so a late-joining consumer like `armviz.py` can reconstruct current scene state |
@@ -483,7 +496,7 @@ frame as a labeled dot -- useful for picking a `link_name` for a spring.
 | `~/set_gravity_compensation` | `std_srvs/SetBool` | Toggle gravity compensation at runtime without restarting |
 | `~/add_spring` | `springcontroller_interfaces/AddSpring` | Add a Cartesian spring at runtime |
 | `~/add_joint_spring` | `springcontroller_interfaces/AddJointSpring` | Add a joint spring at runtime |
-| `~/add_orientation_spring` | `springcontroller_interfaces/AddOrientationSpring` | Add an orientation spring at runtime |
+| `~/add_pose_spring` | `springcontroller_interfaces/AddPoseSpring` | Add a pose spring at runtime |
 | `~/update_spring` | `springcontroller_interfaces/UpdateSpring` | Change an existing spring's stiffness/damping by name (any type) |
 | `~/remove_spring` | `springcontroller_interfaces/RemoveSpring` | Remove a spring by name (any type) |
 | `~/load_collision_scene` | `springcontroller_interfaces/LoadCollisionScene` | Load scene collision objects from YAML — see [Collision scene objects](#collision-scene-objects) |
@@ -646,23 +659,26 @@ ros2 service call /virtual_spring_node/add_joint_spring \
     }"
 ```
 
-### Add an orientation spring
+### Add a pose spring (EXPERIMENTAL)
 
 Aligns a link-local face normal with the direction toward a fixed world
-point, using only the rotational Jacobian -- pure torque, no positional
-pull. See [Orientation springs](#orientation-springs) above for the full
-explanation.
+point, using the rotational Jacobian to build the torque, bounded to a
+radius of a position goal so it doesn't drag the attachment point
+arbitrarily far to correct orientation. See [Pose springs](#pose-springs-experimental)
+above for the full explanation.
 
 ```bash
-ros2 service call /virtual_spring_node/add_orientation_spring \
-    springcontroller_interfaces/srv/AddOrientationSpring "{
+ros2 service call /virtual_spring_node/add_pose_spring \
+    springcontroller_interfaces/srv/AddPoseSpring "{
         name: 'face_participant',
         link_name: 'end_effector_link',
         local_point: [0.0, 0.0, 0.1],
         local_face_normal: [0.0, 0.0, 1.0],
         target: [0.6, 0.4, 0.5],
         stiffness: 2.0,
-        damping: 0.2
+        damping: 0.2,
+        position_center: [0.3, 0.0, 0.4],
+        position_radius: 0.12
     }"
 ```
 
@@ -849,7 +865,7 @@ For the ergonomics study, `springcontroller_ui`'s "Study workspace
 calibration" panel turns two measurements (seated eye height, elbow-to-
 fingertip arm length) into `condition1.yaml` (a dead-zone `VirtualSpring`
 sized from those measurements) and `condition2.yaml` (the same spring plus
-a gaze `OrientationSpring`), rather than hand-authoring them. Workflow:
+a gaze `PoseSpring`), rather than hand-authoring them. Workflow:
 "Preview workspace center" computes a candidate and places it as a live,
 always-on `workspace_demo` spring so the experimenter can enable torque
 control and push the arm / retarget it (via the existing spring-list

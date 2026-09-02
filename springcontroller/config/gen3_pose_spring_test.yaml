@@ -1,4 +1,4 @@
-# Dry-run config for testing OrientationSpring alone -- no other springs
+# Dry-run config for testing PoseSpring alone -- no other springs
 # loaded, so the only thing pulling on the arm is gravity compensation plus
 # this one spring. Meant to be viewed in armviz (meshcat) with torque
 # control left DISABLED (enable_torque_control defaults to false in
@@ -19,14 +19,21 @@
 #   edge point = center + radius * direction
 #     = (0.34 - 0.3*0.437, -0.70 + 0.3*0.900)
 #     = (0.209, -0.430)
+#
+# position_center/position_radius (EXPERIMENTAL, see PoseSpring in
+# virtual_spring.py) are required by the loader -- no safe default. Reused
+# the same edge point as position_center here (there's no paired
+# VirtualSpring in this dry-run config to couple to) with a 0.15 m radius,
+# loosely matching the outer_radius scale used by the study-calibration
+# flow's paired position springs (orchestration_node.py).
 
 /**:
   ros__parameters:
 
-    orientation_spring_names:
+    pose_spring_names:
       - face_test_point
 
-    orientation_springs:
+    pose_springs:
       face_test_point:
         link_name:          "end_effector_link"
         local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
@@ -34,3 +41,5 @@
         target:             [0.209, -0.430, 0.5]   # see edge-point math above (m)
         stiffness:          2.0                # N*m/rad -- soft, just for viewing
         damping:            0.2                # N*m*s/rad
+        position_center:    [0.209, -0.430, 0.5]   # same edge point (m)
+        position_radius:    0.15                    # m
