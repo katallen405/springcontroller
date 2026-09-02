@@ -365,7 +365,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
           <dt>inner/outer radius</dt><dd>Dead-zone/ramp band (m) around rest length -- no force inside inner radius, full stiffness beyond outer radius, ramped in between (position springs only).</dd>
           <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (orientation springs only).</dd>
-          <dt>Preview (zero force)</dt><dd>Adds the spring for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping so it can't exert any force -- check it looks right, then use "Update" in the list below to set the real values.</dd>
+          <dt>Preview (zero force)</dt><dd>Adds the spring for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping so it can't exert any force -- check it looks right, then click "Add spring" again with the real values to replace it.</dd>
         </dl>
       </details>
 
@@ -419,7 +419,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <p class="hint" id="sp-orientation-hint" style="display:none">Orientation spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector.</p>
         <div class="btn-row">
-          <button class="action off" onclick="addSpring(true)" title="Adds it for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping, so it can't exert any force -- check it looks right, then Update to set the real stiffness.">Preview (zero force)</button>
+          <button class="action off" onclick="addSpring(true)" title="Adds it for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping, so it can't exert any force -- check it looks right, then click Add spring again with the real values to replace it.">Preview (zero force)</button>
           <button class="action on" onclick="addSpring()">Add spring</button>
         </div>
       </div>
@@ -936,14 +936,36 @@ function captureCurrentAsWorkspaceTarget() {
 // added directly at its real (mistakenly large) stiffness pulled the arm
 // into the table and faulted within ~1.2s, far too fast to react to --
 // previewing first would have shown the problem with zero risk. Once it
-// looks right, use "Update" in the spring list below to set the real
-// stiffness/damping (this spring already exists at that point, so
-// clicking "Add spring" again would just fail with "already exists") --
-// or "Remove" to discard it.
+// looks right, click "Add spring" again with the real values -- see
+// below for how that supersedes the zero-force preview -- or "Remove" it
+// in the list to discard.
 function addSpring(preview) {
   const name = document.getElementById('sp-name').value.trim();
   if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
 
+  // A real ("Add spring", not preview) add on a name that already exists
+  // replaces it instead of failing with "already exists" -- most commonly
+  // this is a zero-force Preview under the same name, and going from
+  // Preview to a real spring should just be "Add spring" again, not a
+  // separate manual Remove step first. Not gated to the preview case
+  // specifically: redefining any existing spring's full geometry (not
+  // just stiffness/damping, which Update already handles without this
+  // remove-then-add) is a reasonable thing "Add spring" should just do.
+  if (!preview && currentSprings.includes(name)) {
+    callService(svcRemoveSpring, { name: name }, function() {
+      performAddSpring(name, preview);
+    }, function() {
+      // Remove failed (stale currentSprings, transient rosbridge error) --
+      // still attempt the add; its own response/error will surface
+      // whatever's actually wrong instead of silently doing nothing.
+      performAddSpring(name, preview);
+    });
+    return;
+  }
+  performAddSpring(name, preview);
+}
+
+function performAddSpring(name, preview) {
   const common = {
     name: name,
     link_name: resolveLinkName(document.getElementById('sp-link').value),
@@ -958,7 +980,7 @@ function addSpring(preview) {
   function addedMsg(resp) {
     if (!resp.success) return resp.message || 'Failed.';
     return preview
-      ? 'Preview added at zero stiffness/damping -- check meshcat, then use "Update" below to set the real values (or "Remove" to discard).'
+      ? 'Preview added at zero stiffness/damping -- check meshcat, then click "Add spring" again with the real values to replace it (or "Remove" it in the list to discard).'
       : (resp.message || 'Added.');
   }
 

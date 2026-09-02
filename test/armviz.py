@@ -149,28 +149,44 @@ def _get_spring_param(name, key, prefix=None):
     the only path left that generates the "Invalid access to undeclared
     parameter(s)" WARN on the node side, and it only fires for a spring
     whose type wasn't known when it was first tracked (e.g. one added after
-    startup, seen only via ~/springs_updated)."""
+    startup, seen only via ~/springs_updated).
+
+    Returns (value, resolved_prefix) -- resolved_prefix is whichever prefix
+    actually worked (the given `prefix`, echoed back, when one was given),
+    or None if every prefix failed. Callers that started with prefix=None
+    need this to actually learn the spring's real type, not just its
+    field values -- confirmed live 2026-09-02: without this, a spring
+    first seen via ~/springs_updated (i.e. one added at runtime, which is
+    how the UI always adds springs) got its target/link_name/local_point
+    resolved fine via the guess-and-fallback below, but the *type itself*
+    was silently discarded, leaving `prefix` stuck at None forever on that
+    spring's entry -- so draw_springs's `is_orientation` check always
+    failed for it, and an orientation spring added from the UI never got
+    its purple target sphere or RGB attachment triad, only ever the
+    generic blue/red position-spring look."""
     prefixes = [prefix] if prefix is not None else SPRING_PARAM_PREFIXES
     for p in prefixes:
         try:
-            return subprocess.check_output([
+            out = subprocess.check_output([
                 'ros2', 'param', 'get', SPRING_NODE,
                 f'{p}.{name}.{key}'
             ], timeout=5).decode()
+            return out, p
         except Exception:
             continue
-    return None
+    return None, None
 
 def get_param_target(name, prefix=None):
-    """Read initial spring target from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'target', prefix)
+    """Read initial spring target from the spring node's ROS parameters.
+    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'target', prefix)
     if out is None:
         print(f"[viz] could not read target for '{name}'")
-        return None
+        return None, None
     nums = re.findall(r'[-\d.]+', out.split(':')[-1])
     if len(nums) == 3:
-        return np.array([float(x) for x in nums])
-    return None
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
 
 def get_param_local_point(name, prefix=None):
     """Read initial local_point (attachment offset within the link's own
@@ -179,19 +195,21 @@ def get_param_local_point(name, prefix=None):
     always sat at the link's frame origin regardless of local_point,
     confirmed live 2026-08-21 (a (0,0,0.1) local_point still drew the ball
     at (0,0,0) in the link frame). Same "None means not resolved yet, no
-    hardcoded fallback" contract as get_param_target/get_param_link."""
-    out = _get_spring_param(name, 'local_point', prefix)
+    hardcoded fallback" contract as get_param_target/get_param_link.
+    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'local_point', prefix)
     if out is None:
         print(f"[viz] could not read local_point for '{name}'")
-        return None
+        return None, None
     nums = re.findall(r'[-\d.]+', out.split(':')[-1])
     if len(nums) == 3:
-        return np.array([float(x) for x in nums])
-    return None
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
 
 def get_param_link(name, prefix=None):
-    """Read initial link_name from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'link_name', prefix)
+    """Read initial link_name from the spring node's ROS parameters.
+    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'link_name', prefix)
     if out is None:
         print(f"[viz] could not read link_name for '{name}'")
         # None, not a hardcoded fallback -- this script is robot-agnostic
@@ -204,8 +222,8 @@ def get_param_link(name, prefix=None):
         # link_name permanently stuck at the old "ur3e_tool0" fallback,
         # since -- unlike target -- nothing ever retried it. Callers must
         # treat None as "not resolved yet", same as target=None.
-        return None
-    return out.split(':')[-1].strip()
+        return None, None
+    return out.split(':')[-1].strip(), resolved_prefix
 
 def _track_spring(name, prefix=None):
     """Ensure `name` is present in `springs` with a resolved target,
@@ -237,14 +255,27 @@ def _track_spring(name, prefix=None):
     which only gets a bare name with no type) doesn't pass one."""
     entry = springs.get(name)
     if entry is None:
-        target      = get_param_target(name, prefix)
-        link_name   = get_param_link(name, prefix)
-        local_point = get_param_local_point(name, prefix)
+        # `known` is a 1-element mutable box (not a plain local) so `fetch`
+        # below can update it in place: once ANY field resolves a prefix
+        # (when we started with prefix=None), the rest go straight to that
+        # same prefix instead of each independently re-guessing through
+        # SPRING_PARAM_PREFIXES -- they must all agree, a spring only
+        # exists under one prefix. See _get_spring_param's docstring for
+        # why capturing this matters at all (not just an efficiency thing).
+        known = [prefix]
+        def fetch(getter):
+            value, resolved = getter(name, known[0])
+            if known[0] is None and resolved is not None:
+                known[0] = resolved
+            return value
+        target      = fetch(get_param_target)
+        link_name   = fetch(get_param_link)
+        local_point = fetch(get_param_local_point)
         springs[name] = entry = {
             "target":      target,
             "link_name":   link_name,
             "local_point": local_point,
-            "prefix":      prefix,
+            "prefix":      known[0],
         }
         # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
         # publisher -- see _latched_qos below for why a plain VOLATILE
@@ -257,20 +288,25 @@ def _track_spring(name, prefix=None):
             _latched_qos,
         )
         target_subs[name] = sub
-        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
+        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}  prefix={known[0]}")
     else:
-        p = prefix if prefix is not None else entry.get("prefix")
+        known = [prefix if prefix is not None else entry.get("prefix")]
+        def fetch(getter):
+            value, resolved = getter(name, known[0])
+            if known[0] is None and resolved is not None:
+                known[0] = resolved
+            return value
         if entry.get("target") is None:
-            entry["target"] = get_param_target(name, p)
+            entry["target"] = fetch(get_param_target)
             print(f"[viz] retried target for '{name}': {entry['target']}")
         if entry.get("link_name") is None:
-            entry["link_name"] = get_param_link(name, p)
+            entry["link_name"] = fetch(get_param_link)
             print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
         if entry.get("local_point") is None:
-            entry["local_point"] = get_param_local_point(name, p)
+            entry["local_point"] = fetch(get_param_local_point)
             print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
         if entry.get("prefix") is None:
-            entry["prefix"] = p
+            entry["prefix"] = known[0]
     # local_point isn't part of the resolved-gate: draw_springs falls back
     # to zero for it (the ball just sits at the link origin, same as
     # before this was tracked at all) rather than blocking the whole
