@@ -289,18 +289,33 @@ def test_log_event_creates_header_once_and_appends(tmp_path):
     csv_path = str(tmp_path / "event_log.csv")
 
     log_event(csv_path, "Trial start", "KT side 1")
-    log_event(csv_path, "Trial end", "KT side 1")
+    log_event(csv_path, "Trial end", "KT side 1", "participant asked to pause briefly")
 
     with open(csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 2
     assert rows[0]["event"] == "Trial start"
     assert rows[0]["condition"] == "KT side 1"
+    assert rows[0]["notes"] == ""
     assert rows[1]["event"] == "Trial end"
+    assert rows[1]["notes"] == "participant asked to pause briefly"
     # Header appears exactly once, not duplicated per append.
     with open(csv_path) as f:
         header_lines = [l for l in f.readlines() if l.startswith("timestamp,")]
     assert len(header_lines) == 1
+
+
+def test_log_event_notes_is_a_separate_column_not_tied_to_other(tmp_path):
+    # notes is independent of event_text/condition -- present (or not)
+    # regardless of whether either dropdown's value happens to be "Other".
+    csv_path = str(tmp_path / "event_log.csv")
+    log_event(csv_path, "Other", "Other", "ran out of paint, improvised")
+
+    with open(csv_path, newline="") as f:
+        row = next(csv.DictReader(f))
+    assert row["event"] == "Other"
+    assert row["condition"] == "Other"
+    assert row["notes"] == "ran out of paint, improvised"
 
 
 def test_log_event_returns_iso_timestamp(tmp_path):
