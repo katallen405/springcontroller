@@ -166,26 +166,28 @@ def test_write_condition_yaml_matches_loader_schema(tmp_path):
     assert spring["link_name"] == "end_effector_link"
     assert spring["target"] == [0.5, 0.0, pytest.approx(10.16 * CM_TO_M)]
     assert spring["inner_radius"] == pytest.approx(condition_params["inner_radius"])
-    assert "orientation_spring_names" not in params
+    assert "pose_spring_names" not in params
 
 
-def test_write_condition_yaml_with_orientation_adds_gaze_spring(tmp_path):
+def test_write_condition_yaml_with_pose_adds_gaze_spring(tmp_path):
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
     path = str(tmp_path / "condition2.yaml")
-    orientation_params = {
+    pose_params = {
         "link_name": "end_effector_link",
         "local_point": [0.0, 0.0, 0.1],
         "local_face_normal": [0.0, 0.0, 1.0],
         "target": [0.5, 0.0, 71.0 * CM_TO_M],
         "stiffness": 2.0,
         "damping": 0.2,
+        "position_center": [center["x"], center["y"], center["z"]],
+        "position_radius": condition_params["outer_radius"],
     }
 
     write_condition_yaml(
         path, "tip_spring", _spring_params(center, condition_params),
-        include_orientation=True, orientation_name="face_participant",
-        orientation_params=orientation_params,
+        include_pose=True, pose_name="face_participant",
+        pose_params=pose_params,
     )
 
     with open(path) as f:
@@ -194,22 +196,24 @@ def test_write_condition_yaml_with_orientation_adds_gaze_spring(tmp_path):
     # Condition 2 keeps the identical dead-zone sphere from condition 1...
     assert params["springs"]["tip_spring"]["inner_radius"] == pytest.approx(condition_params["inner_radius"])
     # ...and adds the gaze spring on top.
-    assert params["orientation_spring_names"] == ["face_participant"]
-    assert params["orientation_springs"]["face_participant"]["target"] == [0.5, 0.0, pytest.approx(71.0 * CM_TO_M)]
+    assert params["pose_spring_names"] == ["face_participant"]
+    assert params["pose_springs"]["face_participant"]["target"] == [0.5, 0.0, pytest.approx(71.0 * CM_TO_M)]
+    # ...coupled to the same position center/radius as tip_spring's own.
+    assert params["pose_springs"]["face_participant"]["position_radius"] == pytest.approx(condition_params["outer_radius"])
 
 
 def test_log_measurement_creates_header_once_and_appends(tmp_path):
     csv_path = str(tmp_path / "measurements.csv")
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
-    orientation_target = {"x": 0.5, "y": 0.0, "z": 71.0 * CM_TO_M}
+    pose_target = {"x": 0.5, "y": 0.0, "z": 71.0 * CM_TO_M}
 
     log_measurement(
-        csv_path, "P001", 71.0, 46.0, center, condition_params, orientation_target,
+        csv_path, "P001", 71.0, 46.0, center, condition_params, pose_target,
         "condition1_P001.yaml", "condition2_P001.yaml",
     )
     log_measurement(
-        csv_path, "P002", 68.0, 43.0, center, condition_params, orientation_target,
+        csv_path, "P002", 68.0, 43.0, center, condition_params, pose_target,
         "condition1_P002.yaml", "condition2_P002.yaml",
     )
 
@@ -228,10 +232,10 @@ def test_log_measurement_records_warnings(tmp_path):
     csv_path = str(tmp_path / "measurements.csv")
     too_high = {"x": 0.0, "y": 0.0, "z": 50.0 * CM_TO_M}
     condition_params = compute_condition_params(too_high, eye_height_cm=71.0, arm_length_cm=46.0)
-    orientation_target = {"x": 0.0, "y": 0.0, "z": 71.0 * CM_TO_M}
+    pose_target = {"x": 0.0, "y": 0.0, "z": 71.0 * CM_TO_M}
 
     log_measurement(
-        csv_path, "P003", 71.0, 46.0, too_high, condition_params, orientation_target,
+        csv_path, "P003", 71.0, 46.0, too_high, condition_params, pose_target,
         "c1.yaml", "c2.yaml",
     )
 
