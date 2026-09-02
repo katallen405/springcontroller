@@ -43,3 +43,32 @@ Condition 1 (relaunch springcontroller above with):
 
 Condition 2 (relaunch springcontrollerabove with):
   config:=~/gen3_study_data/<participant ID>/condition2.yaml
+
+-------------------------
+study instructions
+
+- sit at the line on the table
+
+- when you hand the block to the robot, hold it from the sides opposite
+  where the robot's gripper is to avoid getting pinched.
+
+- I am going to measure your eye height and arm length to determine
+  your ergonomic workspace.  Then we can look at a preview of the workspace
+  to figure out if you want any adjustments, and set it for the study.
+
+- There are three conditions which you will see in a random
+  order. I'll introduce the way you control the arm in the three
+  conditions when we get to them.  In all of them, you will have up to
+  2 minutes to decorate two opposite faces of the block.  When you're
+  done or time is up, we'll stop and you can answer some questions
+  about this way of interacting with the robot arm, and then you will
+  get to decorate two other faces of the block in each of the two
+  other conditions.  You can stop the test at any time by saying
+  "stop", and I may stop the test if I am concerned that something
+  unsafe is happening.
+
+Condition B:
+
+In this condition, you will control the arm using the two
+buttons on the wrist of the robot.  The button 
+
