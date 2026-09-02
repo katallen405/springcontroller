@@ -1,5 +1,5 @@
 Start the gen3 controller node:
-ros2 run gen3_torque_control gen3_torque_node --ros-args -r joint_states:=/kinova/joint_states_lowlevel
+ros2 run gen3_torque_control gen3_torque_node --ros-args --remap joint_states:=/kinova/joint_states_lowlevel
 
 Start the springcontroller:
 ros2 launch springcontroller gen3_spring.launch.py armviz:=true load_collision_scene:=true 
@@ -38,8 +38,8 @@ Baseline (no torque controller):
   config:=.../springcontroller/config/gen3_springs_none.yaml if the panel
   is currently pointed at a different config.)
 
-Condition 1 (relaunch step 2 above with):
+Condition 1 (relaunch springcontroller above with):
   config:=~/gen3_study_data/<participant ID>/condition1.yaml
 
-Condition 2 (relaunch step 2 above with):
+Condition 2 (relaunch springcontrollerabove with):
   config:=~/gen3_study_data/<participant ID>/condition2.yaml
