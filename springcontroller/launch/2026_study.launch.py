@@ -26,8 +26,8 @@ pick up -- it's just not listed by -s on this wrapper. See
 gen3_spring.launch.py for the full list and their descriptions.
 
   ros2 launch springcontroller 2026_study.launch.py \
-      config:=~/gen3_study_data/<participant_id>/condition1.yaml \
-      participant_id:=<participant_id> condition_name:=condition1
+      config:=~/gen3_study_data/<participant_id>/position.yaml \
+      participant_id:=<participant_id> condition_name:=position
 """
 
 import os
@@ -65,7 +65,7 @@ def generate_launch_description():
         "condition_name",
         default_value="",
         description=(
-            "Labels the rosbag output directory, e.g. 'condition1' -- see "
+            "Labels the rosbag output directory, e.g. 'position' -- see "
             "gen3_spring.launch.py's condition_name_arg."
         ),
     )
