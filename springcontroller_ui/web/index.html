@@ -744,12 +744,39 @@ function finishGripperCycle(reenableTorqueAfter) {
       showMsg('mode-msg', resp.success, resp.message);
       gripperCycleInProgress = false;
       setGripperButtonsEnabled(true);
+      if (resp.success) maybeRecoverSpringsAfterGripperCycle();
     }, function(err) {
       showMsg('mode-msg', false, 'Torque control on failed: ' + err);
       gripperCycleInProgress = false;
       setGripperButtonsEnabled(true);
     });
   }, GRIPPER_MOVE_WAIT_MS);
+}
+
+// Re-enabling torque control after a gripper cycle can let the arm settle
+// a tiny bit -- confirmed live 2026-09-02: a small drop on torque
+// re-engage tripped the self-collision hard clamp, auto-disabling springs
+// (see virtual_spring_node's _springs_auto_disabled) even though nothing
+// was actually near a collision moments before. This does NOT change
+// virtual_spring_node's own no-automatic-recovery policy for collisions
+// in general (see its _springs_auto_disabled comment -- that incident is
+// exactly why it requires a deliberate operator action) -- this helper is
+// scoped narrowly to right after a gripper cycle, where the trip is an
+// expected, momentary side effect of re-engaging torque rather than a
+// real hazard, and it only re-enables once the live safety status
+// confirms the arm has actually cleared the collision zone again, not on
+// a blind timer.
+const SPRINGS_RECOVERY_CHECK_DELAY_MS = 1000;
+
+function maybeRecoverSpringsAfterGripperCycle() {
+  if (!(lastSafetyStatusRaw || '').includes('springs disabled by collision')) return;
+  setTimeout(function() {
+    if ((lastSafetyStatusRaw || '').startsWith('COLLISION')) {
+      showMsg('gripper-msg', false, 'Springs still disabled -- arm is still in the collision zone.');
+      return;
+    }
+    setSpringsEnabled(true);
+  }, SPRINGS_RECOVERY_CHECK_DELAY_MS);
 }
 
 // ---- reset springs -----------------------------------------------------
@@ -1410,7 +1437,13 @@ function handleTorqueStatus(msg) {
   ['btn-move-study-start', 'btn-move-joint-angles']
     .forEach(function(id) { document.getElementById(id).disabled = isEnabled; });
 }
+// Backs maybeRecoverSpringsAfterGripperCycle's post-gripper-cycle checks
+// (see gripper section) -- kept as a plain variable rather than re-reading
+// the safety-state span's textContent so those checks see the exact wire
+// value, not whatever the DOM happens to hold.
+let lastSafetyStatusRaw = '';
 function handleSafetyStatus(msg) {
+  lastSafetyStatusRaw = msg.data || '';
   const el = document.getElementById('safety-state');
   const status = (msg.data || '').split(' ')[0].split(':')[0];
   el.textContent = msg.data;
