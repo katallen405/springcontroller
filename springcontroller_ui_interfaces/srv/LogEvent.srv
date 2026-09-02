@@ -1,0 +1,8 @@
+string participant_id
+string event_text
+string condition
+string data_dir
+---
+bool success
+string message
+string log_path
