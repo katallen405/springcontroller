@@ -135,11 +135,11 @@ def get_all_frames():
 # ---------------------------------------------------------------------------
 
 # Cartesian-target spring types live under different parameter prefixes
-# (VirtualSpring: springs.<name>.*, OrientationSpring: orientation_springs.
+# (VirtualSpring: springs.<name>.*, PoseSpring: pose_springs.
 # <name>.*) but both publish on the same /virtual_spring_node/target/<name>
 # topic and both have a meaningful attachment point + target to draw, so
 # armviz treats them the same everywhere except this prefix lookup.
-SPRING_PARAM_PREFIXES = ["springs", "orientation_springs"]
+SPRING_PARAM_PREFIXES = ["springs", "pose_springs"]
 
 def _get_spring_param(name, key, prefix=None):
     """Fetch `<prefix>.<name>.<key>` via `ros2 param get`. When `prefix` is
@@ -160,7 +160,7 @@ def _get_spring_param(name, key, prefix=None):
     how the UI always adds springs) got its target/link_name/local_point
     resolved fine via the guess-and-fallback below, but the *type itself*
     was silently discarded, leaving `prefix` stuck at None forever on that
-    spring's entry -- so draw_springs's `is_orientation` check always
+    spring's entry -- so draw_springs's `is_pose` check always
     failed for it, and an orientation spring added from the UI never got
     its purple target sphere or RGB attachment triad, only ever the
     generic blue/red position-spring look."""
@@ -246,7 +246,7 @@ def _track_spring(name, prefix=None):
 
     `prefix`, when given, is this spring's already-known parameter-name
     prefix (see SPRING_PARAM_PREFIXES) -- load_springs_from_params knows it
-    from which of spring_names/orientation_spring_names/joint_spring_names
+    from which of spring_names/pose_spring_names/joint_spring_names
     it found the name under, so passing it here skips straight to the
     right one instead of guessing "springs" first and eating a guaranteed
     "Invalid access to undeclared parameter(s)" WARN for every non-Cartesian
@@ -316,15 +316,15 @@ def _track_spring(name, prefix=None):
 
 def load_springs_from_params():
     """Bootstrap spring list from ROS params at startup. Returns True only
-    once every known spring name (Cartesian or orientation) also has a
+    once every known spring name (Cartesian or pose) also has a
     target -- see _track_spring."""
     any_found = False
     all_resolved = True
     names_param_prefix = {
         "spring_names":             "springs",
-        "orientation_spring_names": "orientation_springs",
+        "pose_spring_names": "pose_springs",
     }
-    for names_param in ("spring_names", "orientation_spring_names"):
+    for names_param in ("spring_names", "pose_spring_names"):
         try:
             out = subprocess.check_output([
                 'ros2', 'param', 'get', SPRING_NODE, names_param
@@ -714,11 +714,11 @@ def collision_thresholds_cb(msg):
             set_halo_visible(obj_id, True)
 
 
-# Triad line length for an orientation spring's attachment marker (see
+# Triad line length for a pose spring's attachment marker (see
 # draw_springs) -- comparable to the 0.025 sphere radius used for a
 # VirtualSpring's attachment point (5cm diameter), so neither marker style
 # dominates the scene when both spring kinds are loaded together.
-_ORIENTATION_TRIAD_SCALE = 0.06
+_POSE_TRIAD_SCALE = 0.06
 
 
 def draw_springs(q):
@@ -763,15 +763,16 @@ def draw_springs(q):
 
         # Hoisted once, used both for the attachment marker (below) and the
         # target-sphere color (below) -- was checked twice with the same
-        # `spring.get("prefix") == "orientation_springs"` expression.
-        is_orientation = spring.get("prefix") == "orientation_springs"
+        # `spring.get("prefix") == "pose_springs"` expression.
+        is_pose = spring.get("prefix") == "pose_springs"
 
         # Attachment marker: blue sphere for a position (VirtualSpring)
-        # attachment point, same as always -- but an RGB axis triad for an
-        # orientation spring, showing the link's actual world orientation
+        # attachment point, same as always -- but an RGB axis triad for a
+        # pose spring, showing the link's actual world orientation
         # there (a bare dot never could -- and couldn't have shown, at a
-        # glance, that a live incident's orientation spring was rotating
-        # the link far more violently than intended, 2026-09-02). Uses
+        # glance, that a live incident's orientation spring -- pre-rename,
+        # see PoseSpring in virtual_spring.py -- was rotating the link far
+        # more violently than intended, 2026-09-02). Uses
         # placement.rotation directly (the link's raw world rotation, from
         # the same FK already computed above) rather than aligning to the
         # spring's configured local_face_normal -- armviz doesn't fetch
@@ -779,10 +780,10 @@ def draw_springs(q):
         # case (+Z) the triad's blue axis already approximates it.
         T_attach = np.eye(4)
         T_attach[:3, 3] = attachment
-        if is_orientation:
+        if is_pose:
             T_attach[:3, :3] = placement.rotation
             viz.viewer[f"springs/{name}/attachment"].set_object(
-                g.triad(scale=_ORIENTATION_TRIAD_SCALE)
+                g.triad(scale=_POSE_TRIAD_SCALE)
             )
         else:
             viz.viewer[f"springs/{name}/attachment"].set_object(
@@ -793,11 +794,11 @@ def draw_springs(q):
 
         if target is not None:
             _no_target_warned.discard(name)
-            # Red sphere at target -- purple for an orientation spring's
+            # Red sphere at target -- purple for a pose spring's
             # look-at point, so it's visually distinguishable at a glance
             # from a position spring's target (both were previously
             # identical red spheres, easy to confuse in a screenshot).
-            target_color = 0x9c27b0 if is_orientation else 0xff0000
+            target_color = 0x9c27b0 if is_pose else 0xff0000
             T_target = np.eye(4)
             T_target[:3, 3] = target
             viz.viewer[f"springs/{name}/target"].set_object(
