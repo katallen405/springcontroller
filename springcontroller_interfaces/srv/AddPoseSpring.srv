@@ -5,6 +5,8 @@ float64[3] local_face_normal
 float64[3] target
 float64 stiffness
 float64 damping
+float64[3] position_center
+float64 position_radius
 ---
 bool success
 string message

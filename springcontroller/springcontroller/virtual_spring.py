@@ -197,10 +197,10 @@ class JointSpringState:
 
 
 @dataclass
-class OrientationSpringState:
+class PoseSpringState:
     """
-    Snapshot of an :class:`OrientationSpring`'s state after the most recent
-    call to :meth:`OrientationSpring.compute_torques`.
+    Snapshot of a :class:`PoseSpring`'s state after the most recent call to
+    :meth:`PoseSpring.compute_torques`.
 
     Attributes
     ----------
@@ -216,14 +216,22 @@ class OrientationSpringState:
         in virtual_spring_node.py reads spring._last_state.extension
         regardless of spring type. It's an angle here, not a distance.
     moment_world : np.ndarray, shape (3,)
-        Restoring moment (N·m) in world coordinates.
+        Restoring moment (N·m) in world coordinates, before the position-
+        radius gate described in compute_torques -- the moment this spring
+        *wants* to apply, not scaled by risky_scale.
+    position_distance : float
+        Current distance (m) from the attachment point to position_center.
+        EXPERIMENTAL (2026-09-02): backs the position-radius gate on
+        torques -- see compute_torques.
     torques : np.ndarray, shape (n_dof,)
-        Generalized joint torques produced by this spring.
+        Generalized joint torques actually produced by this spring (after
+        the position-radius gate).
     """
     world_face_normal: np.ndarray
     desired_direction: np.ndarray
     extension: float
     moment_world: np.ndarray
+    position_distance: float
     torques: np.ndarray
 
 
@@ -617,24 +625,41 @@ class JointSpring:
 
 
 # ---------------------------------------------------------------------------
-# OrientationSpring
+# PoseSpring
 # ---------------------------------------------------------------------------
 
-class OrientationSpring:
+class PoseSpring:
     """
-    A virtual rotational spring that aligns a direction fixed in a link's
-    local frame (a "face normal") with the direction from that link's
-    attachment point to a static target point in world space -- without
-    exerting any translational pull.
+    A virtual spring that aligns a direction fixed in a link's local frame
+    (a "face normal") with the direction from that link's attachment point
+    to a static target point in world space -- a "look at" constraint --
+    while also bounding how far the attachment point itself is allowed to
+    drift while doing so. Position AND orientation, not orientation alone
+    (renamed from OrientationSpring, 2026-09-02 -- see below).
 
     Where VirtualSpring pulls a point toward a target (and is structurally
-    blind to any rotation about an axis through that point), OrientationSpring
-    does the opposite: it produces a pure restoring moment about the
-    attachment point and zero translational force, by using only the
-    rotational Jacobian (Jw) -- Jv is never referenced. The desired heading
-    is recomputed every cycle from the *current* attachment position, so as
-    the arm/block moves the spring keeps pointing the face at
-    target_world_point (a "look at" constraint), not a rotation frozen at
+    blind to any rotation about an axis through that point), this spring's
+    moment is still built purely from the rotational Jacobian (Jw) -- the
+    same "look at" math as before, unchanged. But unlike the old
+    OrientationSpring, Jv (the point's translational Jacobian) IS now used,
+    to split the resulting joint torque into a position-safe part (can
+    never move the attachment point, applied at full strength always) and
+    the remainder (which can move it, applied at full strength within
+    position_radius of position_center and ramped down beyond it -- see
+    compute_torques). EXPERIMENTAL as of 2026-09-02: a live incident showed
+    that with no position bound at all, a modest orientation moment could
+    still pull the attachment point well outside a paired position spring's
+    own workspace (e.g. ~0.17m outside a 0.12m outer_radius), since on a
+    serial chain most joints affect both position and orientation
+    simultaneously -- "zero direct Cartesian force" (still true of the
+    moment itself) doesn't mean "the point can't move" once real torque is
+    applied. An earlier, stricter design (project ALL of the risky
+    component out unconditionally, everywhere) was tried and rejected as
+    too weak in practice -- see compute_torques's own comment for why.
+
+    The desired heading is recomputed every cycle from the *current*
+    attachment position, so as the arm/block moves the spring keeps
+    pointing the face at target_world_point, not a rotation frozen at
     spring-creation time.
 
         M = k * angle * axis_hat - b * ω
@@ -660,6 +685,18 @@ class OrientationSpring:
         no force toward it, only torque.
     stiffness : float
         Rotational stiffness k (N·m/rad). Must be ≥ 0.
+    position_center : array-like, shape (3,)
+        World point defining the center of this spring's allowed operating
+        region -- typically the SAME target a paired VirtualSpring (e.g. a
+        position/reach-center spring) is already using, so both springs
+        agree on where the arm is supposed to be. Required -- there's no
+        safe default that reproduces the old unconstrained-drift behavior.
+    position_radius : float
+        Radius (m) around position_center within which this spring has
+        full authority to move the attachment point while correcting
+        orientation. Beyond it, the torque components that would move the
+        point further are ramped toward zero -- see compute_torques.
+        Required, must be > 0.
     damping : float, optional
         Rotational viscous damping b (N·m·s/rad). Default 0. Must be ≥ 0.
     enabled : bool, optional
@@ -675,6 +712,8 @@ class OrientationSpring:
         local_face_normal: np.ndarray,
         target_world_point: np.ndarray,
         stiffness: float,
+        position_center: np.ndarray,
+        position_radius: float,
         damping: float = 0.0,
         enabled: bool = True,
         name: str = "",
@@ -684,9 +723,11 @@ class OrientationSpring:
         self.local_face_normal = np.asarray(local_face_normal, dtype=float)
         self.target_world_point = np.asarray(target_world_point, dtype=float)
         self.stiffness = stiffness
+        self.position_center = np.asarray(position_center, dtype=float)
+        self.position_radius = float(position_radius)
         self.damping = damping
         self.enabled = enabled
-        self.name = name or f"orientation_spring_{link_name}"
+        self.name = name or f"pose_spring_{link_name}"
 
         if self.local_attachment_point.shape != (3,):
             raise ValueError(
@@ -707,12 +748,19 @@ class OrientationSpring:
                 f"target_world_point must have shape (3,), "
                 f"got {self.target_world_point.shape}"
             )
+        if self.position_center.shape != (3,):
+            raise ValueError(
+                f"position_center must have shape (3,), "
+                f"got {self.position_center.shape}"
+            )
+        if self.position_radius <= 0:
+            raise ValueError(f"position_radius must be > 0, got {self.position_radius}")
         if stiffness < 0:
             raise ValueError(f"stiffness must be ≥ 0, got {stiffness}")
         if damping < 0:
             raise ValueError(f"damping must be ≥ 0, got {damping}")
 
-        self._last_state: Optional[OrientationSpringState] = None
+        self._last_state: Optional[PoseSpringState] = None
 
     def compute_torques(self, arm: ArmConfiguration) -> np.ndarray:
         """
@@ -729,7 +777,7 @@ class OrientationSpring:
         if not self.enabled:
             self._last_state = None
             warnings.warn(
-                f"{self.name}: orientation spring disabled, contributing "
+                f"{self.name}: pose spring disabled, contributing "
                 f"zero torque (gravity comp, if enabled, is unaffected).",
                 stacklevel=2,
             )
@@ -767,11 +815,14 @@ class OrientationSpring:
         angle = math.atan2(sin_angle, cos_angle)
         axis = cross / sin_angle if sin_angle > 1e-9 else np.zeros(3)
 
-        # 5. Restoring moment (Hooke's law in angle, about `axis`)
+        # 5. Restoring moment (Hooke's law in angle, about `axis`) -- same
+        # pure "look at" moment as before this spring gained a position
+        # bound; the gating happens below, in how it's turned into torque.
         m_spring = self.stiffness * angle * axis
 
         # 6. Damping (opposes the link's angular velocity)
         J = arm.get_jacobian(self.link_name, self.local_attachment_point)
+        Jv = J[:3, :]                                        # translational part
         Jw = J[3:, :]                                        # rotational part
         m_damp = np.zeros(3)
         if self.damping > 0.0:
@@ -779,25 +830,55 @@ class OrientationSpring:
             m_damp = -self.damping * omega
         m_total = m_spring + m_damp
 
-        # 7. Joint torques via Jacobian transpose -- rotational rows ONLY.
-        # Jv is deliberately never referenced: that's what keeps this a pure
-        # orienting torque with no translational pull on the block.
-        torques = Jw.T @ m_total
+        # 7. Split Jw.T @ m_total into a position-safe part (never moves
+        # the attachment point, via the null space of Jv -- Jv @ tau_safe
+        # == 0 exactly, by the Moore-Penrose identity Jv @ Jv^+ @ Jv ==
+        # Jv) and the remainder (tau_risky, the part that WOULD move it).
+        # tau_safe is always applied at full strength -- it's free, it
+        # can't cause the drift this whole design exists to bound.
+        # tau_risky is scaled by how close the attachment point currently
+        # is to position_center: full strength inside position_radius,
+        # smoothly decreasing beyond it (min(1, radius/dist), continuous
+        # at the boundary -- no separate margin parameter, no
+        # discontinuity to chatter against as the point crosses back and
+        # forth). EXPERIMENTAL (2026-09-02): this replaces an earlier,
+        # rejected design that projected out tau_risky unconditionally
+        # everywhere -- confirmed live that this made the spring far too
+        # weak in general, since on a serial chain most joint-torque
+        # directions that correct orientation also move the point, and a
+        # real arm's null space can be small or near-empty in many
+        # configurations (including the one that caused the original
+        # incident). This version gives full authority near
+        # position_center (where a paired position spring is presumably
+        # already anchoring the arm) and only backs off once it would
+        # pull the point out of that zone.
+        tau_orient = Jw.T @ m_total
+        null_space_projector = np.eye(n_dof) - np.linalg.pinv(Jv) @ Jv
+        tau_safe = null_space_projector @ tau_orient
+        tau_risky = tau_orient - tau_safe
+
+        dist_from_center = np.linalg.norm(p_world - self.position_center)
+        risky_scale = (
+            min(1.0, self.position_radius / dist_from_center)
+            if dist_from_center > 1e-9 else 1.0
+        )
+        torques = tau_safe + risky_scale * tau_risky
 
         # 8. Cache state
-        self._last_state = OrientationSpringState(
+        self._last_state = PoseSpringState(
             world_face_normal=n_current,
             desired_direction=n_desired,
             extension=float(angle),
             moment_world=m_total,
+            position_distance=float(dist_from_center),
             torques=torques,
         )
         return torques
 
     @property
-    def last_state(self) -> Optional[OrientationSpringState]:
+    def last_state(self) -> Optional[PoseSpringState]:
         """
-        The :class:`OrientationSpringState` snapshot from the most recent
+        The :class:`PoseSpringState` snapshot from the most recent
         :meth:`compute_torques` call, or ``None`` if it has never been
         called or the spring is disabled.
         """
@@ -812,10 +893,12 @@ class OrientationSpring:
 
     def __repr__(self) -> str:
         return (
-            f"OrientationSpring(name={self.name!r}, "
+            f"PoseSpring(name={self.name!r}, "
             f"link={self.link_name!r}, "
             f"k={self.stiffness} N·m/rad, "
             f"b={self.damping} N·m·s/rad, "
+            f"position_center={self.position_center.tolist()}, "
+            f"position_radius={self.position_radius} m, "
             f"enabled={self.enabled})"
         )
 
