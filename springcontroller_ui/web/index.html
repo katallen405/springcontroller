@@ -293,8 +293,16 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
     </aside>
 
-    <!-- ── Main column: add/remove springs + meshcat view ── -->
+    <!-- ── Main column: meshcat view + add/remove springs ── -->
     <div class="main-col">
+    <div class="panel">
+      <div class="meshcat-row">
+        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
+        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      </div>
+      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
+    </div>
+
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <ul class="hint-steps">
@@ -402,14 +410,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       </div>
       <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
     </details>
-
-    <div class="panel">
-      <div class="meshcat-row">
-        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
-        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
-      </div>
-      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
-    </div>
     </div>
   </div>
 

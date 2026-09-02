@@ -89,12 +89,16 @@ def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> 
 def compute_condition_params(
     center: dict, eye_height_cm: float, arm_length_cm: float, ramp_margin_cm: float = 2.54,
 ) -> dict:
-    """Derive the dead-zone sphere from the *final, approved* center point.
-    inner_radius = min(half the 8" height band, the +-30 deg eye-level
-    cone converted to linear distance at the measured arm length) --
-    whichever bound is tighter. outer_radius adds a small ramp margin
-    rather than a hard on/off. rest length is 0 so that there will
-    always be a gentle pull to the center of the workspace.
+    """No inner dead-zone shell for either condition: inner_radius is
+    unconditionally 0, so tip_spring always exerts some pull. outer_radius
+    is min(half the 8" height band, the +-30 deg eye-level cone converted
+    to linear distance at the measured arm length) -- whichever bound is
+    tighter -- the same height/eye-band calculation that used to size
+    inner_radius, just driving outer_radius instead now that there's no
+    inner shell to size. ramp_margin_cm is accepted but unused -- kept for
+    call-site/wire compatibility with FinalizeStudyConditions.srv rather
+    than threading a signature change through the UI/service layer for a
+    parameter with nothing left to do.
 
     Returns radii/rest_length in meters plus a list of human-readable
     warning strings (empty if none) -- these are advisory, not blocking,
@@ -104,8 +108,8 @@ def compute_condition_params(
     arm_length_m = _cm(arm_length_cm)
     eye_height_m = _cm(eye_height_cm)
 
-    inner_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
-    outer_radius = inner_radius + _cm(ramp_margin_cm)
+    inner_radius = 0.0
+    outer_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
     rest_length = 0
 
     warnings: list[str] = []

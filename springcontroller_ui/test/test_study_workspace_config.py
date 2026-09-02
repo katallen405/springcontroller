@@ -64,20 +64,15 @@ def test_candidate_center_z_clamped_to_30deg_cone_when_third_eye_height_too_stee
     assert elevation_deg == pytest.approx(30.0)
 
 
-def test_inner_radius_is_the_tighter_of_height_band_and_eye_cone():
+def test_inner_radius_is_always_zero():
+    # No dead-zone shell -- tip_spring always exerts some pull, regardless
+    # of eye height / arm length.
     center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
-
-    # Long arm -> the eye-level cone is looser than the height band, so the
-    # height-band half-width (10.16cm) wins.
     loose = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=100.0)
-    assert loose["inner_radius"] == pytest.approx(10.16 * CM_TO_M)
+    assert loose["inner_radius"] == 0.0
 
-    # Short arm -> the eye-level cone is the tighter bound instead.
-    arm_length_cm = 8.0
-    tight = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=arm_length_cm)
-    expected = (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
-    assert tight["inner_radius"] == pytest.approx(expected)
-    assert tight["inner_radius"] < 10.16 * CM_TO_M
+    tight = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=8.0)
+    assert tight["inner_radius"] == 0.0
 
 
 def test_rest_length_is_zero():
@@ -89,10 +84,32 @@ def test_rest_length_is_zero():
     assert params["rest_length"] == 0
 
 
-def test_outer_radius_adds_ramp_margin():
+def test_outer_radius_is_the_tighter_of_height_band_and_eye_cone():
+    # Same height-band/eye-cone calculation that used to size inner_radius,
+    # now sizing outer_radius instead (inner_radius stays 0 -- see
+    # test_inner_radius_is_always_zero).
     center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
-    params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0, ramp_margin_cm=5.0)
-    assert params["outer_radius"] == pytest.approx(params["inner_radius"] + 5.0 * CM_TO_M)
+
+    # Long arm -> the eye-level cone is looser than the height band, so the
+    # height-band half-width (10.16cm) wins.
+    loose = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=100.0)
+    assert loose["outer_radius"] == pytest.approx(10.16 * CM_TO_M)
+
+    # Short arm -> the eye-level cone is the tighter bound instead.
+    arm_length_cm = 8.0
+    tight = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=arm_length_cm)
+    expected = (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
+    assert tight["outer_radius"] == pytest.approx(expected)
+    assert tight["outer_radius"] < 10.16 * CM_TO_M
+
+
+def test_outer_radius_ignores_ramp_margin():
+    # ramp_margin_cm is accepted for call-site compatibility but no longer
+    # affects outer_radius.
+    center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
+    with_margin = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0, ramp_margin_cm=5.0)
+    default = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
+    assert with_margin["outer_radius"] == pytest.approx(default["outer_radius"])
 
 
 def test_warns_when_center_height_outside_confirmed_band():
