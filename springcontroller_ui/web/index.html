@@ -160,12 +160,11 @@ ul.spring-list .spring-anchor { color: #666; font-size: 12px; }
 ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
 ul.spring-list button:hover { background: #fdf0f0; }
 ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
-ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
+/* Same width as the "Add spring" form's boxes (.spring-form input, above)
+   -- 52px used to clip a value like "-0.1234" unreadable. */
+ul.spring-list .adjust input { width: 88px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
 ul.spring-list .adjust button { border-color: #999; color: #333; }
 ul.spring-list .adjust button:hover { background: #f0f0f0; }
-/* x/y/z retarget boxes need to fit e.g. "-0.1234" (7 chars) -- 52px (the
-   k/b boxes' width) clipped it unreadable. */
-ul.spring-list .adjust.retarget input { width: 78px; }
 
 iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
 .meshcat-row { display: flex; justify-content: space-between; align-items: center; }
@@ -293,8 +292,16 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
     </aside>
 
-    <!-- ── Main column: add/remove springs + meshcat view ── -->
+    <!-- ── Main column: meshcat view + add/remove springs ── -->
     <div class="main-col">
+    <div class="panel">
+      <div class="meshcat-row">
+        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
+        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      </div>
+      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
+    </div>
+
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <ul class="hint-steps">
@@ -402,14 +409,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       </div>
       <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
     </details>
-
-    <div class="panel">
-      <div class="meshcat-row">
-        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
-        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
-      </div>
-      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
-    </div>
     </div>
   </div>
 
