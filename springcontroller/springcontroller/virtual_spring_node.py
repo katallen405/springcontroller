@@ -2072,8 +2072,33 @@ class VirtualSpringNode(Node):
     def _declare_or_ignore(self, name, default):
         try:
             self.declare_parameter(name, default)
+            return
         except rclpy.exceptions.ParameterAlreadyDeclaredException:
             pass
+        # Self-heal a stale type mismatch instead of silently leaving it in
+        # place forever. A YAML config that writes a numeric spring field
+        # as a bare integer (e.g. "rest_length: 0" instead of "0.0") gets
+        # that parameter's very first declaration -- from the generic
+        # config-file loader in __init__, which runs before any spring is
+        # loaded -- locked in as an INTEGER parameter rather than DOUBLE.
+        # Every caller here (spring loading, add_spring/add_orientation_
+        # spring/add_joint_spring, update_spring) always passes a properly
+        # -typed `default`, so it's the correct source of truth to compare
+        # against. ROS parameters are statically typed once declared, so
+        # a later set_parameters() call with the right type but against
+        # the wrong-typed existing declaration silently fails
+        # (SetParametersResult.successful=False, never checked anywhere
+        # this pattern is used) -- confirmed live 2026-09-02: this is why
+        # the study UI's "active spring adjustment" panel showed a blank
+        # rest length for a spring whose config wrote "rest_length: 0",
+        # and why it stayed blank after clicking Update -- the live
+        # spring object's .rest_length attribute *did* update correctly
+        # (set directly in Python, not through this parameter mirror),
+        # but the parameter mirror itself never actually changed.
+        current_value = self.get_parameter(name).value
+        if type(current_value) is not type(default):
+            self.undeclare_parameter(name)
+            self.declare_parameter(name, default)
 
     def _set_springs_enabled(self, enabled: bool, reason: str = "", auto: bool = False) -> None:
         """
