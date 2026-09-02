@@ -264,6 +264,11 @@ class VirtualSpring:
         Natural (rest) length of the spring (m). Default 0 (zero-length spring).
         A non-zero rest length means the spring only pulls when the distance
         exceeds rest_length, and pushes when the distance is less than it.
+        Ignored whenever a deadband is configured (outer_radius >
+        inner_radius): the plain-spring region beyond outer_radius is then
+        anchored at inner_radius instead, so the deadband ramp and the
+        plain-spring region agree exactly at extension == outer_radius. See
+        compute_torques.
     enabled : bool, optional
         If False the spring produces zero force. Useful for toggling without
         removing the object. Default True.
@@ -376,14 +381,29 @@ class VirtualSpring:
         # noise landing extension just above zero, would let a NaN
         # direction reach f_spring and then the published torque.
         direction = displacement / extension if extension > 1e-9 else np.zeros(3)
+        deadband_active = self.outer_radius > self.inner_radius
         if extension <= self.inner_radius:
             # Attachment point is inside allowable target range
             f_spring = np.zeros(3)
-        elif self.outer_radius > self.inner_radius and extension <=self.outer_radius:
+        elif deadband_active and extension <= self.outer_radius:
             t = (extension - self.inner_radius) / (self.outer_radius - self.inner_radius)
             f_spring = self.stiffness * t * (extension - self.inner_radius) * direction
+        elif deadband_active:
+            # Beyond outer_radius, with a deadband configured: anchor the
+            # plain-spring region at inner_radius (not rest_length) so it
+            # matches the deadband branch's value at extension ==
+            # outer_radius exactly -- continuous by construction,
+            # regardless of whatever rest_length happens to be configured.
+            # Anchoring at rest_length instead let a mismatched rest_length
+            # (e.g. 0 instead of inner_radius) produce a hard force
+            # discontinuity right at outer_radius: with extension noise
+            # straddling that exact boundary, the commanded force flickered
+            # between stiffness*(outer_radius-inner_radius) and
+            # stiffness*extension every cycle (tip_spring alternating
+            # ~1.27N/~6.35N, live 2026-09-02).
+            stretch = extension - self.inner_radius
+            f_spring = self.stiffness * stretch * direction
         else:
-
             stretch = extension - self.rest_length          # can be negative
             f_spring = self.stiffness * stretch * direction
         #print(f"{self.name} spring force: {f_spring}")  # debug
