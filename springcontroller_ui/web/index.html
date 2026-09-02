@@ -157,6 +157,13 @@ ul.spring-list li {
   font-family: monospace; font-size: 12.5px;
 }
 ul.spring-list .spring-anchor { color: #666; font-size: 12px; }
+/* Same color convention as the meshcat markers (armviz.py's draw_springs):
+   blue attachment sphere for a position spring, purple for orientation --
+   joint springs have no meshcat marker of their own, so a neutral grey. */
+ul.spring-list .spring-kind { font-weight: 800; font-size: 16px; width: 1em; text-align: center; flex-shrink: 0; }
+ul.spring-list .spring-kind-springs { color: #0088ff; }
+ul.spring-list .spring-kind-orientation_springs { color: #9c27b0; }
+ul.spring-list .spring-kind-joint_springs { color: #666; }
 ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
 ul.spring-list button:hover { background: #fdf0f0; }
 ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
@@ -358,6 +365,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
           <dt>inner/outer radius</dt><dd>Dead-zone/ramp band (m) around rest length -- no force inside inner radius, full stiffness beyond outer radius, ramped in between (position springs only).</dd>
           <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (orientation springs only).</dd>
+          <dt>Preview (zero force)</dt><dd>Adds the spring for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping so it can't exert any force -- check it looks right, then use "Update" in the list below to set the real values.</dd>
         </dl>
       </details>
 
@@ -411,6 +419,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <p class="hint" id="sp-orientation-hint" style="display:none">Orientation spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector.</p>
         <div class="btn-row">
+          <button class="action off" onclick="addSpring(true)" title="Adds it for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping, so it can't exert any force -- check it looks right, then Update to set the real stiffness.">Preview (zero force)</button>
           <button class="action on" onclick="addSpring()">Add spring</button>
         </div>
       </div>
@@ -917,7 +926,21 @@ function captureCurrentAsWorkspaceTarget() {
   }, function(err) { showMsg('workspace-msg', false, 'get_link_pose failed: ' + err); });
 }
 
-function addSpring() {
+// preview=true adds the spring for real (so it shows up in meshcat via
+// armviz's normal draw_springs -- correct attachment/target geometry,
+// and for an orientation spring the RGB triad) but with stiffness and
+// damping forced to 0, so it can't exert any force regardless of what's
+// typed in those boxes -- lets you check the attachment point, target,
+// and (for orientation) the actual link orientation *before* committing
+// to real stiffness. Confirmed live 2026-09-02: an orientation spring
+// added directly at its real (mistakenly large) stiffness pulled the arm
+// into the table and faulted within ~1.2s, far too fast to react to --
+// previewing first would have shown the problem with zero risk. Once it
+// looks right, use "Update" in the spring list below to set the real
+// stiffness/damping (this spring already exists at that point, so
+// clicking "Add spring" again would just fail with "already exists") --
+// or "Remove" to discard it.
+function addSpring(preview) {
   const name = document.getElementById('sp-name').value.trim();
   if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
 
@@ -932,6 +955,13 @@ function addSpring() {
              parseFloat(document.getElementById('sp-tz').value)],
   };
 
+  function addedMsg(resp) {
+    if (!resp.success) return resp.message || 'Failed.';
+    return preview
+      ? 'Preview added at zero stiffness/damping -- check meshcat, then use "Update" below to set the real values (or "Remove" to discard).'
+      : (resp.message || 'Added.');
+  }
+
   // Stiffness/damping are read from separate, type-specific boxes (see
   // sp-position-only/sp-orientation-only) -- NOT a shared field. Position
   // (N/m) and orientation (N*m/rad) stiffness live on completely
@@ -940,27 +970,27 @@ function addSpring() {
   // for the live incident this caused.
   if (currentSpringType() === 'orientation') {
     const req = Object.assign({}, common, {
-      stiffness: parseFloat(document.getElementById('sp-k-orientation').value),
-      damping: parseFloat(document.getElementById('sp-b-orientation').value),
+      stiffness: preview ? 0 : parseFloat(document.getElementById('sp-k-orientation').value),
+      damping: preview ? 0 : parseFloat(document.getElementById('sp-b-orientation').value),
       local_face_normal: [parseFloat(document.getElementById('sp-nx').value),
                            parseFloat(document.getElementById('sp-ny').value),
                            parseFloat(document.getElementById('sp-nz').value)],
     });
     callService(svcAddOrientationSpring, req, function(resp) {
-      showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+      showMsg('spring-msg', resp.success, addedMsg(resp));
     }, function(err) { showMsg('spring-msg', false, 'add_orientation_spring failed: ' + err); });
     return;
   }
 
   const req = Object.assign({}, common, {
-    stiffness: parseFloat(document.getElementById('sp-k-position').value),
-    damping: parseFloat(document.getElementById('sp-b-position').value),
+    stiffness: preview ? 0 : parseFloat(document.getElementById('sp-k-position').value),
+    damping: preview ? 0 : parseFloat(document.getElementById('sp-b-position').value),
     rest_length: parseFloat(document.getElementById('sp-rest').value),
     inner_radius: parseFloat(document.getElementById('sp-rin').value),
     outer_radius: parseFloat(document.getElementById('sp-rout').value),
   });
   callService(svcAddSpring, req, function(resp) {
-    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+    showMsg('spring-msg', resp.success, addedMsg(resp));
   }, function(err) { showMsg('spring-msg', false, 'add_spring failed: ' + err); });
 }
 
@@ -1031,8 +1061,26 @@ function updateCollisionThresholds() {
 // populated for any spring, ever. Splitting into one call per prefix means
 // an empty response just means "wrong prefix, try the next one" instead of
 // silently emptying out every time.
-const PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8,
-      PARAM_TYPE_STRING_ARRAY = 9;
+const PARAM_TYPE_INTEGER = 2, PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3,
+      PARAM_TYPE_DOUBLE_ARRAY = 8, PARAM_TYPE_STRING_ARRAY = 9;
+
+// A YAML config that writes a spring's numeric field as a bare integer
+// (e.g. "rest_length: 0" instead of "0.0") gets that ROS parameter
+// declared as INTEGER rather than DOUBLE -- confirmed live 2026-09-02:
+// several gen3_study_data condition configs do exactly this
+// (rest_length: 0, and plenty of "stiffness: 50"-style values with no
+// decimal too). Every check below used to require an exact DOUBLE type,
+// so an affected field just came back blank -- and stayed blank after
+// Update, since the server-side mirror silently failed the same way
+// (see _declare_or_ignore's self-heal fix on the node side). This reads
+// either numeric type so the box shows the real value regardless of
+// which one the parameter happens to be.
+function numericParamValue(v) {
+  if (!v) return undefined;
+  if (v.type === PARAM_TYPE_DOUBLE) return v.double_value;
+  if (v.type === PARAM_TYPE_INTEGER) return v.integer_value;
+  return undefined;
+}
 // anchorField: joint_springs anchor to a joint (joint_name), not a link --
 // springs/orientation_springs both anchor to link_name.
 const SPRING_PARAM_PREFIXES = [
@@ -1091,9 +1139,11 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, know
     if (hasRadius) names.push(prefix + '.' + name + '.rest_length', prefix + '.' + name + '.inner_radius', prefix + '.' + name + '.outer_radius');
     callService(svcGetSpringParams, { names: names }, function(resp) {
       const v = resp.values;
-      if (!(v.length >= 3 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
-      kInput.value = v[0].double_value;
-      if (v[1].type === PARAM_TYPE_DOUBLE) bInput.value = v[1].double_value;
+      const k = numericParamValue(v[0]);
+      if (!(v.length >= 3 && k !== undefined)) { tryPrefix(i + 1); return; }
+      kInput.value = k;
+      const b = numericParamValue(v[1]);
+      if (b !== undefined) bInput.value = b;
       if (anchorEl && v[2] && v[2].type === PARAM_TYPE_STRING) {
         anchorEl.textContent = (anchorField === 'joint_name' ? 'joint: ' : 'link: ') + v[2].string_value;
       }
@@ -1105,10 +1155,12 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, know
         tzInput.value = t.double_array_value[2].toFixed(4);
       }
       if (hasRadius && restInput) {
-        const rl = v[idx++], ir = v[idx++], orad = v[idx++];
-        if (rl && rl.type === PARAM_TYPE_DOUBLE) restInput.value = rl.double_value;
-        if (ir && ir.type === PARAM_TYPE_DOUBLE) innerInput.value = ir.double_value;
-        if (orad && orad.type === PARAM_TYPE_DOUBLE) outerInput.value = orad.double_value;
+        const rl = numericParamValue(v[idx++]);
+        const ir = numericParamValue(v[idx++]);
+        const orad = numericParamValue(v[idx++]);
+        if (rl !== undefined) restInput.value = rl;
+        if (ir !== undefined) innerInput.value = ir;
+        if (orad !== undefined) outerInput.value = orad;
       }
     }, function(err) { tryPrefix(i + 1); });
   }
@@ -1172,11 +1224,19 @@ function handleSpringsUpdated(msg) {
   fetchSpringTypeMap(function(typeMap) { renderSpringList(typeMap); });
 }
 
+const SPRING_KIND_LETTER = { springs: 'P', orientation_springs: 'O', joint_springs: 'J' };
+const SPRING_KIND_LABEL = { springs: 'Position spring', orientation_springs: 'Orientation spring', joint_springs: 'Joint spring' };
+
 function renderSpringList(typeMap) {
   const ul = document.getElementById('spring-list');
   ul.innerHTML = '';
   currentSprings.forEach(function(name) {
     const li = document.createElement('li');
+    const kind = typeMap[name];
+    const kindSpan = document.createElement('span');
+    kindSpan.className = 'spring-kind spring-kind-' + (kind || 'unknown');
+    kindSpan.textContent = SPRING_KIND_LETTER[kind] || '?';
+    kindSpan.title = SPRING_KIND_LABEL[kind] || 'Unknown spring type';
     const span = document.createElement('span');
     span.textContent = name;
 
@@ -1249,7 +1309,7 @@ function renderSpringList(typeMap) {
     retarget.appendChild(labeledInput('target z (m)', tzInput));
     retarget.appendChild(retargetBtn);
 
-    li.appendChild(span); li.appendChild(anchorSpan); li.appendChild(adjust); li.appendChild(retarget);
+    li.appendChild(kindSpan); li.appendChild(span); li.appendChild(anchorSpan); li.appendChild(adjust); li.appendChild(retarget);
 
     const btn = document.createElement('button');
     btn.textContent = 'Remove';
