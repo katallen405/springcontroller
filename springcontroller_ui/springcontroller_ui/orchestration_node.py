@@ -1008,15 +1008,16 @@ class StudyControlPanelNode(Node):
         log_path = os.path.join(data_dir, request.participant_id, "event_log.csv")
 
         try:
-            timestamp = log_event(log_path, request.event_text, request.condition)
+            timestamp = log_event(log_path, request.event_text, request.condition, request.notes)
         except OSError as e:
             response.success = False
             response.message = f"Failed writing event log: {e}"
             response.log_path = ""
             return response
 
+        note_suffix = f" Notes: {request.notes}" if request.notes.strip() else ""
         response.success = True
-        response.message = f"Logged '{request.event_text}' ({request.condition}) at {timestamp}."
+        response.message = f"Logged '{request.event_text}' ({request.condition}) at {timestamp}.{note_suffix}"
         response.log_path = log_path
         return response
 

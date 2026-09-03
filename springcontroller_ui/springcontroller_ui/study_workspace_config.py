@@ -288,7 +288,7 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
     return first_condition, False
 
 
-def log_event(csv_path: str, event_text: str, condition: str) -> str:
+def log_event(csv_path: str, event_text: str, condition: str, notes: str = "") -> str:
     """
     Append one timestamped row to the per-participant session event log
     (the "Session timer & event log" panel's Log button) -- the
@@ -298,6 +298,11 @@ def log_event(csv_path: str, event_text: str, condition: str) -> str:
     header-written-once-on-first-use pattern as log_measurement -- never
     truncates or rewrites prior rows.
 
+    notes is always its own CSV column, independent of event_text/
+    condition -- not folded into either of them, and not gated behind
+    picking an "Other" option in either dropdown; it's free text the
+    operator can attach to any row.
+
     Returns the ISO timestamp actually logged.
     """
     csv_path = os.path.expanduser(csv_path)
@@ -305,7 +310,7 @@ def log_event(csv_path: str, event_text: str, condition: str) -> str:
     is_new = not os.path.isfile(csv_path)
 
     timestamp = datetime.datetime.now().isoformat(timespec="seconds")
-    row = {"timestamp": timestamp, "event": event_text, "condition": condition}
+    row = {"timestamp": timestamp, "event": event_text, "condition": condition, "notes": notes}
 
     with open(csv_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
