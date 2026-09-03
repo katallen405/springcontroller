@@ -223,6 +223,14 @@ class PoseSpringState:
         Current distance (m) from the attachment point to position_center.
         EXPERIMENTAL (2026-09-02): backs the position-radius gate on
         torques -- see compute_torques.
+    position_force : np.ndarray, shape (3,)
+        Restoring force (N) in world coordinates from position_stiffness,
+        before the Jv.T projection into joint torques -- zero inside
+        position_radius (true dead zone) or when position_stiffness is 0.
+        EXPERIMENTAL (2026-09-03) -- see compute_torques step 7b. Its
+        magnitude and direction (position_force / norm(position_force))
+        are what SpringForce.msg's position_force_magnitude/position_force
+        report on ~/spring_forces for this spring.
     torques : np.ndarray, shape (n_dof,)
         Generalized joint torques actually produced by this spring (after
         the position-radius gate).
@@ -232,6 +240,7 @@ class PoseSpringState:
     extension: float
     moment_world: np.ndarray
     position_distance: float
+    position_force: np.ndarray
     torques: np.ndarray
 
 
@@ -894,6 +903,7 @@ class PoseSpring:
         # point back on its own -- so with no paired VirtualSpring
         # anchoring the arm (confirmed live 2026-09-03), nothing else in
         # this spring restores position at all once past position_radius.
+        f_position = np.zeros(3)
         if self.position_stiffness > 0.0 and dist_from_center > self.position_radius:
             direction_to_center = (self.position_center - p_world) / dist_from_center
             f_position = self.position_stiffness * (dist_from_center - self.position_radius) * direction_to_center
@@ -906,6 +916,7 @@ class PoseSpring:
             extension=float(angle),
             moment_world=m_total,
             position_distance=float(dist_from_center),
+            position_force=f_position,
             torques=torques,
         )
         return torques

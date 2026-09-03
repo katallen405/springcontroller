@@ -263,6 +263,10 @@ def test_position_stiffness_pulls_back_toward_center_beyond_radius():
     f_position = 4.0 * (dist_from_center - 0.5) * direction_to_center
     np.testing.assert_allclose(torques, f_position, rtol=1e-6)
     assert np.linalg.norm(torques) > 1e-6  # sanity: not trivially zero
+    # last_state.position_force is this same restoring force pre-Jv.T
+    # projection -- what ~/spring_forces' position_force_magnitude/
+    # position_force report (see _publish_spring_forces).
+    np.testing.assert_allclose(spring.last_state.position_force, f_position, rtol=1e-6)
 
 
 def test_position_stiffness_zero_within_radius_dead_zone():
@@ -278,6 +282,18 @@ def test_position_stiffness_zero_within_radius_dead_zone():
     )
     torques = spring.compute_torques(arm)
     np.testing.assert_allclose(torques, 0.0, atol=1e-10)
+    np.testing.assert_allclose(spring.last_state.position_force, 0.0, atol=1e-10)
+
+
+def test_position_force_zero_when_position_stiffness_defaults_to_zero():
+    arm = StubArm(n_dof=3)
+    spring = make_spring(
+        stiffness=0.0,
+        position_center=np.array([2.0, 0.0, 0.0]),
+        position_radius=0.5,
+    )
+    spring.compute_torques(arm)
+    np.testing.assert_allclose(spring.last_state.position_force, 0.0, atol=1e-10)
 
 
 def test_invalid_position_stiffness_negative_raises():
