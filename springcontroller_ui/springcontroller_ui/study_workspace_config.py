@@ -200,8 +200,8 @@ def log_measurement(
     center: dict,
     condition_params: dict,
     pose_target: dict,
-    condition1_path: str,
-    condition2_path: str,
+    position_path: str,
+    pose_path: str,
 ) -> None:
     """
     Append one row to the shared measurement log, for later comparison
@@ -228,8 +228,8 @@ def log_measurement(
         "pose_target_y": pose_target["y"],
         "pose_target_z": pose_target["z"],
         "warnings": "; ".join(condition_params["warnings"]),
-        "condition1_path": condition1_path,
-        "condition2_path": condition2_path,
+        "position_path": position_path,
+        "pose_path": pose_path,
     }
 
     with open(csv_path, "a", newline="") as f:
@@ -242,7 +242,7 @@ def log_measurement(
 
 def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[str, bool]:
     """
-    Counterbalances which condition (baseline vs condition1 vs condition2) a
+    Counterbalances which condition (KT vs position vs pose) a
     participant should run first:
     Idempotent -- looking up a participant_id that's
     already been assigned returns that same order again (never
@@ -269,7 +269,7 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         if row["participant_id"] == participant_id:
             return row["first_condition"], True
 
-    conditions = ["baseline", "condition1", "condition2"]
+    conditions = ["KT", "position", "pose"]
     first_condition = conditions[len(rows) % 3]
         
     new_row = {
@@ -286,3 +286,37 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         f.flush()
 
     return first_condition, False
+
+
+def log_event(csv_path: str, event_text: str, condition: str, notes: str = "") -> str:
+    """
+    Append one timestamped row to the per-participant session event log
+    (the "Session timer & event log" panel's Log button) -- the
+    timestamp is this server's clock, not whatever the browser's clock
+    reads, so it stays comparable across the operator's other
+    machine-local recordings (e.g. video). Same append-only,
+    header-written-once-on-first-use pattern as log_measurement -- never
+    truncates or rewrites prior rows.
+
+    notes is always its own CSV column, independent of event_text/
+    condition -- not folded into either of them, and not gated behind
+    picking an "Other" option in either dropdown; it's free text the
+    operator can attach to any row.
+
+    Returns the ISO timestamp actually logged.
+    """
+    csv_path = os.path.expanduser(csv_path)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    is_new = not os.path.isfile(csv_path)
+
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    row = {"timestamp": timestamp, "event": event_text, "condition": condition, "notes": notes}
+
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+        f.flush()
+
+    return timestamp

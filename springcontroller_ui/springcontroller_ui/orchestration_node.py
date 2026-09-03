@@ -64,6 +64,7 @@ from springcontroller_ui_interfaces.srv import (
     FinalizeStudyConditions,
     GetLinkPose,
     ListLinkNames,
+    LogEvent,
     MoveToJointAngles,
     PreviewWorkspaceCenter,
 )
@@ -74,6 +75,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    log_event,
     log_measurement,
     write_condition_yaml,
 )
@@ -323,6 +325,8 @@ class StudyControlPanelNode(Node):
                              self._finalize_study_conditions_cb, callback_group=cb_group)
         self.create_service(AssignConditionOrder, "~/assign_condition_order",
                              self._assign_condition_order_cb, callback_group=cb_group)
+        self.create_service(LogEvent, "~/log_event",
+                             self._log_event_cb, callback_group=cb_group)
 
         self.get_logger().info("study_control_panel_node ready.")
 
@@ -876,8 +880,8 @@ class StudyControlPanelNode(Node):
         if not request.participant_id.strip():
             response.success = False
             response.message = "participant_id is required."
-            response.condition1_path = ""
-            response.condition2_path = ""
+            response.position_path = ""
+            response.pose_path = ""
             response.warnings = []
             return response
 
@@ -931,37 +935,37 @@ class StudyControlPanelNode(Node):
 
         data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
         participant_dir = os.path.join(data_dir, request.participant_id)
-        condition1_path = os.path.join(participant_dir, "condition1.yaml")
-        condition2_path = os.path.join(participant_dir, "condition2.yaml")
+        position_path = os.path.join(participant_dir, "position.yaml")
+        pose_path = os.path.join(participant_dir, "pose.yaml")
         csv_path = os.path.join(data_dir, "measurements.csv")
 
-        condition2_spring_params = dict(spring_params)
-        #condition2_spring_params.update(condition2_spring_overrides())
+        pose_spring_params = dict(spring_params)
+        #pose_spring_params.update(pose_spring_overrides())
 
         try:
-            write_condition_yaml(condition1_path, self._workspace_spring_name, spring_params)
+            write_condition_yaml(position_path, self._workspace_spring_name, spring_params)
             write_condition_yaml(
-                condition2_path, self._workspace_spring_name, condition2_spring_params,
+                pose_path, self._workspace_spring_name, pose_spring_params,
                 include_pose=True,
                 pose_name=self._workspace_pose_spring_name,
                 pose_params=pose_params,
             )
             log_measurement(
                 csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
-                center, condition_params, pose_target, condition1_path, condition2_path,
+                center, condition_params, pose_target, position_path, pose_path,
             )
         except OSError as e:
             response.success = False
             response.message = f"Failed writing study condition files: {e}"
-            response.condition1_path = ""
-            response.condition2_path = ""
+            response.position_path = ""
+            response.pose_path = ""
             response.warnings = []
             return response
 
         response.success = True
         response.message = "ok"
-        response.condition1_path = condition1_path
-        response.condition2_path = condition2_path
+        response.position_path = position_path
+        response.pose_path = pose_path
         response.warnings = condition_params["warnings"]
         return response
 
@@ -991,6 +995,30 @@ class StudyControlPanelNode(Node):
         response.message = "ok"
         response.first_condition = first_condition
         response.already_assigned = already_assigned
+        return response
+
+    def _log_event_cb(self, request, response):
+        if not request.participant_id.strip():
+            response.success = False
+            response.message = "participant_id is required."
+            response.log_path = ""
+            return response
+
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        log_path = os.path.join(data_dir, request.participant_id, "event_log.csv")
+
+        try:
+            timestamp = log_event(log_path, request.event_text, request.condition, request.notes)
+        except OSError as e:
+            response.success = False
+            response.message = f"Failed writing event log: {e}"
+            response.log_path = ""
+            return response
+
+        note_suffix = f" Notes: {request.notes}" if request.notes.strip() else ""
+        response.success = True
+        response.message = f"Logged '{request.event_text}' ({request.condition}) at {timestamp}.{note_suffix}"
+        response.log_path = log_path
         return response
 
 

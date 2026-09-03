@@ -9,6 +9,6 @@ string data_dir
 ---
 bool success
 string message
-string condition1_path
-string condition2_path
+string position_path
+string pose_path
 string[] warnings

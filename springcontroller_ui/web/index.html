@@ -178,6 +178,9 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 .meshcat-row { display: flex; justify-content: space-between; align-items: center; }
 
 .main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+.timer-display { font-size: 4.4em; font-family: monospace; text-align: center; margin: 8px 0; }
+.timer-display.expired { color: #c0392b; }
 </style>
 </head>
 <body>
@@ -238,14 +241,71 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
       </div>
 
-      <div class="panel">
-        <h2>Gripper control</h2>
+      <details class="panel" open>
+        <summary>Gripper control</summary>
         <p class="hint" id="gripper-hint">If torque control is on, it's automatically disabled to move the gripper and re-enabled afterward (see GRIPPER_MOVE_WAIT_MS below for the re-enable delay).</p>
         <div class="btn-row">
           <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
           <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
         </div>
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
+      </details>
+
+      <div class="panel">
+        <h2>Session timer &amp; event log</h2>
+
+        <div class="row">
+          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
+        </div>
+        <p class="status-line">Study order: <span class="val" id="timer-order-display">unknown</span>
+          <button class="copy-btn" onclick="refreshStudyOrder()">Refresh</button></p>
+
+        <div class="row" style="align-items:center">
+          <label>Duration (min) <input type="number" step="0.25" min="0.25" id="timer-duration-min" value="2" onchange="timerReset()"></label>
+        </div>
+        <div class="timer-display" id="timer-display">02:00</div>
+        <div class="btn-row">
+          <button class="action on" id="btn-timer-start" onclick="timerStart()">Start</button>
+          <button class="action off" id="btn-timer-pause" onclick="timerPause()">Pause</button>
+          <button class="action off" onclick="timerReset()">Reset</button>
+        </div>
+
+        <div class="spring-form" style="margin-top:12px">
+          <div class="row">
+            <label>Event
+              <select id="log-event-select">
+                <option>Trial start</option>
+                <option>Trial end</option>
+                <option>Adjustment start</option>
+                <option>Adjustment end</option>
+                <option>Participant comment</option>
+                <option>Issue or anomaly</option>
+                <option>Other</option>
+              </select>
+            </label>
+            <label>Condition
+              <select id="log-condition-select">
+                <option>KT side 1</option>
+                <option>KT side 2</option>
+                <option>Position side 1</option>
+                <option>Position side 2</option>
+                <option>Pose side 1</option>
+                <option>Pose side 2</option>
+                <option>Other</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label style="flex:1">Notes (optional, own CSV column -- not the participant ID field above)
+              <input type="text" id="log-notes" style="width:100%">
+            </label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="logEvent()">Log</button>
+          </div>
+        </div>
+        <p class="hint">Logged rows always carry the server's clock time (for lining up against video later) -- the countdown above is a display only, purely to tell the participant how much time is left; it is never written to the log.</p>
+        <div class="msg-box hidden" id="timer-log-msg" role="status" aria-live="polite"></div>
       </div>
 
       <details class="panel" open>
@@ -316,15 +376,14 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <ul class="hint-steps">
-        <li><b>Get condition order</b> -- enter participant ID, click. Sets which condition (1 or 2) runs first, alternating per new ID; re-checking the same ID just shows the existing assignment.</li>
+        <li><b>Get condition order</b> -- enter the participant ID at the top of the <b>Session timer &amp; event log</b> panel, click. Sets which of the three conditions (KT/position/pose) runs first, rotating per new ID; re-checking the same ID just shows the existing assignment.</li>
         <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
         <li><b>Capture current location as workspace target</b> -- after pushing the arm to where you want it, click to lock <code>workspace_demo</code>'s target onto wherever the link/local point above currently is, instead of typing numbers into the retarget boxes below.</li>
-        <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where condition 2's pose spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
-        <li><b>Finalize</b> -- writes condition1.yaml/condition2.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
+        <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where the pose condition's pose spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
+        <li><b>Finalize</b> -- writes position.yaml/pose.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
       </ul>
       <div class="spring-form">
         <div class="row">
-          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
           <label>Eye height, cm (from table) <input type="number" step="0.5" id="wc-eye" value="71"></label>
           <label>Arm length, cm (elbow&rarr;fingertip) <input type="number" step="0.5" id="wc-arm" value="46"></label>
           <label>Ramp margin (cm) <input type="number" step="0.5" id="wc-ramp" value="2.54"></label>
@@ -471,6 +530,14 @@ const svcListLinkNames    = { name: NODE + '/list_link_names',              type
 const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
 const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
+const svcLogEvent                = { name: NODE + '/log_event',                 type: 'springcontroller_ui_interfaces/srv/LogEvent' };
+// Explicit per-value map, not a binary ternary -- assign_condition_order
+// rotates through three values (KT/position/pose, see
+// study_workspace_config.py), and a two-way ternary would silently
+// mislabel "KT" as whatever wasn't 'position' 1 time in 3. Shared by
+// getConditionOrder() (Study workspace calibration panel) and
+// refreshStudyOrder() (Session timer & event log panel) below.
+const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
@@ -1488,13 +1555,6 @@ function getConditionOrder() {
   };
   callService(svcAssignConditionOrder, req, function(resp) {
     if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
-    // Explicit per-value map, not a binary ternary -- assign_condition_order
-    // rotates through three values (baseline/condition1/condition2, see
-    // study_workspace_config.py), and a two-way ternary silently mislabeled
-    // "baseline" as "Condition 2" (whatever wasn't 'condition1') 1 time in 3.
-    const CONDITION_LABELS = {
-      baseline: 'Baseline', condition1: 'Condition 1', condition2: 'Condition 2',
-    };
     const label = CONDITION_LABELS[resp.first_condition] || resp.first_condition;
     const note = resp.already_assigned ? ' (previously assigned -- unchanged)' : ' (newly assigned)';
     showMsg('workspace-msg', true, participantId + ': run ' + label + ' first' + note + '.');
@@ -1604,7 +1664,7 @@ function finalizeStudyConditions() {
     };
     callService(svcFinalizeStudyConditions, req, function(fr) {
       if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
-      let text = 'Wrote ' + fr.condition1_path + ' and ' + fr.condition2_path + '.';
+      let text = 'Wrote ' + fr.position_path + ' and ' + fr.pose_path + '.';
       if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
       showMsg('workspace-msg', true, text);
       removeSpring(WORKSPACE_DEMO_SPRING_NAME);
@@ -1617,6 +1677,106 @@ function reloadMeshcat() {
   const f = document.getElementById('meshcat-frame');
   f.src = f.src;
 }
+
+// ---- session timer & event log -------------------------------------------
+// Countdown is display-only, purely so the operator can tell the
+// participant how much time is left -- it's never written to the log.
+// Every log row instead carries the *server's* clock time (see logEvent()
+// below / log_event() in study_workspace_config.py), so rows can be lined
+// up against separately-recorded video after the fact.
+
+let timerRemainingSec = 120;
+let timerIntervalId = null;
+let timerRunning = false;
+
+function formatTimer(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function renderTimer() {
+  const el = document.getElementById('timer-display');
+  el.textContent = formatTimer(timerRemainingSec);
+  el.classList.toggle('expired', timerRemainingSec <= 0);
+}
+
+function timerStart() {
+  if (timerRunning) return;
+  if (timerRemainingSec <= 0) timerReset();
+  timerRunning = true;
+  // Wall-clock-delta based, not a naive decrement-per-tick counter, so it
+  // doesn't drift if the tab is backgrounded/throttled.
+  const tickStart = Date.now();
+  const startRemaining = timerRemainingSec;
+  timerIntervalId = setInterval(function() {
+    const elapsed = (Date.now() - tickStart) / 1000;
+    timerRemainingSec = Math.max(0, startRemaining - elapsed);
+    renderTimer();
+    if (timerRemainingSec <= 0) {
+      clearInterval(timerIntervalId);
+      timerIntervalId = null;
+      timerRunning = false;
+    }
+  }, 250);
+}
+
+function timerPause() {
+  if (!timerRunning) return;
+  clearInterval(timerIntervalId);
+  timerIntervalId = null;
+  timerRunning = false;
+}
+
+function timerReset() {
+  clearInterval(timerIntervalId);
+  timerIntervalId = null;
+  timerRunning = false;
+  const mins = parseFloat(document.getElementById('timer-duration-min').value);
+  timerRemainingSec = isFinite(mins) ? mins * 60 : 120;
+  renderTimer();
+}
+
+function refreshStudyOrder() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) {
+    document.getElementById('timer-order-display').textContent = 'enter participant ID above';
+    return;
+  }
+  const req = {
+    participant_id: participantId,
+    data_dir: document.getElementById('wc-datadir').value.trim(),
+  };
+  callService(svcAssignConditionOrder, req, function(resp) {
+    const el = document.getElementById('timer-order-display');
+    if (!resp.success) { el.textContent = resp.message; return; }
+    const label = CONDITION_LABELS[resp.first_condition] || resp.first_condition;
+    el.textContent = participantId + ': ' + label + ' first' +
+      (resp.already_assigned ? ' (previously assigned)' : ' (newly assigned)');
+  }, function(err) {
+    document.getElementById('timer-order-display').textContent = 'assign_condition_order failed: ' + err;
+  });
+}
+
+function logEvent() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) {
+    showMsg('timer-log-msg', false, 'Participant ID is required (Study workspace calibration panel).');
+    return;
+  }
+  const req = {
+    participant_id: participantId,
+    event_text: document.getElementById('log-event-select').value,
+    condition: document.getElementById('log-condition-select').value,
+    notes: document.getElementById('log-notes').value.trim(),
+    data_dir: document.getElementById('wc-datadir').value.trim(),
+  };
+  callService(svcLogEvent, req, function(resp) {
+    showMsg('timer-log-msg', resp.success, resp.message);
+  }, function(err) { showMsg('timer-log-msg', false, 'log_event failed: ' + err); });
+}
+
+renderTimer();
 
 // ---- torque / safety status displays ----------------------------------
 // gen3_torque_control only publishes /status on an ENABLED/DISABLED

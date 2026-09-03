@@ -13,9 +13,11 @@ import yaml
 from springcontroller_ui.study_workspace_config import (
     CM_TO_M,
     EYE_TARGET_Y_OFFSET_CM,
+    assign_condition_order,
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    log_event,
     log_measurement,
     write_condition_yaml,
 )
@@ -154,7 +156,7 @@ def _spring_params(center, condition_params):
 def test_write_condition_yaml_matches_loader_schema(tmp_path):
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
-    path = str(tmp_path / "condition1.yaml")
+    path = str(tmp_path / "position.yaml")
 
     write_condition_yaml(path, "tip_spring", _spring_params(center, condition_params))
 
@@ -172,7 +174,7 @@ def test_write_condition_yaml_matches_loader_schema(tmp_path):
 def test_write_condition_yaml_with_pose_adds_gaze_spring(tmp_path):
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
-    path = str(tmp_path / "condition2.yaml")
+    path = str(tmp_path / "pose.yaml")
     pose_params = {
         "link_name": "end_effector_link",
         "local_point": [0.0, 0.0, 0.1],
@@ -210,11 +212,11 @@ def test_log_measurement_creates_header_once_and_appends(tmp_path):
 
     log_measurement(
         csv_path, "P001", 71.0, 46.0, center, condition_params, pose_target,
-        "condition1_P001.yaml", "condition2_P001.yaml",
+        "position_P001.yaml", "pose_P001.yaml",
     )
     log_measurement(
         csv_path, "P002", 68.0, 43.0, center, condition_params, pose_target,
-        "condition1_P002.yaml", "condition2_P002.yaml",
+        "position_P002.yaml", "pose_P002.yaml",
     )
 
     with open(csv_path, newline="") as f:
@@ -242,3 +244,84 @@ def test_log_measurement_records_warnings(tmp_path):
     with open(csv_path, newline="") as f:
         row = next(csv.DictReader(f))
     assert "elbow-height band" in row["warnings"]
+
+
+def test_assign_condition_order_rotates_kt_position_pose(tmp_path):
+    assignments_path = str(tmp_path / "condition_order.csv")
+
+    first, already = assign_condition_order(assignments_path, "P001")
+    assert first == "KT"
+    assert already is False
+
+    second, already = assign_condition_order(assignments_path, "P002")
+    assert second == "position"
+    assert already is False
+
+    third, already = assign_condition_order(assignments_path, "P003")
+    assert third == "pose"
+    assert already is False
+
+    fourth, already = assign_condition_order(assignments_path, "P004")
+    assert fourth == "KT"
+    assert already is False
+
+
+def test_assign_condition_order_is_idempotent_per_participant(tmp_path):
+    assignments_path = str(tmp_path / "condition_order.csv")
+
+    first, already = assign_condition_order(assignments_path, "P001")
+    assert already is False
+
+    # Same participant ID looked up again -- returns the same assignment,
+    # doesn't advance the rotation or re-randomize.
+    again, already = assign_condition_order(assignments_path, "P001")
+    assert again == first
+    assert already is True
+
+    # A second, different participant still gets the next slot in the
+    # rotation, unaffected by the repeat lookup above.
+    second, already = assign_condition_order(assignments_path, "P002")
+    assert second == "position"
+    assert already is False
+
+
+def test_log_event_creates_header_once_and_appends(tmp_path):
+    csv_path = str(tmp_path / "event_log.csv")
+
+    log_event(csv_path, "Trial start", "KT side 1")
+    log_event(csv_path, "Trial end", "KT side 1", "participant asked to pause briefly")
+
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    assert rows[0]["event"] == "Trial start"
+    assert rows[0]["condition"] == "KT side 1"
+    assert rows[0]["notes"] == ""
+    assert rows[1]["event"] == "Trial end"
+    assert rows[1]["notes"] == "participant asked to pause briefly"
+    # Header appears exactly once, not duplicated per append.
+    with open(csv_path) as f:
+        header_lines = [l for l in f.readlines() if l.startswith("timestamp,")]
+    assert len(header_lines) == 1
+
+
+def test_log_event_notes_is_a_separate_column_not_tied_to_other(tmp_path):
+    # notes is independent of event_text/condition -- present (or not)
+    # regardless of whether either dropdown's value happens to be "Other".
+    csv_path = str(tmp_path / "event_log.csv")
+    log_event(csv_path, "Other", "Other", "ran out of paint, improvised")
+
+    with open(csv_path, newline="") as f:
+        row = next(csv.DictReader(f))
+    assert row["event"] == "Other"
+    assert row["condition"] == "Other"
+    assert row["notes"] == "ran out of paint, improvised"
+
+
+def test_log_event_returns_iso_timestamp(tmp_path):
+    csv_path = str(tmp_path / "event_log.csv")
+    timestamp = log_event(csv_path, "Participant comment", "position side 2")
+    # isoformat(timespec="seconds") -- parseable, and round-trips through
+    # datetime.fromisoformat without raising.
+    import datetime
+    datetime.datetime.fromisoformat(timestamp)
