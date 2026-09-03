@@ -68,7 +68,7 @@ objects:
     # radius widened back to 0.3m 2026-08-20 (was shrunk to 0.15m in PR #11
     # after it tripped collisions on a real seated setup -- if that recurs,
     # re-check the seat offsets above before shrinking this again).
-    dimensions: [1.0, 0.3]
+    dimensions: [1.5, 0.25]
     frame_id: "world"
     pose:
       # x/y centered on the pre-set participant seat position (see
