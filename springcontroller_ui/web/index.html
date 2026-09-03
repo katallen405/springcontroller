@@ -1920,7 +1920,7 @@ function refreshStudyOrder() {
 function logEvent() {
   const participantId = document.getElementById('wc-pid').value.trim();
   if (!participantId) {
-    showMsg('timer-log-msg', false, 'Participant ID is required (Study workspace calibration panel).');
+    showMsg('timer-log-msg', false, 'Participant ID is required (top of this panel).');
     return;
   }
   const req = {
@@ -1932,6 +1932,10 @@ function logEvent() {
   };
   callService(svcLogEvent, req, function(resp) {
     showMsg('timer-log-msg', resp.success, resp.message);
+    // Notes carries over into the next entry otherwise -- easy to forget
+    // it's still sitting there and log the same note again by accident.
+    // Left alone on failure so a retry doesn't lose what was typed.
+    if (resp.success) document.getElementById('log-notes').value = '';
   }, function(err) { showMsg('timer-log-msg', false, 'log_event failed: ' + err); });
 }
 
