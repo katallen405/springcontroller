@@ -819,6 +819,19 @@ def generate_launch_description():
     # up gen3_torque_control's joint_states_topic and
     # /gen3_torque_control/status.
     #
+    # /kinova/joint_states_lowlevel is also listed explicitly (added
+    # 2026-09-03), even though joint_states_topic's own default already
+    # resolves to this exact name (see joint_states_topic_arg) -- ros2 bag
+    # record harmlessly dedupes a topic named twice, and this way the raw
+    # low-level joint states still get recorded under their real name even
+    # if joint_states_topic is ever overridden to something else.
+    #
+    # /gen3_torque_control/ee_pose and /gen3_torque_control/move_status
+    # (added 2026-09-03) -- move_status backs the study control panel's
+    # move-status display (see index.html's handleMoveStatus), useful to
+    # have recorded now that a stale FAILED move-status message not
+    # clearing is under investigation.
+    #
     # /virtual_spring_node/springs_updated is a latched std_msgs/String
     # publishing the full current list of spring names as JSON on every
     # add/remove/update (see virtual_spring_node.py's _publish_springs_
@@ -914,6 +927,7 @@ def generate_launch_description():
                     "--max-cache-size", "0",
                     *output_name_args,
                     LaunchConfiguration("joint_states_topic"),
+                    "/kinova/joint_states_lowlevel",
                     "/virtual_spring_node/joint_torques",
                     "/virtual_spring_node/repulsion_torques",
                     "/virtual_spring_node/joint_limit_repulsion_torques",
@@ -921,6 +935,8 @@ def generate_launch_description():
                     "/virtual_spring_node/springs_updated",
                     "/kinova/joint_torque_command",
                     "/gen3_torque_control/status",
+                    "/gen3_torque_control/ee_pose",
+                    "/gen3_torque_control/move_status",
                     "/audio/audio",
                     "/camera/image_raw_throttled/compressed",
                     "/camera2/image_raw_throttled/compressed",
