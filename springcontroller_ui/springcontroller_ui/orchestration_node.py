@@ -183,7 +183,7 @@ class StudyControlPanelNode(Node):
         # 2026-09-03. study_control_panel.yaml overrides this at launch;
         # kept in sync here as the fallback default.
         self.declare_parameter("workspace_pose_local_face_normal", [0.0, 1.0, 0.0])
-        self.declare_parameter("workspace_pose_stiffness", 2.0)
+        self.declare_parameter("workspace_pose_stiffness", 5.0)
         self.declare_parameter("workspace_pose_damping", 0.2)
         # Restoring pull (N/m) back toward position_center once the arm
         # drifts past position_radius -- see PoseSpring.position_stiffness

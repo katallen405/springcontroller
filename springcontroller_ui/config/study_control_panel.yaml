@@ -59,7 +59,7 @@ study_control_panel_node:
     # +z -- see LINK_PRESETS in web/index.html (block: end_effector_link,
     # local_point [0,0,0.15]). Confirmed live 2026-09-03.
     workspace_pose_local_face_normal: [0.0, 1.0, 0.0]
-    workspace_pose_stiffness: 2.0
+    workspace_pose_stiffness: 5.0
     workspace_pose_damping: 0.2
     workspace_pose_position_stiffness: 10.0
     joint_state_freshness_sec: 1.0
