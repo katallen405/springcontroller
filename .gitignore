@@ -1,0 +1,12 @@
+# participant data derivatives -- never commit these
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.csv
+
+# downloaded models -- re-fetch via README instead of committing binaries
+*.task
+
+__pycache__/
+*.pyc
