@@ -1,12 +1,16 @@
+=========================
+- all of these can be auto-populated into terminals ready to start with 
+~/config/ros-layout.sh
+=========================
 Start the gen3 controller node:
-ros2 run gen3_torque_control gen3_torque_node --ros-args --remap joint_states:=/kinova/joint_states_lowlevel
+ros2 launch gen3_torque_control gen3_torque_control.launch.py
 
 Start the springcontroller:
 ros2 launch springcontroller 2026_study.launch.py
 
 Start the webserver:
 ros2 launch springcontroller_ui study_control_panel.launch.py
-
+=======================
 Open the study controller webserver:
 http://localhost:8090/
 
