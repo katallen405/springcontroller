@@ -7,6 +7,7 @@ float64 stiffness
 float64 damping
 float64[3] position_center
 float64 position_radius
+float64 position_stiffness
 ---
 bool success
 string message

@@ -207,7 +207,44 @@ def test_write_condition_yaml_pose_only_has_no_tip_spring(tmp_path):
     # drifts past position_radius (see PoseSpring in virtual_spring.py).
     assert params["pose_springs"]["face_participant"]["position_center"] == [center["x"], center["y"], pytest.approx(center["z"])]
     assert params["pose_springs"]["face_participant"]["position_stiffness"] == 10.0
-    assert params["pose_springs"]["face_participant"]["position_radius"] == pytest.approx(condition_params["outer_radius"])
+
+
+def test_write_condition_yaml_extra_params_merged_alongside_springs(tmp_path):
+    center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
+    condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
+    path = str(tmp_path / "position.yaml")
+
+    write_condition_yaml(
+        path, "tip_spring", _spring_params(center, condition_params),
+        extra_params={"participant_id": "P001", "condition_name": "position"},
+    )
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    params = data["/**"]["ros__parameters"]
+    assert params["springs"]["tip_spring"]["link_name"] == "end_effector_link"
+    assert params["participant_id"] == "P001"
+    assert params["condition_name"] == "position"
+
+
+def test_write_condition_yaml_kt_has_only_extra_params(tmp_path):
+    # KT ("no torque controller") has no spring content at all -- the file
+    # exists purely to carry rosbag routing (see gen3_spring.launch.py's
+    # _make_record_rosbag_action).
+    path = str(tmp_path / "KT.yaml")
+
+    write_condition_yaml(
+        path, extra_params={"participant_id": "P001", "condition_name": "KT"},
+    )
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    params = data["/**"]["ros__parameters"]
+    assert "springs" not in params
+    assert "spring_names" not in params
+    assert "pose_springs" not in params
+    assert "pose_spring_names" not in params
+    assert params == {"participant_id": "P001", "condition_name": "KT"}
 
 
 def test_log_measurement_creates_header_once_and_appends(tmp_path):

@@ -48,16 +48,29 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
   If participant_id is set, the rosbag routes into
   ~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- the same
   directory orchestration_node's ~/finalize_study_conditions service (see
-  springcontroller_ui) writes position.yaml/pose.yaml into.
+  springcontroller_ui) writes position.yaml/pose.yaml/KT.yaml into.
   condition_name (e.g. 'position') labels the bag's output directory
   name. Assumes gen3_spring.launch.py gets relaunched fresh per condition
   (Ctrl-C, then relaunch with config:=.../pose.yaml
   condition_name:=pose) rather than one long-running launch
   switching conditions live -- see participant_id_arg/condition_name_arg.
+
+  As of 2026-09-03, ~/finalize_study_conditions also embeds
+  participant_id/condition_name directly into position.yaml/pose.yaml/
+  KT.yaml themselves (plain custom keys under ros__parameters -- harmless
+  to virtual_spring_node, which declares every key it's handed as a ROS
+  parameter on itself whether it recognizes it or not). _make_record_
+  rosbag_action reads those out of config:='s YAML as a fallback whenever
+  participant_id:=/condition_name:= aren't given explicitly on the launch
+  command line -- so config:=.../position.yaml alone is now enough; an
+  explicit participant_id:=/condition_name:= on the command line still
+  overrides whatever's in the file.
 """
 
 import os
 from datetime import datetime
+
+import yaml
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -806,6 +819,23 @@ def generate_launch_description():
     # up gen3_torque_control's joint_states_topic and
     # /gen3_torque_control/status.
     #
+    # /kinova/joint_states_lowlevel is also listed explicitly (added
+    # 2026-09-03), even though joint_states_topic's own default already
+    # resolves to this exact name (see joint_states_topic_arg) -- ros2 bag
+    # record harmlessly dedupes a topic named twice, and this way the raw
+    # low-level joint states still get recorded under their real name even
+    # if joint_states_topic is ever overridden to something else.
+    #
+    # /gen3_torque_control/ee_pose and /gen3_torque_control/move_status
+    # (added 2026-09-03) -- move_status backs the study control panel's
+    # move-status display (see index.html's handleMoveStatus), useful to
+    # have recorded now that a stale FAILED move-status message not
+    # clearing is under investigation.
+    #
+    # /virtual_spring_node/spring_forces (added 2026-09-03) -- every
+    # active spring's current force/moment/distance/angle_offset_rad (see
+    # SpringForce.msg and _publish_spring_forces in virtual_spring_node.py).
+    #
     # /virtual_spring_node/springs_updated is a latched std_msgs/String
     # publishing the full current list of spring names as JSON on every
     # add/remove/update (see virtual_spring_node.py's _publish_springs_
@@ -833,8 +863,40 @@ def generate_launch_description():
     # time with a `context` to resolve against -- generate_launch_description
     # itself only ever sees unresolved substitution objects.
     def _make_record_rosbag_action(context, *args, **kwargs):
-        participant_id = LaunchConfiguration("participant_id").perform(context)
-        condition_name = LaunchConfiguration("condition_name").perform(context)
+        # Fallback only -- an explicit participant_id:=/condition_name:=
+        # on the launch command line always wins (see docstring's "Study-
+        # participant rosbag routing" section). config_path's YAML is a
+        # plain ROS params file (config_path itself never fails to parse
+        # here just because it's a *different* participant's file, or the
+        # non-study default gen3_springs.yaml, which simply won't have
+        # these keys -- .get(..., "") handles that the same as a missing
+        # file would) -- wrapped in a broad try/except since a malformed
+        # or unreadable file should just fall through to the old
+        # explicit-args-only behavior, never hard-fail the whole launch.
+        config_participant_id = ""
+        config_condition_name = ""
+        # expanduser explicitly -- config:=~/... is passed through
+        # unexpanded by the shell (the `config:=` prefix isn't a valid
+        # bash assignment-word, so its tilde-expansion rule never kicks
+        # in), the same gotcha virtual_spring_node.py's own config_path
+        # handling already works around. Without this, a literal leading
+        # "~" here means os.path.isfile() below is always False, so this
+        # whole fallback silently never fires -- confirmed live
+        # 2026-09-03 as the reason a KT.yaml launch still fell through to
+        # the flat rosbag_dir instead of routing into the study folder.
+        config_path = os.path.expanduser(LaunchConfiguration("config").perform(context))
+        if config_path and os.path.isfile(config_path):
+            try:
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f) or {}
+                config_ros_params = config_data.get("/**", {}).get("ros__parameters", {})
+                config_participant_id = config_ros_params.get("participant_id", "")
+                config_condition_name = config_ros_params.get("condition_name", "")
+            except Exception:
+                pass
+
+        participant_id = LaunchConfiguration("participant_id").perform(context) or config_participant_id
+        condition_name = LaunchConfiguration("condition_name").perform(context) or config_condition_name
 
         if participant_id:
             bag_dir = os.path.join(
@@ -869,13 +931,17 @@ def generate_launch_description():
                     "--max-cache-size", "0",
                     *output_name_args,
                     LaunchConfiguration("joint_states_topic"),
+                    "/kinova/joint_states_lowlevel",
                     "/virtual_spring_node/joint_torques",
                     "/virtual_spring_node/repulsion_torques",
                     "/virtual_spring_node/joint_limit_repulsion_torques",
                     "/virtual_spring_node/safety_status",
                     "/virtual_spring_node/springs_updated",
+                    "/virtual_spring_node/spring_forces",
                     "/kinova/joint_torque_command",
                     "/gen3_torque_control/status",
+                    "/gen3_torque_control/ee_pose",
+                    "/gen3_torque_control/move_status",
                     "/audio/audio",
                     "/camera/image_raw_throttled/compressed",
                     "/camera2/image_raw_throttled/compressed",
