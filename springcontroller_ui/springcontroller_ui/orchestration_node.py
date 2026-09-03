@@ -915,13 +915,18 @@ class StudyControlPanelNode(Node):
         }
         # position_center/position_radius (EXPERIMENTAL, see PoseSpring in
         # virtual_spring.py) reuse the SAME center/outer_radius spring_params
-        # above already computed for tip_spring -- this is the actual
-        # coupling: condition 2's pose spring is bounded to the identical
-        # region tip_spring is already anchored to, by construction, not by
-        # an operator manually copying two numbers between two places.
+        # above already computed -- so the pose condition agrees with the
+        # position condition's own tip spring on where the arm is supposed
+        # to be, by construction, not by an operator manually copying two
+        # numbers between two places -- but pose.yaml itself carries no
+        # tip_spring: position_center/position_radius are a passive dead
+        # zone (full authority inside, ramped toward zero beyond, see
+        # PoseSpring.compute_torques), not an active pull toward that point.
         # Added 2026-09-02 after a live incident where an orientation
-        # spring with no position bound pulled the tip well outside
-        # tip_spring's own workspace.
+        # spring with no position bound pulled the tip well outside its
+        # intended workspace; confirmed 2026-09-03 that condition "pose"
+        # should have no separate position-pulling spring at all -- the
+        # dead-zone center simply goes where a tip spring would have gone.
         pose_params = {
             "link_name": request.link_name,
             "local_point": local_point,
@@ -939,13 +944,10 @@ class StudyControlPanelNode(Node):
         pose_path = os.path.join(participant_dir, "pose.yaml")
         csv_path = os.path.join(data_dir, "measurements.csv")
 
-        pose_spring_params = dict(spring_params)
-        #pose_spring_params.update(pose_spring_overrides())
-
         try:
             write_condition_yaml(position_path, self._workspace_spring_name, spring_params)
             write_condition_yaml(
-                pose_path, self._workspace_spring_name, pose_spring_params,
+                pose_path,
                 include_pose=True,
                 pose_name=self._workspace_pose_spring_name,
                 pose_params=pose_params,
