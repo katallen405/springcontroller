@@ -188,6 +188,23 @@ def get_param_target(name, prefix=None):
         return np.array([float(x) for x in nums]), resolved_prefix
     return None, None
 
+def get_param_position_center(name, prefix=None):
+    """Read a pose spring's position_center (EXPERIMENTAL, see PoseSpring
+    in virtual_spring.py) from the spring node's ROS parameters --
+    PoseSpring-only, so only ever called once _track_spring already knows
+    a spring resolved to the pose_springs prefix (no "could not read"
+    print here, unlike get_param_target/get_param_link/
+    get_param_local_point, which apply to every spring type and so treat
+    a failed read as worth logging). Returns (value, resolved_prefix) --
+    see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'position_center', prefix)
+    if out is None:
+        return None, None
+    nums = re.findall(r'[-\d.]+', out.split(':')[-1])
+    if len(nums) == 3:
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
+
 def get_param_local_point(name, prefix=None):
     """Read initial local_point (attachment offset within the link's own
     frame) from the spring node's ROS parameters. Unlike target/link_name,
@@ -271,11 +288,16 @@ def _track_spring(name, prefix=None):
         target      = fetch(get_param_target)
         link_name   = fetch(get_param_link)
         local_point = fetch(get_param_local_point)
+        # PoseSpring-only -- see get_param_position_center's docstring.
+        # known[0] is settled by now (target/link_name/local_point all
+        # attempt to resolve it above).
+        position_center = fetch(get_param_position_center) if known[0] == "pose_springs" else None
         springs[name] = entry = {
-            "target":      target,
-            "link_name":   link_name,
-            "local_point": local_point,
-            "prefix":      known[0],
+            "target":          target,
+            "link_name":       link_name,
+            "local_point":     local_point,
+            "position_center": position_center,
+            "prefix":          known[0],
         }
         # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
         # publisher -- see _latched_qos below for why a plain VOLATILE
@@ -305,6 +327,9 @@ def _track_spring(name, prefix=None):
         if entry.get("local_point") is None:
             entry["local_point"] = fetch(get_param_local_point)
             print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
+        if known[0] == "pose_springs" and entry.get("position_center") is None:
+            entry["position_center"] = fetch(get_param_position_center)
+            print(f"[viz] retried position_center for '{name}': {entry['position_center']}")
         if entry.get("prefix") is None:
             entry["prefix"] = known[0]
     # local_point isn't part of the resolved-gate: draw_springs falls back
@@ -714,11 +739,15 @@ def collision_thresholds_cb(msg):
             set_halo_visible(obj_id, True)
 
 
+# Spring marker sphere radius (attachment/target/position_center) --
+# shrunk 2026-09-03 (confirmed live: 0.025, 5cm diameter, was still too
+# big) to half that.
+_SPRING_MARKER_RADIUS = 0.012
+
 # Triad line length for a pose spring's attachment marker (see
-# draw_springs) -- comparable to the 0.025 sphere radius used for a
-# VirtualSpring's attachment point (5cm diameter), so neither marker style
-# dominates the scene when both spring kinds are loaded together.
-_POSE_TRIAD_SCALE = 0.06
+# draw_springs) -- comparable to _SPRING_MARKER_RADIUS, so neither marker
+# style dominates the scene when both spring kinds are loaded together.
+_POSE_TRIAD_SCALE = 0.03
 
 
 def draw_springs(q):
@@ -787,7 +816,7 @@ def draw_springs(q):
             )
         else:
             viz.viewer[f"springs/{name}/attachment"].set_object(
-                g.Sphere(0.025),
+                g.Sphere(_SPRING_MARKER_RADIUS),
                 g.MeshLambertMaterial(color=0x0088ff, transparent=False)
             )
         viz.viewer[f"springs/{name}/attachment"].set_transform(T_attach)
@@ -802,10 +831,27 @@ def draw_springs(q):
             T_target = np.eye(4)
             T_target[:3, 3] = target
             viz.viewer[f"springs/{name}/target"].set_object(
-                g.Sphere(0.025),
+                g.Sphere(_SPRING_MARKER_RADIUS),
                 g.MeshLambertMaterial(color=target_color, transparent=False)
             )
             viz.viewer[f"springs/{name}/target"].set_transform(T_target)
+
+        # position_center (EXPERIMENTAL, see PoseSpring in virtual_spring.py)
+        # -- the point position_stiffness actually pulls the attachment
+        # point back toward once it's outside position_radius, distinct
+        # from target above (which is only ever a look-at direction, never
+        # a pull). Teal so it reads as a third, different kind of point at
+        # a glance from target's purple/red and attachment's blue. Added
+        # 2026-09-03 -- previously nothing marked this point at all.
+        position_center = spring.get("position_center")
+        if is_pose and position_center is not None:
+            T_position_center = np.eye(4)
+            T_position_center[:3, 3] = position_center
+            viz.viewer[f"springs/{name}/position_center"].set_object(
+                g.Sphere(_SPRING_MARKER_RADIUS),
+                g.MeshLambertMaterial(color=0x00cccc, transparent=False)
+            )
+            viz.viewer[f"springs/{name}/position_center"].set_transform(T_position_center)
 
             # Orange line from attachment to target
             vertices = np.column_stack([attachment, target])  # 3x2

@@ -478,7 +478,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>outer radius (m) <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
         <div class="row" id="sp-pose-only" style="display:none">
-          <label>stiffness (N&middot;m/rad) <input type="number" step="0.1" id="sp-k-pose" value="2.0"></label>
+          <label>stiffness (N&middot;m/rad) <input type="number" step="0.1" id="sp-k-pose" value="10"></label>
           <label>damping (N&middot;m&middot;s/rad) <input type="number" step="0.1" id="sp-b-pose" value="0.2"></label>
           <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
           <label>normal y <input type="number" step="0.01" id="sp-ny" value="0"></label>
@@ -494,8 +494,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>position center x (m) <input type="number" step="0.01" id="sp-pcx" value="0"></label>
           <label>position center y (m) <input type="number" step="0.01" id="sp-pcy" value="0"></label>
           <label>position center z (m) <input type="number" step="0.01" id="sp-pcz" value="0"></label>
-          <label>position radius (m) <input type="number" step="0.01" id="sp-pradius" value=""></label>
-          <label>position stiffness (N/m) <input type="number" step="0.5" id="sp-pstiffness" value="0"></label>
+          <label>position radius (m) <input type="number" step="0.01" id="sp-pradius" value="0.07"></label>
+          <label>position stiffness (N/m) <input type="number" step="0.5" id="sp-pstiffness" value="50"></label>
         </div>
         <p class="hint" id="sp-pose-hint" style="display:none">Pose spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector. "position center"/"position radius" bound how far this spring can move the attachment point while correcting orientation -- typically the same target/outer_radius a paired position spring is using.</p>
         <div class="btn-row">
@@ -1004,6 +1004,24 @@ function startAdjustSpring(name, kind) {
   }, function(err) { showMsg('spring-msg', false, 'Could not load spring params for adjust: ' + err); });
 }
 
+// Original "add a new spring" defaults for every Add-spring form field --
+// matches this form's own HTML value="..." attributes. Applied by
+// endAdjustSpring so leaving adjust mode actually clears out whatever
+// spring's values were loaded into the form, not just the name/buttons --
+// otherwise the fields kept showing the just-adjusted spring's numbers,
+// which is exactly what you'd type over by hand if you then wanted to add
+// a genuinely new spring.
+const SPRING_FORM_DEFAULTS = {
+  'sp-tx': '0', 'sp-ty': '0', 'sp-tz': '0.5',
+  'sp-lx': '0', 'sp-ly': '0', 'sp-lz': '0',
+  'sp-k-position': '50', 'sp-b-position': '5',
+  'sp-rest': '0', 'sp-rin': '0', 'sp-rout': '0',
+  'sp-k-pose': '10', 'sp-b-pose': '0.2',
+  'sp-nx': '0', 'sp-ny': '0', 'sp-nz': '1',
+  'sp-pcx': '0', 'sp-pcy': '0', 'sp-pcz': '0',
+  'sp-pradius': '0.07', 'sp-pstiffness': '50',
+};
+
 // Leaves "editing existing spring" mode and resets the Add-spring form
 // back to its create-a-new-spring state -- called both by the "New
 // spring" button and after a successful update, so the form never keeps
@@ -1017,6 +1035,13 @@ function endAdjustSpring() {
   document.getElementById('btn-spring-preview').classList.remove('hidden');
   document.getElementById('btn-spring-cancel-adjust').classList.add('hidden');
   document.getElementById('btn-spring-submit').textContent = 'Add spring';
+
+  Object.keys(SPRING_FORM_DEFAULTS).forEach(function(id) {
+    document.getElementById(id).value = SPRING_FORM_DEFAULTS[id];
+  });
+  document.getElementById('sp-link').selectedIndex = 0;
+  document.getElementById('sp-type-position').checked = true;
+  updateSpringTypeFields();
 }
 
 // The single "Add spring"/"Update spring" button's handler -- dispatches
