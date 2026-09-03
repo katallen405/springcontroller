@@ -832,6 +832,10 @@ def generate_launch_description():
     # have recorded now that a stale FAILED move-status message not
     # clearing is under investigation.
     #
+    # /virtual_spring_node/spring_forces (added 2026-09-03) -- every
+    # active spring's current force/moment/distance/angle_offset_rad (see
+    # SpringForce.msg and _publish_spring_forces in virtual_spring_node.py).
+    #
     # /virtual_spring_node/springs_updated is a latched std_msgs/String
     # publishing the full current list of spring names as JSON on every
     # add/remove/update (see virtual_spring_node.py's _publish_springs_
@@ -933,6 +937,7 @@ def generate_launch_description():
                     "/virtual_spring_node/joint_limit_repulsion_torques",
                     "/virtual_spring_node/safety_status",
                     "/virtual_spring_node/springs_updated",
+                    "/virtual_spring_node/spring_forces",
                     "/kinova/joint_torque_command",
                     "/gen3_torque_control/status",
                     "/gen3_torque_control/ee_pose",
