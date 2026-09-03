@@ -2406,6 +2406,7 @@ class VirtualSpringNode(Node):
                 stiffness=request.stiffness,
                 position_center=np.array(request.position_center),
                 position_radius=request.position_radius,
+                position_stiffness=request.position_stiffness,
                 damping=request.damping,
             )
         except ValueError as e:
@@ -2425,6 +2426,7 @@ class VirtualSpringNode(Node):
             f"{prefix}.damping":           (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
             f"{prefix}.position_center":   (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
             f"{prefix}.position_radius":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
+            f"{prefix}.position_stiffness": (rclpy.parameter.Parameter.Type.DOUBLE,      request.position_stiffness),
         }
         for key, (ptype, value) in params.items():
             self._declare_or_ignore(key, value)
@@ -2607,8 +2609,8 @@ class VirtualSpringNode(Node):
         virtual_spring.py) -- silently ignored for those types rather than
         rejected, same "fields that don't apply are ignored, not an error"
         convention as AddSpring's request carrying the same three fields
-        for every spring type. position_center/position_radius are
-        PoseSpring-only, same convention.
+        for every spring type. position_center/position_radius/
+        position_stiffness are PoseSpring-only, same convention.
         """
         name = request.name.strip()
         spring = next((s for s in self._springs if s.name == name), None)
@@ -2645,6 +2647,10 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = f"position_radius must be > 0, got {request.position_radius}."
             return response
+        if is_pose and request.position_stiffness < 0:
+            response.success = False
+            response.message = f"position_stiffness must be >= 0, got {request.position_stiffness}."
+            return response
 
         spring.stiffness = request.stiffness
         spring.damping = request.damping
@@ -2655,6 +2661,7 @@ class VirtualSpringNode(Node):
         if is_pose:
             spring.position_center = np.array(request.position_center)
             spring.position_radius = request.position_radius
+            spring.position_stiffness = request.position_stiffness
 
         # Mirror into the parameter namespace, same as add_spring -- keeps
         # it in sync with the live spring instead of going stale. Prefix
@@ -2685,6 +2692,7 @@ class VirtualSpringNode(Node):
             params_to_mirror += [
                 (f"{prefix}.position_center", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
                 (f"{prefix}.position_radius", rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
+                (f"{prefix}.position_stiffness", rclpy.parameter.Parameter.Type.DOUBLE,    request.position_stiffness),
             ]
         for key, ptype, value in params_to_mirror:
             self._declare_or_ignore(key, value)
@@ -2702,7 +2710,8 @@ class VirtualSpringNode(Node):
             )
             + (
                 f", position_center={list(request.position_center)}, "
-                f"position_radius={request.position_radius}."
+                f"position_radius={request.position_radius}, "
+                f"position_stiffness={request.position_stiffness}."
                 if is_pose else ""
             )
             + ("." if not (is_virtual or is_pose) else "")

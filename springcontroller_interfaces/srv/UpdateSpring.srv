@@ -3,9 +3,9 @@
 # spring, same as AddSpring's fields of the same name being unused outside
 # VirtualSpring's own constructor.
 #
-# position_center/position_radius only apply to a pose spring (PoseSpring)
-# -- ignored (not an error) when updating a position or joint spring, same
-# convention.
+# position_center/position_radius/position_stiffness only apply to a pose
+# spring (PoseSpring) -- ignored (not an error) when updating a position or
+# joint spring, same convention.
 string name
 float64 stiffness
 float64 damping
@@ -14,6 +14,7 @@ float64 inner_radius
 float64 outer_radius
 float64[3] position_center
 float64 position_radius
+float64 position_stiffness
 ---
 bool success
 string message

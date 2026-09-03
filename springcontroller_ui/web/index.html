@@ -428,6 +428,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (pose springs only).</dd>
           <dt>position center x/y/z</dt><dd>World-frame point (m) this spring's position-radius constraint is centered on -- typically the same target a paired position spring is using. Required (pose springs only). EXPERIMENTAL, see position radius.</dd>
           <dt>position radius</dt><dd>Radius (m) around position center within which this spring has full authority to move the attachment point while correcting orientation; beyond it, the torque that would move the point further is ramped toward zero. Required, must be &gt; 0 (pose springs only). EXPERIMENTAL -- added 2026-09-02 after a live incident where an unconstrained pose spring pulled the tip well outside a paired position spring's own workspace.</dd>
+          <dt>position stiffness</dt><dd>Restoring pull (N/m) back toward position center, active only beyond position radius (zero inside it -- a true dead zone). 0 (the default) means no pull at all, which was this spring's only behavior before this field existed. EXPERIMENTAL -- added 2026-09-03 after a live incident where a pose spring with no such pull wandered off and settled in an arbitrary orientation-satisfying pose once past position radius.</dd>
           <dt>Preview (zero force)</dt><dd>Adds the spring for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping so it can't exert any force -- check it looks right, then click "Add spring" again with the real values to replace it.</dd>
         </dl>
       </details>
@@ -492,6 +493,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>position center y (m) <input type="number" step="0.01" id="sp-pcy" value="0"></label>
           <label>position center z (m) <input type="number" step="0.01" id="sp-pcz" value="0"></label>
           <label>position radius (m) <input type="number" step="0.01" id="sp-pradius" value=""></label>
+          <label>position stiffness (N/m) <input type="number" step="0.5" id="sp-pstiffness" value="0"></label>
         </div>
         <p class="hint" id="sp-pose-hint" style="display:none">Pose spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector. "position center"/"position radius" bound how far this spring can move the attachment point while correcting orientation -- typically the same target/outer_radius a paired position spring is using.</p>
         <div class="btn-row">
@@ -1100,6 +1102,7 @@ function performAddSpring(name, preview) {
                          parseFloat(document.getElementById('sp-pcy').value),
                          parseFloat(document.getElementById('sp-pcz').value)],
       position_radius: parseFloat(document.getElementById('sp-pradius').value),
+      position_stiffness: parseFloat(document.getElementById('sp-pstiffness').value),
     });
     callService(svcAddPoseSpring, req, function(resp) {
       showMsg('spring-msg', resp.success, addedMsg(resp));
@@ -1133,11 +1136,11 @@ function removeSpring(name) {
 // position spring (see renderSpringList) -- rest_length/inner_radius/
 // outer_radius are then sent as 0, which the backend ignores entirely for
 // a non-VirtualSpring (see _update_spring_cb's is_virtual gate).
-// positionCenterInputs ([x,y,z] input elements)/positionRadiusInput are
-// null for a spring that isn't a pose spring, same "sent as a harmless
-// placeholder, ignored server-side" convention (is_pose gate) --
-// EXPERIMENTAL, see PoseSpring in virtual_spring.py.
-function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput) {
+// positionCenterInputs ([x,y,z] input elements)/positionRadiusInput/
+// positionStiffnessInput are null for a spring that isn't a pose spring,
+// same "sent as a harmless placeholder, ignored server-side" convention
+// (is_pose gate) -- EXPERIMENTAL, see PoseSpring in virtual_spring.py.
+function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput, positionStiffnessInput) {
   const stiffness = parseFloat(kInput.value);
   const damping = parseFloat(bInput.value);
   if (!isFinite(stiffness) || !isFinite(damping)) {
@@ -1146,7 +1149,7 @@ function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, p
   }
   const req = { name: name, stiffness: stiffness, damping: damping,
                 rest_length: 0, inner_radius: 0, outer_radius: 0,
-                position_center: [0, 0, 0], position_radius: 0 };
+                position_center: [0, 0, 0], position_radius: 0, position_stiffness: 0 };
   if (restInput) {
     const restLength = parseFloat(restInput.value);
     const innerRadius = parseFloat(innerInput.value);
@@ -1162,12 +1165,14 @@ function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, p
   if (positionCenterInputs) {
     const positionCenter = positionCenterInputs.map(function(el) { return parseFloat(el.value); });
     const positionRadius = parseFloat(positionRadiusInput.value);
-    if (!positionCenter.every(isFinite) || !isFinite(positionRadius)) {
-      showMsg('spring-msg', false, 'Position center x/y/z and position radius must all be numbers.');
+    const positionStiffness = parseFloat(positionStiffnessInput.value);
+    if (!positionCenter.every(isFinite) || !isFinite(positionRadius) || !isFinite(positionStiffness)) {
+      showMsg('spring-msg', false, 'Position center x/y/z, position radius, and position stiffness must all be numbers.');
       return;
     }
     req.position_center = positionCenter;
     req.position_radius = positionRadius;
+    req.position_stiffness = positionStiffness;
   }
   callService(svcUpdateSpring, req, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
@@ -1272,16 +1277,17 @@ function fetchSpringTypeMap(callback) {
 // restInput/innerInput/outerInput are only filled for a position spring
 // (see SPRING_PARAM_PREFIXES' hasRadius) -- callers pass null for a
 // pose/joint spring, where they don't apply. positionCenterInputs
-// ([x,y,z] elements)/positionRadiusInput are the pose-spring equivalent
-// (see hasPoseRadius) -- callers pass null for a position/joint spring.
-function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix, anchorEl, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput) {
+// ([x,y,z] elements)/positionRadiusInput/positionStiffnessInput are the
+// pose-spring equivalent (see hasPoseRadius) -- callers pass null for a
+// position/joint spring.
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix, anchorEl, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput, positionStiffnessInput) {
   function tryPrefix(i) {
     if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
     const { prefix, hasTarget, anchorField, hasRadius, hasPoseRadius } = SPRING_PARAM_PREFIXES[i];
     const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping', prefix + '.' + name + '.' + anchorField];
     if (hasTarget) names.push(prefix + '.' + name + '.target');
     if (hasRadius) names.push(prefix + '.' + name + '.rest_length', prefix + '.' + name + '.inner_radius', prefix + '.' + name + '.outer_radius');
-    if (hasPoseRadius) names.push(prefix + '.' + name + '.position_center', prefix + '.' + name + '.position_radius');
+    if (hasPoseRadius) names.push(prefix + '.' + name + '.position_center', prefix + '.' + name + '.position_radius', prefix + '.' + name + '.position_stiffness');
     callService(svcGetSpringParams, { names: names }, function(resp) {
       const v = resp.values;
       const k = numericParamValue(v[0]);
@@ -1316,6 +1322,8 @@ function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, know
           positionCenterInputs[2].value = pc.double_array_value[2].toFixed(4);
         }
         if (pr !== undefined) positionRadiusInput.value = pr;
+        const ps = numericParamValue(v[idx++]);
+        if (ps !== undefined && positionStiffnessInput) positionStiffnessInput.value = ps;
       }
     }, function(err) { tryPrefix(i + 1); });
   }
@@ -1447,7 +1455,7 @@ function renderSpringList(typeMap) {
     // (PoseSpring) -- EXPERIMENTAL, see virtual_spring.py. Same
     // "typeMap not yet populated -> leave fields out" reasoning as
     // rest_length/inner_radius/outer_radius above.
-    let pcxInput = null, pcyInput = null, pczInput = null, pradiusInput = null;
+    let pcxInput = null, pcyInput = null, pczInput = null, pradiusInput = null, pstiffnessInput = null;
     if (isPose) {
       pcxInput = document.createElement('input');
       pcxInput.type = 'number'; pcxInput.step = '0.01'; pcxInput.placeholder = 'cx';
@@ -1461,17 +1469,21 @@ function renderSpringList(typeMap) {
       pradiusInput = document.createElement('input');
       pradiusInput.type = 'number'; pradiusInput.step = '0.01'; pradiusInput.placeholder = 'radius';
       pradiusInput.title = 'New position radius (m), must be > 0';
+      pstiffnessInput = document.createElement('input');
+      pstiffnessInput.type = 'number'; pstiffnessInput.step = '0.5'; pstiffnessInput.placeholder = 'k_pos';
+      pstiffnessInput.title = 'New position stiffness (N/m) -- restoring pull back toward position center, beyond position radius. 0 = no pull.';
       adjust.appendChild(labeledInput('position center x (m)', pcxInput));
       adjust.appendChild(labeledInput('position center y (m)', pcyInput));
       adjust.appendChild(labeledInput('position center z (m)', pczInput));
       adjust.appendChild(labeledInput('position radius (m)', pradiusInput));
+      adjust.appendChild(labeledInput('position stiffness (N/m)', pstiffnessInput));
     }
     const positionCenterInputs = isPose ? [pcxInput, pcyInput, pczInput] : null;
 
     const updateBtn = document.createElement('button');
     updateBtn.textContent = 'Update';
     updateBtn.onclick = function() {
-      updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, positionCenterInputs, pradiusInput);
+      updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, positionCenterInputs, pradiusInput, pstiffnessInput);
     };
     adjust.appendChild(updateBtn);
 
@@ -1502,7 +1514,7 @@ function renderSpringList(typeMap) {
     li.appendChild(btn);
     ul.appendChild(li);
 
-    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name], anchorSpan, restInput, innerInput, outerInput, positionCenterInputs, pradiusInput);
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name], anchorSpan, restInput, innerInput, outerInput, positionCenterInputs, pradiusInput, pstiffnessInput);
   });
 }
 

@@ -178,7 +178,11 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("workspace_spring_stiffness", 50.0)
         self.declare_parameter("workspace_spring_damping", 5.0)
         self.declare_parameter("workspace_pose_spring_name", "face_participant")
-        self.declare_parameter("workspace_pose_local_face_normal", [0.0, 0.0, 1.0])
+        # The 'block' link preset's held face points along its local +y,
+        # not +z -- see LINK_PRESETS in web/index.html. Confirmed live
+        # 2026-09-03. study_control_panel.yaml overrides this at launch;
+        # kept in sync here as the fallback default.
+        self.declare_parameter("workspace_pose_local_face_normal", [0.0, 1.0, 0.0])
         self.declare_parameter("workspace_pose_stiffness", 2.0)
         self.declare_parameter("workspace_pose_damping", 0.2)
         # Restoring pull (N/m) back toward position_center once the arm
