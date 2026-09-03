@@ -858,7 +858,16 @@ def generate_launch_description():
         # explicit-args-only behavior, never hard-fail the whole launch.
         config_participant_id = ""
         config_condition_name = ""
-        config_path = LaunchConfiguration("config").perform(context)
+        # expanduser explicitly -- config:=~/... is passed through
+        # unexpanded by the shell (the `config:=` prefix isn't a valid
+        # bash assignment-word, so its tilde-expansion rule never kicks
+        # in), the same gotcha virtual_spring_node.py's own config_path
+        # handling already works around. Without this, a literal leading
+        # "~" here means os.path.isfile() below is always False, so this
+        # whole fallback silently never fires -- confirmed live
+        # 2026-09-03 as the reason a KT.yaml launch still fell through to
+        # the flat rosbag_dir instead of routing into the study folder.
+        config_path = os.path.expanduser(LaunchConfiguration("config").perform(context))
         if config_path and os.path.isfile(config_path):
             try:
                 with open(config_path) as f:
