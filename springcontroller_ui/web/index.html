@@ -918,6 +918,7 @@ const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
 // pushed past this study's 2026-09-18 deadline).
 const LINK_PRESETS = {
   block: { link_name: 'end_effector_link', local_point: [0, 0, 0.15] },
+  forearm: { link_name: 'forearm_link', local_point: [0, 0, 0] },
 };
 
 // Every backend call needs a real URDF frame name -- resolves a dropdown's
@@ -937,9 +938,14 @@ function applyLinkPresetIfSelected(linkSelId, lxId, lyId, lzId) {
   document.getElementById(lzId).value = preset.local_point[2];
 }
 
+// No spring attachments on the gripper for this project -- filtered out
+// entirely (not just deprioritized out of "favorites") so a robotiq_*
+// link can't be selected via either dropdown group.
+const EXCLUDED_LINK_PATTERN = /robotiq/i;
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
-    const names = resp.link_names || [];
+    const names = (resp.link_names || []).filter(function(n) { return !EXCLUDED_LINK_PATTERN.test(n); });
     const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
     const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
     const addOption = function(parent, name, label) {
