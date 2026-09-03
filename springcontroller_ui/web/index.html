@@ -232,7 +232,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
-          <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
+          <button class="action off" onclick="clearFaults()">Clear faults</button>
         </div>
         <label class="chk" style="margin-top:8px">
           <input type="checkbox" id="allow-danger" autocomplete="off"> Override safety interlock
@@ -628,6 +628,28 @@ function callTrigger(desc, label, targetMsgId) {
     showMsg(el, resp.success, (label ? label + ': ' : '') + resp.message);
   }, function(err) {
     showMsg(el, false, (label ? label + ' failed: ' : '') + err);
+  });
+}
+
+// gen3_torque_control's own /gen3_torque_control/move_status topic
+// (handleMoveStatus) is a one-shot notification, not a continuous state
+// -- it only publishes again on the *next* move attempt, so a stale
+// "FAILED: ..." from a past fault just sits there forever with nothing
+// to overwrite it, even after the fault is actually cleared. Ideally
+// gen3_torque_control would publish move_status itself once a fault
+// clears (e.g. back to "IDLE") so handleMoveStatus picks it up for
+// free -- until then, reset the display here on a successful clear so
+// it doesn't keep showing a resolved fault as if it were still live.
+function clearFaults() {
+  callService(svcClearFaults, {}, function(resp) {
+    showMsg('mode-msg', resp.success, 'Clear faults: ' + resp.message);
+    if (resp.success) {
+      const el = document.getElementById('move-state');
+      el.textContent = 'cleared (faults reset -- move status stays here until the next move attempt)';
+      el.className = 'val inactive';
+    }
+  }, function(err) {
+    showMsg('mode-msg', false, 'Clear faults failed: ' + err);
   });
 }
 
