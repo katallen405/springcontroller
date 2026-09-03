@@ -896,6 +896,7 @@ class StudyControlPanelNode(Node):
             response.message = "participant_id is required."
             response.position_path = ""
             response.pose_path = ""
+            response.kt_path = ""
             response.warnings = []
             return response
 
@@ -957,15 +958,31 @@ class StudyControlPanelNode(Node):
         participant_dir = os.path.join(data_dir, request.participant_id)
         position_path = os.path.join(participant_dir, "position.yaml")
         pose_path = os.path.join(participant_dir, "pose.yaml")
+        kt_path = os.path.join(participant_dir, "KT.yaml")
         csv_path = os.path.join(data_dir, "measurements.csv")
 
+        # Embedded in every condition's YAML so gen3_spring.launch.py can
+        # route the rosbag into ~/gen3_study_data/<participant_id>/ with
+        # condition_name labeling it straight from `config:=` alone --
+        # see _make_record_rosbag_action's YAML fallback -- without also
+        # needing a separate participant_id:=/condition_name:= on the
+        # launch command line.
+        rosbag_routing = {"participant_id": request.participant_id}
+
         try:
-            write_condition_yaml(position_path, self._workspace_spring_name, spring_params)
+            write_condition_yaml(
+                position_path, self._workspace_spring_name, spring_params,
+                extra_params={**rosbag_routing, "condition_name": "position"},
+            )
             write_condition_yaml(
                 pose_path,
                 include_pose=True,
                 pose_name=self._workspace_pose_spring_name,
                 pose_params=pose_params,
+                extra_params={**rosbag_routing, "condition_name": "pose"},
+            )
+            write_condition_yaml(
+                kt_path, extra_params={**rosbag_routing, "condition_name": "KT"},
             )
             log_measurement(
                 csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
@@ -976,6 +993,7 @@ class StudyControlPanelNode(Node):
             response.message = f"Failed writing study condition files: {e}"
             response.position_path = ""
             response.pose_path = ""
+            response.kt_path = ""
             response.warnings = []
             return response
 
@@ -983,6 +1001,7 @@ class StudyControlPanelNode(Node):
         response.message = "ok"
         response.position_path = position_path
         response.pose_path = pose_path
+        response.kt_path = kt_path
         response.warnings = condition_params["warnings"]
         return response
 

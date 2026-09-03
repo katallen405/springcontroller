@@ -48,16 +48,29 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
   If participant_id is set, the rosbag routes into
   ~/gen3_study_data/<participant_id>/ instead of rosbag_dir -- the same
   directory orchestration_node's ~/finalize_study_conditions service (see
-  springcontroller_ui) writes position.yaml/pose.yaml into.
+  springcontroller_ui) writes position.yaml/pose.yaml/KT.yaml into.
   condition_name (e.g. 'position') labels the bag's output directory
   name. Assumes gen3_spring.launch.py gets relaunched fresh per condition
   (Ctrl-C, then relaunch with config:=.../pose.yaml
   condition_name:=pose) rather than one long-running launch
   switching conditions live -- see participant_id_arg/condition_name_arg.
+
+  As of 2026-09-03, ~/finalize_study_conditions also embeds
+  participant_id/condition_name directly into position.yaml/pose.yaml/
+  KT.yaml themselves (plain custom keys under ros__parameters -- harmless
+  to virtual_spring_node, which declares every key it's handed as a ROS
+  parameter on itself whether it recognizes it or not). _make_record_
+  rosbag_action reads those out of config:='s YAML as a fallback whenever
+  participant_id:=/condition_name:= aren't given explicitly on the launch
+  command line -- so config:=.../position.yaml alone is now enough; an
+  explicit participant_id:=/condition_name:= on the command line still
+  overrides whatever's in the file.
 """
 
 import os
 from datetime import datetime
+
+import yaml
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -833,8 +846,31 @@ def generate_launch_description():
     # time with a `context` to resolve against -- generate_launch_description
     # itself only ever sees unresolved substitution objects.
     def _make_record_rosbag_action(context, *args, **kwargs):
-        participant_id = LaunchConfiguration("participant_id").perform(context)
-        condition_name = LaunchConfiguration("condition_name").perform(context)
+        # Fallback only -- an explicit participant_id:=/condition_name:=
+        # on the launch command line always wins (see docstring's "Study-
+        # participant rosbag routing" section). config_path's YAML is a
+        # plain ROS params file (config_path itself never fails to parse
+        # here just because it's a *different* participant's file, or the
+        # non-study default gen3_springs.yaml, which simply won't have
+        # these keys -- .get(..., "") handles that the same as a missing
+        # file would) -- wrapped in a broad try/except since a malformed
+        # or unreadable file should just fall through to the old
+        # explicit-args-only behavior, never hard-fail the whole launch.
+        config_participant_id = ""
+        config_condition_name = ""
+        config_path = LaunchConfiguration("config").perform(context)
+        if config_path and os.path.isfile(config_path):
+            try:
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f) or {}
+                config_ros_params = config_data.get("/**", {}).get("ros__parameters", {})
+                config_participant_id = config_ros_params.get("participant_id", "")
+                config_condition_name = config_ros_params.get("condition_name", "")
+            except Exception:
+                pass
+
+        participant_id = LaunchConfiguration("participant_id").perform(context) or config_participant_id
+        condition_name = LaunchConfiguration("condition_name").perform(context) or config_condition_name
 
         if participant_id:
             bag_dir = os.path.join(

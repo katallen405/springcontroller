@@ -1801,7 +1801,7 @@ function finalizeStudyConditions() {
     };
     callService(svcFinalizeStudyConditions, req, function(fr) {
       if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
-      let text = 'Wrote ' + fr.position_path + ' and ' + fr.pose_path + '.';
+      let text = 'Wrote ' + fr.position_path + ', ' + fr.pose_path + ', and ' + fr.kt_path + '.';
       if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
       showMsg('workspace-msg', true, text);
       removeSpring(WORKSPACE_DEMO_SPRING_NAME);

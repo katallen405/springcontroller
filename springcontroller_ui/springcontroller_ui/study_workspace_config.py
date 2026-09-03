@@ -168,6 +168,7 @@ def write_condition_yaml(
     include_pose: bool = False,
     pose_name: str = "",
     pose_params: dict | None = None,
+    extra_params: dict | None = None,
 ) -> None:
     """
     Write one condition's springs.yaml, matching the schema
@@ -185,6 +186,15 @@ def write_condition_yaml(
     pose_params) already define where a tip spring would have gone; the
     pose spring's own dead zone stands in for a real accompanying spring,
     not a supplement to one.
+
+    extra_params is merged in unconditionally, independent of whatever
+    spring content is or isn't present -- used to embed participant_id/
+    condition_name so gen3_spring.launch.py can route the rosbag into the
+    right study folder straight from `config:=` alone (see
+    _make_record_rosbag_action), without also needing a separate
+    participant_id:=/condition_name:= on the launch command line. This is
+    the only content the KT condition's YAML carries at all (no springs,
+    no pose_springs -- KT is "no torque controller").
     """
     params: dict = {}
     if spring_name:
@@ -193,6 +203,8 @@ def write_condition_yaml(
     if include_pose:
         params["pose_spring_names"] = [pose_name]
         params["pose_springs"] = {pose_name: dict(pose_params)}
+    if extra_params:
+        params.update(extra_params)
 
     data = {"/**": {"ros__parameters": params}}
     _atomic_write_yaml(path, data)

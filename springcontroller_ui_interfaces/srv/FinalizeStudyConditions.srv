@@ -11,4 +11,5 @@ bool success
 string message
 string position_path
 string pose_path
+string kt_path
 string[] warnings
