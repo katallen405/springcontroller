@@ -501,7 +501,14 @@ def generate_launch_description():
         package="springcontroller",
         executable="virtual_spring_node",
         name="virtual_spring_node",
-        output="screen",
+        # "full" (not "screen"): still shows live in the xterm, but also
+        # writes stdout+stderr to their own combined
+        # virtual_spring_node.log under the run's ~/.ros/log/<timestamp>/
+        # dir (see launch.log's "All log files can be found below" line) --
+        # searchable/grep-able there without needing to select text out of
+        # the xterm's visible window (xterm here can't select scrolled-off
+        # lines, see ros-layout.sh).
+        output="full",
         emulate_tty=True,
         parameters=[
             {
