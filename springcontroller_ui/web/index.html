@@ -211,8 +211,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
   <div class="layout">
     <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
     <aside class="sidebar" aria-label="Quick controls">
-      <div class="panel">
-        <h2>Torque control</h2>
+      <details class="panel" open>
+        <summary>Torque control</summary>
         <div class="btn-row" style="gap:24px">
           <div class="toggle-row">
             <span class="toggle-label">Torque control</span>
@@ -239,7 +239,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </label>
         <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps in those two states (see README:224).</p>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
-      </div>
+      </details>
 
       <details class="panel" open>
         <summary>Gripper control</summary>
@@ -251,8 +251,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </details>
 
-      <div class="panel">
-        <h2>Session timer &amp; event log</h2>
+      <details class="panel" open>
+        <summary>Session timer &amp; event log</summary>
 
         <div class="row">
           <label>Participant ID <input type="text" id="wc-pid" value=""></label>
@@ -306,7 +306,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <p class="hint">Logged rows always carry the server's clock time (for lining up against video later) -- the countdown above is a display only, purely to tell the participant how much time is left; it is never written to the log.</p>
         <div class="msg-box hidden" id="timer-log-msg" role="status" aria-live="polite"></div>
-      </div>
+      </details>
 
       <details class="panel" open>
         <summary>Collision thresholds</summary>
@@ -365,13 +365,14 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
     <!-- ── Main column: meshcat view + add/remove springs ── -->
     <div class="main-col">
-    <div class="panel">
+    <details class="panel" open>
+      <summary>Meshcat view</summary>
       <div class="meshcat-row">
-        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
+        <span class="status-line" id="meshcat-label">Needs <code>gen3_spring.launch.py armviz:=true</code>:</span>
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
       <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
-    </div>
+    </details>
 
     <details class="panel">
       <summary>Study workspace calibration</summary>

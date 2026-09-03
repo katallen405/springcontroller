@@ -181,6 +181,15 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("workspace_pose_local_face_normal", [0.0, 0.0, 1.0])
         self.declare_parameter("workspace_pose_stiffness", 2.0)
         self.declare_parameter("workspace_pose_damping", 0.2)
+        # Restoring pull (N/m) back toward position_center once the arm
+        # drifts past position_radius -- see PoseSpring.position_stiffness
+        # in virtual_spring.py. The "pose" condition has no separate
+        # position-pulling spring of its own (see write_condition_yaml),
+        # so without this the arm has nothing at all anchoring it once
+        # past position_radius. An order of magnitude gentler than
+        # workspace_spring_stiffness (50.0): meant as a soft "don't wander
+        # off" bound, not a firm anchor.
+        self.declare_parameter("workspace_pose_position_stiffness", 10.0)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -218,6 +227,7 @@ class StudyControlPanelNode(Node):
         self._workspace_pose_local_face_normal = list(gp("workspace_pose_local_face_normal"))
         self._workspace_pose_stiffness = float(gp("workspace_pose_stiffness"))
         self._workspace_pose_damping = float(gp("workspace_pose_damping"))
+        self._workspace_pose_position_stiffness = float(gp("workspace_pose_position_stiffness"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -936,6 +946,7 @@ class StudyControlPanelNode(Node):
             "damping": self._workspace_pose_damping,
             "position_center": [center["x"], center["y"], center["z"]],
             "position_radius": condition_params["outer_radius"],
+            "position_stiffness": self._workspace_pose_position_stiffness,
         }
 
         data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)

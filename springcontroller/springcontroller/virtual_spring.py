@@ -694,9 +694,25 @@ class PoseSpring:
     position_radius : float
         Radius (m) around position_center within which this spring has
         full authority to move the attachment point while correcting
-        orientation. Beyond it, the torque components that would move the
-        point further are ramped toward zero -- see compute_torques.
-        Required, must be > 0.
+        orientation, AND within which position_stiffness applies zero
+        restoring force (a true dead zone -- the attachment point is free
+        to move anywhere in here). Beyond it, the orientation-correcting
+        torque components that would move the point further are ramped
+        toward zero -- see compute_torques. Required, must be > 0.
+    position_stiffness : float, optional
+        Translational stiffness (N/m) of a restoring pull back toward
+        position_center, active only beyond position_radius (zero inside
+        it -- see position_radius). Default 0: no restoring pull at all,
+        which reproduces this spring's original behavior (position_radius/
+        position_center only throttle orientation-authority, exactly as
+        before this parameter existed) -- that default assumed a paired
+        VirtualSpring was already anchoring the arm; a pose spring used
+        with no such paired spring needs a nonzero value here or the
+        attachment point has nothing at all pulling it back once it drifts
+        past position_radius (confirmed live 2026-09-03: it can wander off
+        and settle in an arbitrary orientation-satisfying pose, e.g.
+        looking down at the target from above instead of up at it from
+        below). Must be ≥ 0.
     damping : float, optional
         Rotational viscous damping b (N·m·s/rad). Default 0. Must be ≥ 0.
     enabled : bool, optional
@@ -714,6 +730,7 @@ class PoseSpring:
         stiffness: float,
         position_center: np.ndarray,
         position_radius: float,
+        position_stiffness: float = 0.0,
         damping: float = 0.0,
         enabled: bool = True,
         name: str = "",
@@ -725,6 +742,7 @@ class PoseSpring:
         self.stiffness = stiffness
         self.position_center = np.asarray(position_center, dtype=float)
         self.position_radius = float(position_radius)
+        self.position_stiffness = float(position_stiffness)
         self.damping = damping
         self.enabled = enabled
         self.name = name or f"pose_spring_{link_name}"
@@ -755,6 +773,8 @@ class PoseSpring:
             )
         if self.position_radius <= 0:
             raise ValueError(f"position_radius must be > 0, got {self.position_radius}")
+        if self.position_stiffness < 0:
+            raise ValueError(f"position_stiffness must be ≥ 0, got {self.position_stiffness}")
         if stiffness < 0:
             raise ValueError(f"stiffness must be ≥ 0, got {stiffness}")
         if damping < 0:
@@ -864,6 +884,21 @@ class PoseSpring:
         )
         torques = tau_safe + risky_scale * tau_risky
 
+        # 7b. position_stiffness: an explicit restoring pull back toward
+        # position_center, zero inside position_radius (true dead zone)
+        # and Hooke's-law beyond it -- same "excess distance past a
+        # radius, along the unit vector back to center" shape
+        # VirtualSpring.compute_torques uses beyond its own inner_radius
+        # (deadband_active=False branch). Needed because tau_risky above
+        # only ever *throttles* orientation torque -- it never pulls the
+        # point back on its own -- so with no paired VirtualSpring
+        # anchoring the arm (confirmed live 2026-09-03), nothing else in
+        # this spring restores position at all once past position_radius.
+        if self.position_stiffness > 0.0 and dist_from_center > self.position_radius:
+            direction_to_center = (self.position_center - p_world) / dist_from_center
+            f_position = self.position_stiffness * (dist_from_center - self.position_radius) * direction_to_center
+            torques = torques + Jv.T @ f_position
+
         # 8. Cache state
         self._last_state = PoseSpringState(
             world_face_normal=n_current,
@@ -899,6 +934,7 @@ class PoseSpring:
             f"b={self.damping} N·m·s/rad, "
             f"position_center={self.position_center.tolist()}, "
             f"position_radius={self.position_radius} m, "
+            f"position_stiffness={self.position_stiffness} N/m, "
             f"enabled={self.enabled})"
         )
 

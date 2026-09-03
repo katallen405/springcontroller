@@ -236,6 +236,55 @@ def test_risky_component_ramps_down_beyond_radius():
     assert np.linalg.norm(tau_safe) > 1e-6  # sanity: the safe part is real, not vacuous
 
 
+def test_position_stiffness_defaults_to_zero():
+    spring = make_spring()
+    assert spring.position_stiffness == 0.0
+
+
+def test_position_stiffness_pulls_back_toward_center_beyond_radius():
+    """With stiffness=0 (isolates the orientation moment away -- m_spring
+    is exactly zero regardless of target/angle), a nonzero
+    position_stiffness must produce a real Hooke's-law pull back toward
+    position_center once the attachment point is outside position_radius:
+    zero orientation stiffness/damping means torques would otherwise be
+    all zero, so any nonzero result here can only be the new restoring
+    force."""
+    arm = StubArm(n_dof=3)  # Jv == identity here
+    spring = make_spring(
+        stiffness=0.0,
+        position_center=np.array([2.0, 0.0, 0.0]),
+        position_radius=0.5,
+        position_stiffness=4.0,
+    )
+    torques = spring.compute_torques(arm)
+
+    dist_from_center = 2.0
+    direction_to_center = np.array([1.0, 0.0, 0.0])
+    f_position = 4.0 * (dist_from_center - 0.5) * direction_to_center
+    np.testing.assert_allclose(torques, f_position, rtol=1e-6)
+    assert np.linalg.norm(torques) > 1e-6  # sanity: not trivially zero
+
+
+def test_position_stiffness_zero_within_radius_dead_zone():
+    """Inside position_radius, position_stiffness must contribute nothing
+    at all -- a true dead zone, the participant is free to move anywhere
+    in here, matching the "dead zone" this parameter is meant to bound."""
+    arm = StubArm(n_dof=3)
+    spring = make_spring(
+        stiffness=0.0,
+        position_center=np.array([0.05, 0.0, 0.0]),
+        position_radius=0.5,
+        position_stiffness=4.0,
+    )
+    torques = spring.compute_torques(arm)
+    np.testing.assert_allclose(torques, 0.0, atol=1e-10)
+
+
+def test_invalid_position_stiffness_negative_raises():
+    with pytest.raises(ValueError):
+        make_spring(position_stiffness=-1.0)
+
+
 def test_spring_collection_sums_torques():
     arm = StubArm()
     col = SpringCollection()

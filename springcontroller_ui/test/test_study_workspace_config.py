@@ -184,6 +184,7 @@ def test_write_condition_yaml_pose_only_has_no_tip_spring(tmp_path):
         "damping": 0.2,
         "position_center": [center["x"], center["y"], center["z"]],
         "position_radius": condition_params["outer_radius"],
+        "position_stiffness": 10.0,
     }
 
     write_condition_yaml(
@@ -201,8 +202,11 @@ def test_write_condition_yaml_pose_only_has_no_tip_spring(tmp_path):
     assert params["pose_spring_names"] == ["face_participant"]
     assert params["pose_springs"]["face_participant"]["target"] == [0.5, 0.0, pytest.approx(71.0 * CM_TO_M)]
     # ...bounded by the same center/radius the position condition's own
-    # tip spring would use, just with no actual spring pulling toward it.
+    # tip spring would use, just with no actual spring pulling toward it --
+    # position_stiffness is what actually pulls the arm back once it
+    # drifts past position_radius (see PoseSpring in virtual_spring.py).
     assert params["pose_springs"]["face_participant"]["position_center"] == [center["x"], center["y"], pytest.approx(center["z"])]
+    assert params["pose_springs"]["face_participant"]["position_stiffness"] == 10.0
     assert params["pose_springs"]["face_participant"]["position_radius"] == pytest.approx(condition_params["outer_radius"])
 
 

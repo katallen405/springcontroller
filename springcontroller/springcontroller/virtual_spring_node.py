@@ -66,14 +66,19 @@ Publications
     Every active spring's current force/moment, throttled to
     spring_force_publish_interval_sec (default 0.1s -- independent of the
     control loop's own rate, see _publish_spring_forces()): a SpringForce[]
-    of {name, kind: "force"|"moment"|"torque", magnitude, force, distance}.
-    A VirtualSpring reports a real 3D "force" (N); a PoseSpring
-    reports a 3D "moment" (N*m); a JointSpring reports a scalar "torque"
-    about its own joint axis with force always [0, 0, 0]. distance is the
-    spring's current error from its target -- meters for a VirtualSpring,
-    radians (angular error) for a PoseSpring/JointSpring. A spring
-    not currently contributing (disabled, or hasn't computed a state yet)
-    is omitted rather than reported as zero.
+    of {name, kind: "force"|"moment"|"torque", magnitude, force, distance,
+    angle_offset_rad}. A VirtualSpring reports a real 3D "force" (N); a
+    PoseSpring reports a 3D "moment" (N*m); a JointSpring reports a scalar
+    "torque" about its own joint axis with force always [0, 0, 0]. distance
+    is a linear distance in meters -- for a VirtualSpring, the current
+    error from target_world_point; for a PoseSpring, the attachment
+    point's distance from position_center; for a JointSpring, still
+    radians (angular error), since a single joint has no linear distance.
+    angle_offset_rad is only meaningful for a PoseSpring -- the angular
+    error (rad) between its current face normal and the desired look-at
+    direction -- and is 0 for every other kind. A spring not currently
+    contributing (disabled, or hasn't computed a state yet) is omitted
+    rather than reported as zero.
 
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
@@ -1301,6 +1306,12 @@ class VirtualSpringNode(Node):
             f"{prefix}.position_center", [float("nan"), float("nan"), float("nan")]
         )
         self._declare_or_ignore(f"{prefix}.position_radius", float("nan"))
+        # position_stiffness is optional (default 0.0 -- no restoring pull,
+        # matching this spring's original behavior). See PoseSpring's
+        # docstring: needed whenever no paired VirtualSpring is anchoring
+        # the arm, or the attachment point has nothing pulling it back
+        # once it drifts past position_radius.
+        self._declare_or_ignore(f"{prefix}.position_stiffness", 0.0)
 
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
@@ -1336,6 +1347,7 @@ class VirtualSpringNode(Node):
             stiffness=float(_get("stiffness", 0.0)),
             position_center=position_center,
             position_radius=position_radius,
+            position_stiffness=float(_get("position_stiffness", 0.0)),
             damping=float(_get("damping", 0.0)),
             name=name,
         )
@@ -2736,10 +2748,13 @@ class VirtualSpringNode(Node):
         vector -- force is [0, 0, 0] rather than inventing a 3D vector for
         something that doesn't have one).
 
-        distance reuses each state's existing duck-typed `.extension`
-        field (see SpringState/JointSpringState/PoseSpringState in
-        virtual_spring.py): meters for a VirtualSpring, radians (angular
-        error) for a PoseSpring/JointSpring.
+        distance is a linear distance in meters: each state's duck-typed
+        `.extension` field (see SpringState/JointSpringState in
+        virtual_spring.py) for a VirtualSpring/JointSpring, but
+        `.position_distance` (attachment point to position_center) for a
+        PoseSpring -- `.extension` there is an angle (rad), not a
+        distance, and goes in angle_offset_rad instead (0 for every other
+        kind, which has no such angle).
         """
         entries = []
         for spring in self._springs:
@@ -2760,10 +2775,16 @@ class VirtualSpringNode(Node):
             else:
                 continue
             magnitude = float(np.linalg.norm(vec))
+            if isinstance(spring, PoseSpring):
+                distance = float(state.position_distance)
+                angle_offset_rad = float(state.extension)
+            else:
+                distance = float(state.extension)
+                angle_offset_rad = 0.0
             entries.append(SpringForce(
                 name=spring.name, kind=kind,
                 magnitude=magnitude, force=vec.tolist(),
-                distance=float(state.extension),
+                distance=distance, angle_offset_rad=angle_offset_rad,
             ))
         msg = SpringForces()
         msg.springs = entries
