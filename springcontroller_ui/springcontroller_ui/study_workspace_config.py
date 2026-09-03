@@ -163,8 +163,8 @@ def _atomic_write_yaml(path: str, data: dict) -> None:
 
 def write_condition_yaml(
     path: str,
-    spring_name: str,
-    spring_params: dict,
+    spring_name: str = "",
+    spring_params: dict | None = None,
     include_pose: bool = False,
     pose_name: str = "",
     pose_params: dict | None = None,
@@ -174,16 +174,22 @@ def write_condition_yaml(
     virtual_spring_node._load_springs_from_params expects (see
     gen3_springs.yaml / gen3_pose_spring_test.yaml). `spring_params`
     keys: link_name, local_point, target, stiffness, damping, rest_length,
-    inner_radius, outer_radius. `pose_params` keys (condition 2
+    inner_radius, outer_radius. `pose_params` keys (pose condition
     only): link_name, local_point, local_face_normal, target, stiffness,
     damping, position_center, position_radius -- the last two
     (EXPERIMENTAL, see PoseSpring in virtual_spring.py) are required by
     the loader just like the others, no safe default.
+
+    spring_name/spring_params are optional -- the pose condition writes no
+    base spring at all, since position_center/position_radius (inside
+    pose_params) already define where a tip spring would have gone; the
+    pose spring's own dead zone stands in for a real accompanying spring,
+    not a supplement to one.
     """
-    params: dict = {
-        "spring_names": [spring_name],
-        "springs": {spring_name: dict(spring_params)},
-    }
+    params: dict = {}
+    if spring_name:
+        params["spring_names"] = [spring_name]
+        params["springs"] = {spring_name: dict(spring_params)}
     if include_pose:
         params["pose_spring_names"] = [pose_name]
         params["pose_springs"] = {pose_name: dict(pose_params)}

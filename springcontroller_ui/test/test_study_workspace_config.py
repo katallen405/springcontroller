@@ -171,7 +171,7 @@ def test_write_condition_yaml_matches_loader_schema(tmp_path):
     assert "pose_spring_names" not in params
 
 
-def test_write_condition_yaml_with_pose_adds_gaze_spring(tmp_path):
+def test_write_condition_yaml_pose_only_has_no_tip_spring(tmp_path):
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
     path = str(tmp_path / "pose.yaml")
@@ -187,20 +187,22 @@ def test_write_condition_yaml_with_pose_adds_gaze_spring(tmp_path):
     }
 
     write_condition_yaml(
-        path, "tip_spring", _spring_params(center, condition_params),
-        include_pose=True, pose_name="face_participant",
+        path, include_pose=True, pose_name="face_participant",
         pose_params=pose_params,
     )
 
     with open(path) as f:
         data = yaml.safe_load(f)
     params = data["/**"]["ros__parameters"]
-    # Condition 2 keeps the identical dead-zone sphere from condition 1...
-    assert params["springs"]["tip_spring"]["inner_radius"] == pytest.approx(condition_params["inner_radius"])
-    # ...and adds the gaze spring on top.
+    # No base spring at all -- position_center/position_radius below stand
+    # in for where a tip spring would have gone, not a supplement to one.
+    assert "springs" not in params
+    assert "spring_names" not in params
     assert params["pose_spring_names"] == ["face_participant"]
     assert params["pose_springs"]["face_participant"]["target"] == [0.5, 0.0, pytest.approx(71.0 * CM_TO_M)]
-    # ...coupled to the same position center/radius as tip_spring's own.
+    # ...bounded by the same center/radius the position condition's own
+    # tip spring would use, just with no actual spring pulling toward it.
+    assert params["pose_springs"]["face_participant"]["position_center"] == [center["x"], center["y"], pytest.approx(center["z"])]
     assert params["pose_springs"]["face_participant"]["position_radius"] == pytest.approx(condition_params["outer_radius"])
 
 
