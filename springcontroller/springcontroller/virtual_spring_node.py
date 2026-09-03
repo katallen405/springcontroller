@@ -2598,11 +2598,20 @@ class VirtualSpringNode(Node):
     ) -> UpdateSpring.Response:
         """
         Adjust an existing spring's stiffness/damping (and, for a position
-        spring, rest_length/inner_radius/outer_radius) in place -- unlike
-        add_spring, which refuses if the name already exists, so this is
-        the only way to change these without remove-then-re-add (which
-        would also momentarily drop the spring's force entirely). Doesn't
-        change the spring's target/attachment/geometry, just these scalars.
+        spring, rest_length/inner_radius/outer_radius; for a pose spring,
+        position_center/position_radius/position_stiffness) in place --
+        unlike add_spring, which refuses if the name already exists, so
+        this is the only way to change these without remove-then-re-add
+        (which would also momentarily drop the spring's force entirely).
+
+        link_name/local_point/target/local_face_normal (position/pose
+        springs only -- ignored for a joint spring) ARE geometry, unlike
+        every other field here, but since link_name/local_attachment_point/
+        target_world_point/local_face_normal are all plain mutable
+        attributes on VirtualSpring/PoseSpring (not read-only), this is
+        still a direct in-place mutation of the already-live spring
+        object -- not a remove-then-re-add, so no momentary force drop
+        here either.
 
         rest_length/inner_radius/outer_radius are VirtualSpring-only
         (JointSpring/PoseSpring have no such attributes -- see
@@ -2610,7 +2619,8 @@ class VirtualSpringNode(Node):
         rejected, same "fields that don't apply are ignored, not an error"
         convention as AddSpring's request carrying the same three fields
         for every spring type. position_center/position_radius/
-        position_stiffness are PoseSpring-only, same convention.
+        position_stiffness/local_face_normal are PoseSpring-only, same
+        convention.
         """
         name = request.name.strip()
         spring = next((s for s in self._springs if s.name == name), None)
@@ -2652,6 +2662,23 @@ class VirtualSpringNode(Node):
             response.message = f"position_stiffness must be >= 0, got {request.position_stiffness}."
             return response
 
+        if is_virtual or is_pose:
+            try:
+                self._arm.validate_link_name(request.link_name)
+            except ValueError as e:
+                response.success = False
+                response.message = str(e)
+                return response
+        new_face_normal = None
+        if is_pose:
+            new_face_normal = np.array(request.local_face_normal, dtype=float)
+            face_normal_norm = np.linalg.norm(new_face_normal)
+            if face_normal_norm < 1e-9:
+                response.success = False
+                response.message = "local_face_normal must be nonzero."
+                return response
+            new_face_normal = new_face_normal / face_normal_norm
+
         spring.stiffness = request.stiffness
         spring.damping = request.damping
         if is_virtual:
@@ -2662,6 +2689,11 @@ class VirtualSpringNode(Node):
             spring.position_center = np.array(request.position_center)
             spring.position_radius = request.position_radius
             spring.position_stiffness = request.position_stiffness
+            spring.local_face_normal = new_face_normal
+        if is_virtual or is_pose:
+            spring.link_name = request.link_name
+            spring.local_attachment_point = np.array(request.local_point)
+            spring.target_world_point = np.array(request.target)
 
         # Mirror into the parameter namespace, same as add_spring -- keeps
         # it in sync with the live spring instead of going stale. Prefix
@@ -2693,6 +2725,13 @@ class VirtualSpringNode(Node):
                 (f"{prefix}.position_center", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
                 (f"{prefix}.position_radius", rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
                 (f"{prefix}.position_stiffness", rclpy.parameter.Parameter.Type.DOUBLE,    request.position_stiffness),
+                (f"{prefix}.local_face_normal", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, spring.local_face_normal.tolist()),
+            ]
+        if is_virtual or is_pose:
+            params_to_mirror += [
+                (f"{prefix}.link_name",   rclpy.parameter.Parameter.Type.STRING,       request.link_name),
+                (f"{prefix}.local_point", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
+                (f"{prefix}.target",      rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
             ]
         for key, ptype, value in params_to_mirror:
             self._declare_or_ignore(key, value)
@@ -2705,16 +2744,21 @@ class VirtualSpringNode(Node):
             f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}"
             + (
                 f", rest_length={request.rest_length}, inner_radius={request.inner_radius}, "
-                f"outer_radius={request.outer_radius}."
+                f"outer_radius={request.outer_radius}"
                 if is_virtual else ""
             )
             + (
                 f", position_center={list(request.position_center)}, "
                 f"position_radius={request.position_radius}, "
-                f"position_stiffness={request.position_stiffness}."
+                f"position_stiffness={request.position_stiffness}, "
+                f"local_face_normal={spring.local_face_normal.tolist()}"
                 if is_pose else ""
             )
-            + ("." if not (is_virtual or is_pose) else "")
+            + (
+                f", link_name={request.link_name}, local_point={list(request.local_point)}, "
+                f"target={list(request.target)}."
+                if (is_virtual or is_pose) else "."
+            )
         )
         self.get_logger().info(response.message)
         self._publish_springs_updated()

@@ -6,6 +6,13 @@
 # position_center/position_radius/position_stiffness only apply to a pose
 # spring (PoseSpring) -- ignored (not an error) when updating a position or
 # joint spring, same convention.
+#
+# link_name/local_point/target apply to a position or pose spring (ignored
+# for a joint spring, which anchors to a joint, not a link). local_face_normal
+# applies to a pose spring only. Unlike the scalar fields above, these
+# change the spring's actual geometry -- applied as a direct in-place
+# mutation on the already-live spring object (no Remove-then-re-Add, no
+# momentary force drop).
 string name
 float64 stiffness
 float64 damping
@@ -15,6 +22,10 @@ float64 outer_radius
 float64[3] position_center
 float64 position_radius
 float64 position_stiffness
+string link_name
+float64[3] local_point
+float64[3] target
+float64[3] local_face_normal
 ---
 bool success
 string message
