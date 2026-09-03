@@ -67,18 +67,24 @@ Publications
     spring_force_publish_interval_sec (default 0.1s -- independent of the
     control loop's own rate, see _publish_spring_forces()): a SpringForce[]
     of {name, kind: "force"|"moment"|"torque", magnitude, force, distance,
-    angle_offset_rad}. A VirtualSpring reports a real 3D "force" (N); a
-    PoseSpring reports a 3D "moment" (N*m); a JointSpring reports a scalar
-    "torque" about its own joint axis with force always [0, 0, 0]. distance
-    is a linear distance in meters -- for a VirtualSpring, the current
-    error from target_world_point; for a PoseSpring, the attachment
-    point's distance from position_center; for a JointSpring, still
-    radians (angular error), since a single joint has no linear distance.
-    angle_offset_rad is only meaningful for a PoseSpring -- the angular
-    error (rad) between its current face normal and the desired look-at
-    direction -- and is 0 for every other kind. A spring not currently
-    contributing (disabled, or hasn't computed a state yet) is omitted
-    rather than reported as zero.
+    angle_offset_rad, position_force_magnitude, position_force}. A
+    VirtualSpring reports a real 3D "force" (N); a PoseSpring reports a 3D
+    "moment" (N*m); a JointSpring reports a scalar "torque" about its own
+    joint axis with force always [0, 0, 0]. distance is a linear distance
+    in meters -- for a VirtualSpring, the current error from
+    target_world_point; for a PoseSpring, the attachment point's distance
+    from position_center; for a JointSpring, still radians (angular
+    error), since a single joint has no linear distance. angle_offset_rad
+    is only meaningful for a PoseSpring -- the angular error (rad) between
+    its current face normal and the desired look-at direction -- and is 0
+    for every other kind. position_force_magnitude/position_force are
+    also PoseSpring-only: the position_stiffness restoring force (N,
+    magnitude and 3D vector) pulling the attachment point back toward
+    position_center once outside position_radius -- distinct from
+    force/magnitude above (the rotational moment) -- both 0/[0,0,0] for
+    every other kind, and for a PoseSpring with no restoring force active
+    right now. A spring not currently contributing (disabled, or hasn't
+    computed a state yet) is omitted rather than reported as zero.
 
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
@@ -2808,6 +2814,13 @@ class VirtualSpringNode(Node):
         PoseSpring -- `.extension` there is an angle (rad), not a
         distance, and goes in angle_offset_rad instead (0 for every other
         kind, which has no such angle).
+
+        position_force_magnitude/position_force are only meaningful for a
+        PoseSpring: the position_stiffness restoring force (N, distinct
+        from force/magnitude above, which are the rotational moment) --
+        see PoseSpringState.position_force. Zero for every other kind, and
+        for a PoseSpring with no restoring force active right now
+        (position_stiffness=0, or still inside position_radius).
         """
         entries = []
         for spring in self._springs:
@@ -2831,13 +2844,19 @@ class VirtualSpringNode(Node):
             if isinstance(spring, PoseSpring):
                 distance = float(state.position_distance)
                 angle_offset_rad = float(state.extension)
+                position_force = state.position_force
+                position_force_magnitude = float(np.linalg.norm(position_force))
             else:
                 distance = float(state.extension)
                 angle_offset_rad = 0.0
+                position_force = np.zeros(3)
+                position_force_magnitude = 0.0
             entries.append(SpringForce(
                 name=spring.name, kind=kind,
                 magnitude=magnitude, force=vec.tolist(),
                 distance=distance, angle_offset_rad=angle_offset_rad,
+                position_force_magnitude=position_force_magnitude,
+                position_force=position_force.tolist(),
             ))
         msg = SpringForces()
         msg.springs = entries
