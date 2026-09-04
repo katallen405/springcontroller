@@ -214,12 +214,11 @@ should already be the case if it's set in your shell profile, e.g.
 `~/.bashrc` -- see `gen3_spring.launch.py`'s copy of this same setting for
 why). `gen3_torque_node` is normally started with a plain `ros2 run`, not
 through a launch file, so nothing else can set this for you here.
-Confirmed live 2026-08-19: without it, a physical E-STOP kills the arm's
-dedicated Ethernet link, and Cyclone DDS -- not restricted off that
-interface -- hangs *every* ROS2 node on the machine trying to use it for
-its own discovery/shutdown traffic, needing `SIGKILL` across the board
-(even nodes with nothing to do with the robot, like plain
-`ros2 bag record`).
+Without it, a physical E-STOP kills the arm's dedicated Ethernet link,
+and Cyclone DDS -- not restricted off that interface -- hangs *every*
+ROS2 node on the machine trying to use it for its own
+discovery/shutdown traffic, needing `SIGKILL` across the board (even
+nodes with nothing to do with the robot, like plain `ros2 bag record`).
 
 ```bash
 # Terminal 1 — start the Kinova torque interface. The -r remap is required:
@@ -458,9 +457,9 @@ launch`, it's set to the same `urdf_path` as `virtual_spring_node`, and its
 argument `virtual_spring_node` uses on Gen3 (default
 `/kinova/joint_states_lowlevel` -- plain `/joint_states` is already right
 for UR3e, which has no such argument). Both remaps come from the one
-argument specifically so they can't drift out of sync with each other again
--- they silently did for over two weeks (2026-08-03 to 2026-08-19), which
-looked exactly like "armviz never shows a target" with no error anywhere.
+argument specifically so they can't drift out of sync with each other --
+two hardcoded copies drifting apart looks exactly like "armviz never
+shows a target" with no error anywhere.
 
 `armviz`'s own log output is throttled: it prints `no target yet` once per
 spring while unresolved, not on every ~20Hz redraw tick, and its

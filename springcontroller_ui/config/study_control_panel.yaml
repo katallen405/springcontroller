@@ -43,11 +43,11 @@ study_control_panel_node:
     reset_spring_local_point: [0.0, 0.0, 0.1]
     study_start_preset_path: "~/springcontroller_ui_study_start.yaml"
     # Participant midline's pre-set seat position, world-frame meters (see
-    # orchestration_node.py's declare_parameter comment). Measured live
-    # 2026-08-20: 45cm in from the table's -x edge, and a further 30cm out
-    # past the table's -y edge -- the participant sits off the end of the
-    # table, not under it (see gen3_collision_scene.yaml's table pose).
-    # Rounded to the nearest cm since nothing finer matters here.
+    # orchestration_node.py's declare_parameter comment). 45cm in from the
+    # table's -x edge, and a further 30cm out past the table's -y edge --
+    # the participant sits off the end of the table, not under it (see
+    # gen3_collision_scene.yaml's table pose). Rounded to the nearest cm
+    # since nothing finer matters here.
     workspace_seat_x: 0.34
     workspace_seat_y: -0.70
     workspace_study_data_dir: "~/gen3_study_data"
@@ -57,7 +57,7 @@ study_control_panel_node:
     workspace_pose_spring_name: face_participant
     # The 'block' link preset's held face points along its local +y, not
     # +z -- see LINK_PRESETS in web/index.html (block: end_effector_link,
-    # local_point [0,0,0.15]). Confirmed live 2026-09-03.
+    # local_point [0,0,0.15]).
     workspace_pose_local_face_normal: [0.0, 1.0, 0.0]
     workspace_pose_stiffness: 5.0
     workspace_pose_damping: 0.2

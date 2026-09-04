@@ -221,13 +221,13 @@ class PoseSpringState:
         *wants* to apply, not scaled by risky_scale.
     position_distance : float
         Current distance (m) from the attachment point to position_center.
-        EXPERIMENTAL (2026-09-02): backs the position-radius gate on
-        torques -- see compute_torques.
+        EXPERIMENTAL: backs the position-radius gate on torques -- see
+        compute_torques.
     position_force : np.ndarray, shape (3,)
         Restoring force (N) in world coordinates from position_stiffness,
         before the Jv.T projection into joint torques -- zero inside
         position_radius (true dead zone) or when position_stiffness is 0.
-        EXPERIMENTAL (2026-09-03) -- see compute_torques step 7b. Its
+        EXPERIMENTAL -- see compute_torques step 7b. Its
         magnitude and direction (position_force / norm(position_force))
         are what SpringForce.msg's position_force_magnitude/position_force
         report on ~/spring_forces for this spring.
@@ -381,22 +381,18 @@ class VirtualSpring:
         p_local_h = np.append(self.local_attachment_point, 1.0)  # homogeneous
         p_world = (T @ p_local_h)[:3]                       # (3,)
 
-        #print(f"{self.name} attachment point in world frame: {p_world}")  # debug
-
         # 2. Displacement and extension
         displacement = self.target_world_point - p_world    # points toward target
         extension = np.linalg.norm(displacement)
-        #print(f"{self.name} displacement: {displacement}, extension: {extension}")  # debug
 
         # 3. Spring force (Hooke's law with optional rest length)
         # Zero-extension (target == current position, e.g. a freshly
-        # resolved auto-target) divides 0/0 -> NaN; only happens to be
-        # harmless today because inner_radius defaults to 0.0, so the
-        # extension <= inner_radius branch below hard-codes f_spring to
-        # zero without ever using `direction`. Guard explicitly instead of
-        # relying on that -- any nonzero inner_radius, or floating-point
-        # noise landing extension just above zero, would let a NaN
-        # direction reach f_spring and then the published torque.
+        # resolved auto-target) divides 0/0 -> NaN. Guarded explicitly
+        # rather than relying on inner_radius defaulting to 0.0 (which
+        # would hard-code f_spring to zero below anyway) -- a nonzero
+        # inner_radius, or floating-point noise landing extension just
+        # above zero, would otherwise let a NaN direction reach f_spring
+        # and then the published torque.
         direction = displacement / extension if extension > 1e-9 else np.zeros(3)
         deadband_active = self.outer_radius > self.inner_radius
         if extension <= self.inner_radius:
@@ -414,22 +410,19 @@ class VirtualSpring:
             # Anchoring at rest_length instead let a mismatched rest_length
             # (e.g. 0 instead of inner_radius) produce a hard force
             # discontinuity right at outer_radius: with extension noise
-            # straddling that exact boundary, the commanded force flickered
-            # between stiffness*(outer_radius-inner_radius) and
-            # stiffness*extension every cycle (tip_spring alternating
-            # ~1.27N/~6.35N, live 2026-09-02).
+            # straddling that exact boundary, the commanded force would
+            # flicker between stiffness*(outer_radius-inner_radius) and
+            # stiffness*extension every cycle.
             stretch = extension - self.inner_radius
             f_spring = self.stiffness * stretch * direction
         else:
             stretch = extension - self.rest_length          # can be negative
             f_spring = self.stiffness * stretch * direction
-        #print(f"{self.name} spring force: {f_spring}")  # debug
 
         # 4. Damping force (opposes velocity of the attachment point)
         f_damp = np.zeros(3)
         J = arm.get_jacobian(self.link_name, self.local_attachment_point)
         Jv = J[:3, :]                                    # translational part
-        #print("jacobian", Jv)
 
         if self.damping > 0.0:
             p_dot = Jv @ arm.joint_velocities # world-space velocity
@@ -442,7 +435,6 @@ class VirtualSpring:
             pass
         torques = Jv.T @ f_total                            # (n_dof,)
 
-        #print(f"{self.name} joint torques: {torques}")  # debug
         # 7. Cache state
         self._last_state = SpringState(
             world_attachment_point=p_world,
@@ -451,7 +443,6 @@ class VirtualSpring:
             force_world=f_total,
             torques=torques,
         )
-        #print(f"{self.name} state cached: {self._last_state}")  # debug
         return torques
 
     # ------------------------------------------------------------------
@@ -643,28 +634,26 @@ class PoseSpring:
     (a "face normal") with the direction from that link's attachment point
     to a static target point in world space -- a "look at" constraint --
     while also bounding how far the attachment point itself is allowed to
-    drift while doing so. Position AND orientation, not orientation alone
-    (renamed from OrientationSpring, 2026-09-02 -- see below).
+    drift while doing so. Position AND orientation, not orientation alone.
 
     Where VirtualSpring pulls a point toward a target (and is structurally
     blind to any rotation about an axis through that point), this spring's
     moment is still built purely from the rotational Jacobian (Jw) -- the
-    same "look at" math as before, unchanged. But unlike the old
-    OrientationSpring, Jv (the point's translational Jacobian) IS now used,
-    to split the resulting joint torque into a position-safe part (can
-    never move the attachment point, applied at full strength always) and
-    the remainder (which can move it, applied at full strength within
-    position_radius of position_center and ramped down beyond it -- see
-    compute_torques). EXPERIMENTAL as of 2026-09-02: a live incident showed
-    that with no position bound at all, a modest orientation moment could
-    still pull the attachment point well outside a paired position spring's
-    own workspace (e.g. ~0.17m outside a 0.12m outer_radius), since on a
-    serial chain most joints affect both position and orientation
-    simultaneously -- "zero direct Cartesian force" (still true of the
-    moment itself) doesn't mean "the point can't move" once real torque is
-    applied. An earlier, stricter design (project ALL of the risky
-    component out unconditionally, everywhere) was tried and rejected as
-    too weak in practice -- see compute_torques's own comment for why.
+    same "look at" math either way. But Jv (the point's translational
+    Jacobian) is also used, to split the resulting joint torque into a
+    position-safe part (can never move the attachment point, applied at
+    full strength always) and the remainder (which can move it, applied
+    at full strength within position_radius of position_center and
+    ramped down beyond it -- see compute_torques). EXPERIMENTAL: without
+    a position bound, a modest orientation moment can still pull the
+    attachment point well outside a paired position spring's own
+    workspace, since on a serial chain most joints affect both position
+    and orientation simultaneously -- "zero direct Cartesian force"
+    (still true of the moment itself) doesn't mean "the point can't move"
+    once real torque is applied. An earlier, stricter design (project ALL
+    of the risky component out unconditionally, everywhere) was tried and
+    rejected as too weak in practice -- see compute_torques's own comment
+    for why.
 
     The desired heading is recomputed every cycle from the *current*
     attachment position, so as the arm/block moves the spring keeps
@@ -711,17 +700,15 @@ class PoseSpring:
     position_stiffness : float, optional
         Translational stiffness (N/m) of a restoring pull back toward
         position_center, active only beyond position_radius (zero inside
-        it -- see position_radius). Default 0: no restoring pull at all,
-        which reproduces this spring's original behavior (position_radius/
-        position_center only throttle orientation-authority, exactly as
-        before this parameter existed) -- that default assumed a paired
-        VirtualSpring was already anchoring the arm; a pose spring used
-        with no such paired spring needs a nonzero value here or the
-        attachment point has nothing at all pulling it back once it drifts
-        past position_radius (confirmed live 2026-09-03: it can wander off
-        and settle in an arbitrary orientation-satisfying pose, e.g.
-        looking down at the target from above instead of up at it from
-        below). Must be ≥ 0.
+        it -- see position_radius). Default 0: no restoring pull at all
+        (position_radius/position_center only throttle orientation-
+        authority) -- that default assumes a paired VirtualSpring is
+        already anchoring the arm; a pose spring used with no such paired
+        spring needs a nonzero value here or the attachment point has
+        nothing at all pulling it back once it drifts past
+        position_radius, and can settle in an arbitrary
+        orientation-satisfying pose (e.g. looking down at the target from
+        above instead of up at it from below). Must be ≥ 0.
     damping : float, optional
         Rotational viscous damping b (N·m·s/rad). Default 0. Must be ≥ 0.
     enabled : bool, optional
@@ -870,14 +857,12 @@ class PoseSpring:
         # smoothly decreasing beyond it (min(1, radius/dist), continuous
         # at the boundary -- no separate margin parameter, no
         # discontinuity to chatter against as the point crosses back and
-        # forth). EXPERIMENTAL (2026-09-02): this replaces an earlier,
-        # rejected design that projected out tau_risky unconditionally
-        # everywhere -- confirmed live that this made the spring far too
-        # weak in general, since on a serial chain most joint-torque
+        # forth). EXPERIMENTAL: this replaces an earlier, rejected design
+        # that projected out tau_risky unconditionally everywhere -- far
+        # too weak in general, since on a serial chain most joint-torque
         # directions that correct orientation also move the point, and a
         # real arm's null space can be small or near-empty in many
-        # configurations (including the one that caused the original
-        # incident). This version gives full authority near
+        # configurations. This version gives full authority near
         # position_center (where a paired position spring is presumably
         # already anchoring the arm) and only backs off once it would
         # pull the point out of that zone.
@@ -901,8 +886,8 @@ class PoseSpring:
         # (deadband_active=False branch). Needed because tau_risky above
         # only ever *throttles* orientation torque -- it never pulls the
         # point back on its own -- so with no paired VirtualSpring
-        # anchoring the arm (confirmed live 2026-09-03), nothing else in
-        # this spring restores position at all once past position_radius.
+        # anchoring the arm, nothing else in this spring restores
+        # position at all once past position_radius.
         f_position = np.zeros(3)
         if self.position_stiffness > 0.0 and dist_from_center > self.position_radius:
             direction_to_center = (self.position_center - p_world) / dist_from_center

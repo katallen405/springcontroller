@@ -12,10 +12,8 @@ the real thing happens on a background thread this test doesn't run.
 _move_to_joint_angles only waits for confirmation a move *started*
 (any move_status update at all), not for it to finish -- a full move can
 take many seconds to tens of seconds, far longer than rosbridge's own
-service-call timeout tolerates (confirmed live 2026-08-19: this used to
-wait for "SUCCEEDED" and timed out through rosbridge even though the move
-itself completed fine). Actual completion is tracked by the UI's live
-move-status display instead.
+service-call timeout tolerates. Actual completion is tracked by the UI's
+live move-status display instead.
 """
 import time
 
