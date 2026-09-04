@@ -63,6 +63,7 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
 """
 
 import os
+import shutil
 from datetime import datetime
 
 import yaml
@@ -885,10 +886,16 @@ def generate_launch_description():
         condition_name = LaunchConfiguration("condition_name").perform(context) or config_condition_name
 
         if participant_id:
-            bag_dir = os.path.join(
-                os.path.expanduser("~/gen3_study_data"), participant_id
-            )
+            study_data_dir = os.path.expanduser("~/gen3_study_data")
+            bag_dir = os.path.join(study_data_dir, participant_id)
+            bag_dir_is_new = not os.path.isdir(bag_dir)
             os.makedirs(bag_dir, exist_ok=True)
+            if bag_dir_is_new:
+                interview_src = os.path.join(study_data_dir, "interview.txt")
+                if os.path.isfile(interview_src):
+                    shutil.copyfile(
+                        interview_src, os.path.join(bag_dir, "interview.txt")
+                    )
             output_name_args = []
             if condition_name:
                 # Timestamp suffix so a redo/aborted-run retry under the same

@@ -26,7 +26,7 @@
       tip_spring:
         link_name:    "end_effector_link"        # between gripper fingers
         local_point:  [0.0, 0.0, 0.1]       # attachment point in link-local frame (m)
-        target:       [0.4485, -0.1957, 0.1946] #position start study location
+        target:       [0.3183, -0.1890, 0.2098] #position start study location
         # remove target above to put a spring wherever the arm is on startup
         stiffness:    50.0                   # N/m  (start low for safety)
         damping:      5.0                    # N·s/m
