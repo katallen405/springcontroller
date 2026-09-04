@@ -1,67 +1,68 @@
 # posture_analysis
 
-Post-hoc posture extraction for the `gen3_study` HRI study: pulls the
-`/camera2/image_raw_throttled/compressed` video topic out of a rosbag2 (mcap)
-recording and estimates whether the participant is hunching forward or
-leaning to a side while working with the robot arm.
+Post-hoc posture extraction for the `gen3_study` HRI study: pulls video out
+of a rosbag2 (mcap) recording and estimates whether the participant is
+hunching forward or leaning to a side while working with the robot arm.
 
 This is separate from the live study code (`~/sandbox/src/springcontroller`)
 on purpose -- it only ever reads finished bags, never runs during a session.
 
-## Why this isn't a standard full-body pose pipeline
+## Why this uses both cameras, and for different things
 
-The camera is mounted overhead/behind the participant, looking down at the
-desk. Two consequences that shaped this tool:
+The rig has two cameras at opposite corners of the table, and they turned
+out to be good at very different things -- not mainly because of height, but
+because of where they're aimed:
 
-- **Upper body only.** The desk always hides the hips, legs, and feet.
-  MediaPipe's full-body Pose Landmarker doesn't know that -- it still reports
-  hip/knee/ankle landmarks with high confidence, hallucinating a plausible
-  lower body onto the desk/robot arm (see `sample_frame_annotated.jpg`: the
-  "hip" points land on the desk, nowhere near the person). This tool never
-  uses those landmarks.
-- **Face detection is unreliable from this angle.** MediaPipe's Face
-  Landmarker (used for head pitch/roll) only fired on ~2% of frames in
-  testing, including 0/5 on frames where a human can plainly see the
-  participant's face -- the detector is trained on roughly frontal/eye-level
-  faces and doesn't recognize one foreshortened this steeply from above.
-  Head-pose output is included as a bonus/spot-check signal, not a
-  continuous one.
+- `/camera` (across the table, **face camera**): even though it's mounted
+  higher, it sits far enough back that the downward angle to the
+  participant's face is shallow. Measured face-detection rate, conditioned
+  on the participant actually being present: **62%**. This script uses it
+  for `head_pitch_deg`/`head_roll_deg` via MediaPipe's Face Landmarker --
+  the **primary** continuous hunch/lean signal (pitch = looking/leaning
+  down, roll = head tilted toward a shoulder).
+- `/camera2` (overhead task view, **shoulder camera**): mounted close to,
+  almost directly above, the workspace -- great for watching hands/task, bad
+  for faces (13% face-detection rate under the same test; mostly shows the
+  crown of the head). This script only uses its shoulder landmarks, as a
+  **secondary cross-check**:
+    - `shoulder_line_deg` -- lateral-lean cross-check (tilt of the shoulder line)
+    - `shoulder_dist_px` -- forward-hunch cross-check (shoulder pixel spacing;
+      increases as the torso comes closer to/lower under this camera)
 
-Given that, the primary continuous signal comes from the shoulders (visible
-essentially any time the participant is at the desk):
+The two camera streams aren't synchronized, so each shoulder-camera frame is
+paired with the nearest-in-time face-camera result (within `--max-pair-gap`,
+default 0.2s); see `face_dt_sec` in the output CSV to check pairing quality.
 
-| Column                  | What it means                                                        |
-|--------------------------|-----------------------------------------------------------------------|
-| `shoulder_line_dev_deg`  | Lateral-lean proxy: tilt of the shoulder line vs. this recording's baseline |
-| `shoulder_dist_dev_px`   | Forward-hunch proxy: change in shoulder pixel spacing vs. baseline (under this overhead mount, leaning closer/lower makes the shoulders appear farther apart) |
-| `head_pitch_dev_deg`     | Sparse. + = head tipped down (looking/leaning down)                  |
-| `head_roll_dev_deg`      | Sparse. Head tilted toward a shoulder                                 |
+**Upper body only, always.** The desk permanently occludes the hips, legs,
+and feet in the shoulder camera's view. MediaPipe's full-body Pose Landmarker
+doesn't know that -- it still reports hip/knee/ankle landmarks with high
+confidence, hallucinating a plausible lower body onto the desk/robot arm
+(see `sample_frame_annotated.jpg`: the "hip" points land on the desk,
+nowhere near the person). This tool never uses those landmarks, from either
+camera.
 
-All deviations are relative to a per-recording baseline (median of the first
-few seconds after the participant is detected at the desk), because the
-camera's own mounting angle is fixed but unknown to the script -- absolute
-angles aren't physically meaningful on their own here. These are proxies for
-relative change within one recording, not calibrated biomechanical angles.
-Always check the annotated overlay video before trusting the numbers.
+All deviations (`*_dev_deg`, `*_dev_px`) are relative to a per-recording,
+per-signal baseline (median of the first few seconds after that signal is
+first detected), because each camera's own mounting angle/position is fixed
+but unknown to the script -- absolute values aren't physically meaningful on
+their own here. These are proxies for relative change within one recording,
+not calibrated biomechanical angles. Always check the annotated overlay
+video before trusting the numbers.
 
-**If you want real forward-flexion angles**, reposition the camera to the
-side, at roughly seated head/shoulder height, in a 3/4 or profile view
-(rather than overhead), and keep it level (not rolled). That should make
-face detection reliable enough for continuous head-pose tracking, and turns
-forward hunching into a angle change instead of a rough distance proxy.
-Worth adding as a second dedicated camera rather than replacing the current
-task-view one.
+**Camera placement is adjustable in Z only** (the rig can't move cameras in
+X/Y). The face camera has since been lowered closer to eye level to push its
+detection rate higher; the shoulder camera can't come down further --
+lowering it risks the robot arm hitting it.
 
-**Also found:** `/camera/image_raw_throttled/compressed` (the other camera)
-had 0 recorded messages in every bag checked so far -- only camera2 was
-actually being captured. This turned out to be a loose USB extension cable
-on that camera, not a launch-file bug (`gen3_spring.launch.py` was already
-wired correctly for both cameras) -- a fully unseated USB connector doesn't
-enumerate at all, so the node never sees a device. springcontroller's test
-procedure now checks both cameras' cabling before a recording, so new bags
-should have both feeds; if you hit a bag with 0 messages on either camera
-topic again, check `ls /dev/v4l/by-id/` and `journalctl -k` for that
-camera's serial before suspecting this code or the launch file.
+**Also found (now fixed):** `/camera` had 0 recorded messages in several
+early bags -- only camera2 was being captured. That was a loose USB
+extension cable on the rig, not a launch-file bug
+(`gen3_spring.launch.py` in springcontroller was already wired correctly for
+both cameras) -- a fully unseated USB connector doesn't enumerate at all, so
+the node never sees a device. springcontroller's test procedure now checks
+both cameras' cabling before a recording. If you hit a bag with 0 messages
+on either camera topic again, check `ls /dev/v4l/by-id/` and `journalctl -k`
+for that camera's serial before suspecting this code or the launch file.
 
 ## Setup
 
@@ -94,14 +95,19 @@ python3 plot_posture.py <path/to/bag_dir>_posture.csv
 
 `extract_posture.py` writes `<bag_dir>_posture.csv` next to the bag by
 default (override with `--out-csv`). `--out-video` is optional and draws the
-shoulder points, face mesh (when detected), and a live metric readout over
-the source video -- use it to sanity-check the numbers, not just skim the
-CSV.
+shoulder points and a live metric readout (pitch/roll from the paired face
+frame, plus the shoulder proxies) over the shoulder camera's video -- use it
+to sanity-check the numbers, not just skim the CSV.
 
 Useful flags:
-- `--every N` -- process every Nth frame (speed up a long recording)
-- `--baseline-seconds N` -- length of the baseline window (default 3s)
-- `--topic` -- override the video topic (default `/camera2/image_raw_throttled/compressed`)
+- `--face-topic` / `--shoulder-topic` -- override which topic plays which
+  role (defaults: `/camera` for face, `/camera2` for shoulders)
+- `--every N` -- process every Nth frame of each camera (speed up a long recording)
+- `--max-pair-gap N` -- max seconds apart when pairing a shoulder frame with a face result (default 0.2s)
+- `--baseline-seconds N` -- length of each signal's baseline window (default 3s)
+
+If a bag only has one camera recorded, the other signal's columns just come
+back all NaN/not-detected -- the script doesn't require both.
 
 ## Notes / data hygiene
 

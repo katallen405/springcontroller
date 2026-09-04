@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Extract posture (hunch / lateral lean) metrics from the camera2 video topic
-inside a gen3_study rosbag2, using MediaPipe.
+"""Extract posture (hunch / lateral lean) metrics from a gen3_study rosbag2,
+using MediaPipe against both cameras.
 
 This is upper-body only. The desk permanently occludes the participant's
 hips/legs/feet in this camera view. When you run MediaPipe's full-body Pose
@@ -11,37 +11,47 @@ physically real; this script never uses hip/leg landmarks. See
 sample_frame_annotated.jpg for an example (hips landed on the desk/robot arm,
 nowhere near the person).
 
-The camera is also mounted steep/overhead, looking down over the
-participant's shoulder. Testing MediaPipe's Face Landmarker against frames
-where a human can clearly see the participant's face still gave 0/5
-detections (even at a relaxed confidence threshold) -- the face detector is
-trained on roughly frontal/eye-level faces and doesn't recognize one
-foreshortened this steeply from above. So face-based head pitch/roll is only
-available in the rare moments the participant looks up toward the camera
-(observed ~2% of frames in a 44s test clip); treat it as a bonus/spot-check
-signal, not a continuous one. If you reposition the camera to the side, at
-roughly seated head/shoulder height, 3/4 or profile view (rather than
-overhead), face detection -- and therefore a real forward-flexion angle --
-should become far more reliable.
+Two cameras, two jobs
+----------------------
+The two rig cameras look at the participant from very different angles, and
+that turned out to matter more than either camera's height above the table:
 
-Given that, the primary continuous signal here comes from the shoulders
-(reliably visible ~100% of the time the participant is at the desk):
-  - shoulder_line_deg: 2D tilt of the shoulder line from horizontal
-    (lateral-lean proxy)
-  - shoulder_dist_px: pixel distance between the shoulders (increases as the
-    torso comes closer to/lower under the camera -- a rough forward-lean/
-    hunch proxy under this specific overhead mount)
-  - head_pitch_deg / head_roll_deg: from the Face Landmarker, only populated
-    on frames where a face is actually detected
+- `/camera` (default --face-topic): mounted across the table. Its face
+  detection rate, measured while the participant was actually present, was
+  62% -- good enough to use as a real continuous head-pose signal. This
+  script uses it for head_pitch_deg/head_roll_deg (via MediaPipe's Face
+  Landmarker transformation matrix): pitch = looking/leaning down (hunch),
+  roll = head tilted toward a shoulder (lateral lean).
+- `/camera2` (default --shoulder-topic): mounted close and nearly overhead
+  the workspace -- great for watching hands/task, but face detection there
+  was only 13% under the same test (the steep angle mostly shows the crown
+  of the head, not the face). This script uses it only for the shoulders
+  (visible ~any time the participant is at the desk):
+    - shoulder_line_deg: 2D tilt of the shoulder line from horizontal
+      (secondary lateral-lean cross-check)
+    - shoulder_dist_px: pixel distance between the shoulders (secondary
+      forward-hunch cross-check -- increases as the torso comes closer
+      to/lower under this camera)
 
-Because the camera's own mounting angle/position is fixed but unknown to this
-script, absolute values are not physically meaningful on their own. Instead
-it calibrates a per-recording baseline from the first few seconds (assumed
-roughly neutral posture) and reports deviation from that baseline. Always
-sanity-check against the annotated overlay video (--out-video) before
-trusting numbers -- these are proxies, not calibrated biomechanical angles.
+Frames from the two cameras aren't synchronized, so each camera2 frame is
+paired with the nearest-in-time camera1 result (within --max-pair-gap
+seconds; unpaired frames get NaN face columns).
+
+Because each camera's own mounting angle/position is fixed but unknown to
+this script, absolute values are not physically meaningful on their own.
+Instead it calibrates a per-recording, per-signal baseline from the first
+few seconds after that signal is first detected (assumed roughly neutral
+posture) and reports deviation from that baseline. Always sanity-check
+against the annotated overlay video (--out-video) before trusting numbers --
+these are proxies, not calibrated biomechanical angles.
+
+If a bag only has one camera recording (check with `ros2 bag info`), the
+other signal's columns are simply all NaN/not-detected -- this has happened
+before due to a loose USB extension cable on the rig, not a code bug (see
+project memory / README).
 """
 import argparse
+import bisect
 import csv
 import datetime as dt
 from pathlib import Path
@@ -109,7 +119,7 @@ def shoulder_distance_px(l_sh_px, r_sh_px):
 
 def angle_diff_deg(a, b):
     """Signed difference a-b in degrees, wrapped to [-180, 180]. Needed because
-    these shoulder-line angles sit near the +-180 boundary under this camera's
+    shoulder-line angles can sit near the +-180 boundary depending on camera
     orientation, where naive subtraction produces spurious ~360deg jumps."""
     if np.isnan(a) or np.isnan(b):
         return float("nan")
@@ -135,40 +145,105 @@ def make_pose_landmarker():
     return mp_vision.PoseLandmarker.create_from_options(opts)
 
 
+def extract_face_rows(bag_path, topic, every, t0_ns):
+    """Full pass over the face camera: returns a list of dicts sorted by
+    t_ns, plus the (possibly updated) shared t0_ns."""
+    face_lm = make_face_landmarker()
+    rows = []
+    last_t_ms = -1
+    for i, (t_ns, frame) in enumerate(iter_images(bag_path, topic)):
+        if i % every != 0:
+            continue
+        if t0_ns is None or t_ns < t0_ns:
+            t0_ns = t_ns
+        t_ms = t_ns // 1_000_000
+        if t_ms <= last_t_ms:
+            t_ms = last_t_ms + 1
+        last_t_ms = t_ms
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        result = face_lm.detect_for_video(mp_image, t_ms)
+
+        row = {"t_ns": t_ns, "frame_idx": i, "face_detected": False}
+        if result.facial_transformation_matrixes:
+            M = np.array(result.facial_transformation_matrixes[0])
+            pitch, yaw, roll = rotation_to_euler_deg(M[:3, :3])
+            row["face_detected"] = True
+            row["head_pitch_deg"] = pitch
+            row["head_yaw_deg"] = yaw
+            row["head_roll_deg"] = roll
+        rows.append(row)
+    face_lm.close()
+    return rows, t0_ns
+
+
+def nearest_face_row(face_rows, face_t_ns_sorted, t_ns, max_gap_ns):
+    if not face_rows:
+        return None
+    idx = bisect.bisect_left(face_t_ns_sorted, t_ns)
+    candidates = [c for c in (idx - 1, idx) if 0 <= c < len(face_rows)]
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda c: abs(face_t_ns_sorted[c] - t_ns))
+    if abs(face_t_ns_sorted[best] - t_ns) > max_gap_ns:
+        return None
+    return face_rows[best]
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("bag", help="path to a rosbag2 directory (containing metadata.yaml)")
-    ap.add_argument("--topic", default="/camera2/image_raw_throttled/compressed")
+    ap.add_argument(
+        "--face-topic", default="/camera/image_raw_throttled/compressed",
+        help="across-table camera used for head pitch/roll (primary hunch/lean signal)",
+    )
+    ap.add_argument(
+        "--shoulder-topic", default="/camera2/image_raw_throttled/compressed",
+        help="overhead task camera used for shoulder-based proxies (secondary cross-check)",
+    )
     ap.add_argument("--out-csv", default=None)
-    ap.add_argument("--out-video", default=None, help="optional annotated overlay video (mp4)")
-    ap.add_argument("--every", type=int, default=1, help="process every Nth frame")
+    ap.add_argument(
+        "--out-video", default=None,
+        help="optional annotated overlay video (mp4), built from the shoulder-topic frames",
+    )
+    ap.add_argument("--every", type=int, default=1, help="process every Nth frame of each camera")
+    ap.add_argument(
+        "--max-pair-gap", type=float, default=0.2,
+        help="max seconds apart when pairing a shoulder-topic frame with a face-topic result",
+    )
     ap.add_argument(
         "--baseline-seconds",
         type=float,
         default=3.0,
-        help="seconds at the start of the recording assumed to be neutral posture, "
-        "used to calibrate out the camera's fixed mounting tilt",
+        help="seconds after each signal is first detected, assumed to be neutral posture, "
+        "used to calibrate out each camera's fixed mounting tilt",
     )
     args = ap.parse_args()
 
     bag_path = Path(args.bag)
     out_csv = Path(args.out_csv) if args.out_csv else bag_path.parent / f"{bag_path.name}_posture.csv"
+    max_gap_ns = int(args.max_pair_gap * 1e9)
 
-    face_lm = make_face_landmarker()
+    # Pass 1: face camera, fully processed up front so shoulder-frame pairing
+    # below is a simple nearest-timestamp lookup.
+    face_rows, t0_ns = extract_face_rows(bag_path, args.face_topic, args.every, None)
+    face_t_ns_sorted = [r["t_ns"] for r in face_rows]
+
+    # Pass 2: shoulder camera, streamed (so --out-video can be written
+    # incrementally without holding every frame in memory).
     pose_lm = make_pose_landmarker()
-
     writer = None
     rows = []
     last_t_ms = -1
-    n_seen = n_face = n_shoulders = 0
-    t0_ns = None
+    n_seen = n_shoulders = 0
 
-    for i, (t_ns, frame) in enumerate(iter_images(bag_path, args.topic)):
+    for i, (t_ns, frame) in enumerate(iter_images(bag_path, args.shoulder_topic)):
         if i % args.every != 0:
             continue
-        if t0_ns is None:
+        if t0_ns is None or t_ns < t0_ns:
             t0_ns = t_ns
         n_seen += 1
         h, w = frame.shape[:2]
@@ -179,27 +254,23 @@ def main():
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
-        face_result = face_lm.detect_for_video(mp_image, t_ms)
         pose_result = pose_lm.detect_for_video(mp_image, t_ms)
 
         row = {
             "t_ns": t_ns,
-            "t_sec": (t_ns - t0_ns) / 1e9,
-            "timestamp_iso": dt.datetime.fromtimestamp(t_ns / 1e9).isoformat(),
             "frame_idx": i,
-            "face_detected": False,
             "shoulders_detected": False,
+            "face_detected": False,
         }
 
-        if face_result.facial_transformation_matrixes:
-            n_face += 1
-            M = np.array(face_result.facial_transformation_matrixes[0])
-            pitch, yaw, roll = rotation_to_euler_deg(M[:3, :3])
-            row["face_detected"] = True
-            row["head_pitch_deg"] = pitch
-            row["head_yaw_deg"] = yaw
-            row["head_roll_deg"] = roll
+        face_row = nearest_face_row(face_rows, face_t_ns_sorted, t_ns, max_gap_ns)
+        if face_row is not None:
+            row["face_dt_sec"] = (face_row["t_ns"] - t_ns) / 1e9
+            row["face_detected"] = face_row["face_detected"]
+            if face_row["face_detected"]:
+                row["head_pitch_deg"] = face_row["head_pitch_deg"]
+                row["head_yaw_deg"] = face_row["head_yaw_deg"]
+                row["head_roll_deg"] = face_row["head_roll_deg"]
 
         if pose_result.pose_landmarks:
             lm = pose_result.pose_landmarks[0]
@@ -224,9 +295,6 @@ def main():
                 for idx in (L_SHOULDER, R_SHOULDER):
                     cx, cy = int(lm[idx].x * w), int(lm[idx].y * h)
                     cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
-            if face_result.face_landmarks:
-                for p in face_result.face_landmarks[0][::5]:
-                    cv2.circle(annotated, (int(p.x * w), int(p.y * h)), 1, (255, 200, 0), -1)
             text = (
                 f"pitch={row.get('head_pitch_deg', float('nan')):.1f} "
                 f"roll={row.get('head_roll_deg', float('nan')):.1f} "
@@ -238,12 +306,18 @@ def main():
 
     if writer:
         writer.release()
-    face_lm.close()
     pose_lm.close()
 
+    for r in rows:
+        r["t_sec"] = (r["t_ns"] - t0_ns) / 1e9
+        r["timestamp_iso"] = dt.datetime.fromtimestamp(r["t_ns"] / 1e9).isoformat()
+
+    n_face_paired = sum(1 for r in rows if r["face_detected"])
+
     # --- baseline calibration ---
-    # Anchor the baseline window to the first *detected* frame, not t=0, since
-    # the participant may not be seated at the desk yet when recording starts.
+    # Anchor each signal's baseline window to when it was first detected, not
+    # t=0, since the participant may not be seated at the desk yet when
+    # recording starts.
     face_times = [r["t_sec"] for r in rows if r["face_detected"]]
     shoulder_times = [r["t_sec"] for r in rows if r["shoulders_detected"]]
     face_t0 = min(face_times) if face_times else None
@@ -284,7 +358,7 @@ def main():
 
     fieldnames = [
         "t_ns", "t_sec", "timestamp_iso", "frame_idx",
-        "face_detected", "head_pitch_deg", "head_yaw_deg", "head_roll_deg",
+        "face_detected", "face_dt_sec", "head_pitch_deg", "head_yaw_deg", "head_roll_deg",
         "head_pitch_dev_deg", "head_roll_dev_deg",
         "shoulders_detected", "shoulder_line_deg", "shoulder_line_dev_deg",
         "shoulder_dist_px", "shoulder_dist_dev_px",
@@ -295,12 +369,15 @@ def main():
         for row in rows:
             w_csv.writerow(row)
 
-    print(f"frames read: {n_seen}")
-    print(f"  face detected:      {n_face} ({100*n_face/max(n_seen,1):.0f}%)")
-    print(f"  shoulders detected: {n_shoulders} ({100*n_shoulders/max(n_seen,1):.0f}%)")
-    print(f"baseline (first {args.baseline_seconds:.1f}s): pitch={base_pitch:.1f} "
-          f"roll={base_roll:.1f} shoulder_ang={base_shoulder:.1f} "
-          f"shoulder_dist={base_shoulder_dist:.1f}")
+    n_face_raw = sum(1 for r in face_rows if r["face_detected"])
+    print(f"face camera ({args.face_topic}): {len(face_rows)} frames, "
+          f"{n_face_raw} with a detected face ({100*n_face_raw/max(len(face_rows),1):.0f}%)")
+    print(f"shoulder camera ({args.shoulder_topic}): {n_seen} frames, "
+          f"{n_shoulders} with detected shoulders ({100*n_shoulders/max(n_seen,1):.0f}%), "
+          f"{n_face_paired} paired with a detected face ({100*n_face_paired/max(n_seen,1):.0f}%)")
+    print(f"baseline (first {args.baseline_seconds:.1f}s after each signal starts): "
+          f"pitch={base_pitch:.1f} roll={base_roll:.1f} "
+          f"shoulder_ang={base_shoulder:.1f} shoulder_dist={base_shoulder_dist:.1f}")
     print(f"wrote {out_csv}")
     if args.out_video:
         print(f"wrote {args.out_video}")
