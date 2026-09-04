@@ -216,6 +216,8 @@ def write_condition_yaml(
     include_pose: bool = False,
     pose_name: str = "",
     pose_params: dict | None = None,
+    joint_spring_name: str = "",
+    joint_spring_params: dict | None = None,
     extra_params: dict | None = None,
 ) -> None:
     """
@@ -227,13 +229,24 @@ def write_condition_yaml(
     only): link_name, local_point, local_face_normal, target, stiffness,
     damping, position_center, position_radius -- the last two
     (EXPERIMENTAL, see PoseSpring in virtual_spring.py) are required by
-    the loader just like the others, no safe default.
+    the loader just like the others, no safe default. `joint_spring_params`
+    keys: joint_name, stiffness, damping (target_angle omitted -- with
+    stiffness 0 it's never used, see JointSpring in virtual_spring.py).
 
     spring_name/spring_params are optional -- the pose condition writes no
     base spring at all, since position_center/position_radius (inside
     pose_params) already define where a tip spring would have gone; the
     pose spring's own dead zone stands in for a real accompanying spring,
     not a supplement to one.
+
+    joint_spring_name/joint_spring_params are optional too -- only the
+    position condition gets one (a damping-only joint_7 spring, see
+    orchestration_node.py's _finalize_study_conditions_cb). The pose
+    condition's own PoseSpring already has authority over joint_7 (its
+    local_face_normal isn't collinear with joint_7's axis), so adding a
+    joint spring there -- even damping-only -- would resist the same
+    wrist rotation the look-at correction is actively trying to drive,
+    fighting it instead of just damping unwanted drift.
 
     extra_params is merged in unconditionally, independent of whatever
     spring content is or isn't present -- used to embed participant_id/
@@ -251,6 +264,9 @@ def write_condition_yaml(
     if include_pose:
         params["pose_spring_names"] = [pose_name]
         params["pose_springs"] = {pose_name: dict(pose_params)}
+    if joint_spring_name:
+        params["joint_spring_names"] = [joint_spring_name]
+        params["joint_springs"] = {joint_spring_name: dict(joint_spring_params)}
     if extra_params:
         params.update(extra_params)
 

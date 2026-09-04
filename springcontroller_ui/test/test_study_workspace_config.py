@@ -224,6 +224,56 @@ def test_write_condition_yaml_pose_only_has_no_tip_spring(tmp_path):
     assert params["pose_springs"]["face_participant"]["position_stiffness"] == 10.0
 
 
+def test_write_condition_yaml_joint_spring_is_damping_only(tmp_path):
+    # Position condition gets a damping-only joint_7 spring -- see
+    # write_condition_yaml's docstring for why (tip_spring has zero
+    # authority over joint_7's own rotation axis).
+    center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
+    condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
+    path = str(tmp_path / "position.yaml")
+    joint_spring_params = {"joint_name": "joint_7", "stiffness": 0.0, "damping": 0.3}
+
+    write_condition_yaml(
+        path, "tip_spring", _spring_params(center, condition_params),
+        joint_spring_name="joint7_damper", joint_spring_params=joint_spring_params,
+    )
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    params = data["/**"]["ros__parameters"]
+    assert params["joint_spring_names"] == ["joint7_damper"]
+    joint_spring = params["joint_springs"]["joint7_damper"]
+    assert joint_spring["joint_name"] == "joint_7"
+    assert joint_spring["stiffness"] == 0.0
+    assert joint_spring["damping"] == pytest.approx(0.3)
+
+
+def test_write_condition_yaml_pose_condition_has_no_joint_spring(tmp_path):
+    # The pose condition's own PoseSpring already drives joint_7 to aim
+    # local_face_normal at the target -- a joint spring there would fight
+    # that correction, so it's never passed for this condition.
+    path = str(tmp_path / "pose.yaml")
+    pose_params = {
+        "link_name": "end_effector_link",
+        "local_point": [0.0, 0.0, 0.1],
+        "local_face_normal": [0.0, 1.0, 0.0],
+        "target": [0.5, 0.0, 0.71],
+        "stiffness": 5.0,
+        "damping": 0.2,
+        "position_center": [0.5, 0.0, 0.1016],
+        "position_radius": 0.07,
+        "position_stiffness": 10.0,
+    }
+
+    write_condition_yaml(path, include_pose=True, pose_name="face_participant", pose_params=pose_params)
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    params = data["/**"]["ros__parameters"]
+    assert "joint_spring_names" not in params
+    assert "joint_springs" not in params
+
+
 def test_write_condition_yaml_extra_params_merged_alongside_springs(tmp_path):
     center = {"x": 0.5, "y": 0.0, "z": 10.16 * CM_TO_M}
     condition_params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)

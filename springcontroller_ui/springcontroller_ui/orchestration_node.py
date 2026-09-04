@@ -196,6 +196,18 @@ class StudyControlPanelNode(Node):
         # workspace_spring_stiffness (50.0): meant as a soft "don't wander
         # off" bound, not a firm anchor.
         self.declare_parameter("workspace_pose_position_stiffness", 10.0)
+        # Damping-only (stiffness 0) joint spring on joint_7, position
+        # condition only -- tip_spring's attachment point sits on joint_7's
+        # own rotation axis, so it has zero authority to arrest wrist-roll
+        # drift there (see JointSpring's docstring in virtual_spring.py).
+        # Damping-only so it resists drift velocity without pulling the
+        # wrist back to a fixed angle if the participant/experimenter
+        # rotates it on purpose. Not added to the pose condition: its
+        # PoseSpring already drives joint_7 to aim local_face_normal at the
+        # target, and a joint spring there would fight that correction.
+        self.declare_parameter("workspace_joint7_spring_name", "joint7_damper")
+        self.declare_parameter("workspace_joint7_name", "joint_7")
+        self.declare_parameter("workspace_joint7_damping", 1.5)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -234,6 +246,9 @@ class StudyControlPanelNode(Node):
         self._workspace_pose_stiffness = float(gp("workspace_pose_stiffness"))
         self._workspace_pose_damping = float(gp("workspace_pose_damping"))
         self._workspace_pose_position_stiffness = float(gp("workspace_pose_position_stiffness"))
+        self._workspace_joint7_spring_name = gp("workspace_joint7_spring_name")
+        self._workspace_joint7_name = gp("workspace_joint7_name")
+        self._workspace_joint7_damping = float(gp("workspace_joint7_damping"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -985,6 +1000,13 @@ class StudyControlPanelNode(Node):
             "position_radius": condition_params["outer_radius"],
             "position_stiffness": self._workspace_pose_position_stiffness,
         }
+        # Damping-only -- no target_angle/stiffness, see write_condition_yaml's
+        # docstring and this method's joint7 param comments above.
+        joint7_spring_params = {
+            "joint_name": self._workspace_joint7_name,
+            "stiffness": 0.0,
+            "damping": self._workspace_joint7_damping,
+        }
 
         csv_path = os.path.join(data_dir, "measurements.csv")
 
@@ -999,6 +1021,8 @@ class StudyControlPanelNode(Node):
         try:
             write_condition_yaml(
                 position_path, self._workspace_spring_name, spring_params,
+                joint_spring_name=self._workspace_joint7_spring_name,
+                joint_spring_params=joint7_spring_params,
                 extra_params={**rosbag_routing, "condition_name": "position"},
             )
             write_condition_yaml(

@@ -5,6 +5,22 @@
     spring_names:
       - tip_spring
 
+    # Damping-only (no stiffness) on joint_7 -- kills the slow wrist-roll
+    # drift near the tip spring's target (joint_7's own rotation axis
+    # passes through tip_spring's attachment point, so tip_spring has zero
+    # authority over it -- see JointSpring's docstring in virtual_spring.py)
+    # without fighting a user's intentional hand-guided rotation of the
+    # wrist: damping resists velocity, not displacement from a target
+    # angle, so it never pulls joint_7 back once released.
+    joint_spring_names:
+      - joint7_damper
+
+    joint_springs:
+      joint7_damper:
+        joint_name:  "joint_7"
+        stiffness:   0.0
+        damping:     1.5                   # N*m*s/rad
+
     springs:
 
       tip_spring:

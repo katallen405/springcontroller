@@ -141,6 +141,27 @@ def get_all_frames():
 # armviz treats them the same everywhere except this prefix lookup.
 SPRING_PARAM_PREFIXES = ["springs", "pose_springs"]
 
+def get_joint_spring_names():
+    """Names currently in the spring node's joint_spring_names param, as a
+    set. JointSprings (e.g. a damping-only joint_7 spring) have no
+    link_name/target/local_point at all -- nothing here can draw them as a
+    Cartesian glyph -- so callers use this to filter them out before ever
+    reaching _track_spring/SPRING_PARAM_PREFIXES, rather than let the
+    guess-every-prefix fallback burn through "springs" and "pose_springs"
+    (each a guaranteed "Invalid access to undeclared parameter(s)" WARN on
+    the node side) only to still end up with nothing to draw. Queried
+    fresh on every call (not cached) since a joint spring can be added at
+    runtime via ~/add_joint_spring, same as spring_names/pose_spring_names
+    in load_springs_from_params. Returns an empty set (not an error) if
+    the param read fails or the node hasn't declared it yet."""
+    try:
+        out = subprocess.check_output([
+            'ros2', 'param', 'get', SPRING_NODE, 'joint_spring_names'
+        ], timeout=5).decode()
+    except Exception:
+        return set()
+    return set(re.findall(r"'([^']+)'", out))
+
 def _get_spring_param(name, key, prefix=None):
     """Fetch `<prefix>.<name>.<key>` via `ros2 param get`. When `prefix` is
     known (the caller already knows this spring's type -- see
@@ -374,6 +395,14 @@ def load_springs_from_params():
         prefix = names_param_prefix[names_param]
         if not all([_track_spring(name, prefix) for name in names]):
             all_resolved = False
+
+    # JointSprings are loaded by the node too but never drawn here -- see
+    # get_joint_spring_names' docstring. Logged for visibility only, no
+    # _track_spring call.
+    joint_names = get_joint_spring_names()
+    if joint_names:
+        print(f"[viz] found joint springs from params (not visualized): {sorted(joint_names)}")
+
     return any_found and all_resolved
 # ---------------------------------------------------------------------------
 # ROS callbacks
@@ -405,7 +434,12 @@ def make_target_cb(spring_name):
 
 def springs_updated_cb(msg):
     """Called when the spring node adds or removes springs."""
-    active_names  = set(json.loads(msg.data))
+    all_active_names = set(json.loads(msg.data))
+    # _publish_springs_updated broadcasts every spring's name regardless of
+    # type -- drop JointSprings here so they never reach _track_spring (see
+    # get_joint_spring_names' docstring for why there's nothing to draw for
+    # one anyway).
+    active_names  = all_active_names - get_joint_spring_names()
     current_names = set(springs.keys())
 
     # New springs get a normal (lazy) track. Already-known ones get a
