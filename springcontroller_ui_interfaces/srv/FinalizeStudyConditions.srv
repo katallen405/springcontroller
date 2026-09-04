@@ -6,9 +6,11 @@ float64 ramp_margin_cm
 string link_name
 float64[3] local_point
 string data_dir
+bool overwrite
 ---
 bool success
 string message
+bool already_exists
 string position_path
 string pose_path
 string kt_path

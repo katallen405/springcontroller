@@ -236,11 +236,22 @@ def get_param_link(name, prefix=None):
         return None, None
     return out.split(':')[-1].strip(), resolved_prefix
 
-def _track_spring(name, prefix=None):
+def _track_spring(name, prefix=None, force_refresh=False):
     """Ensure `name` is present in `springs` with a resolved target,
     (re)trying the target fetch if it's still missing from a previous
     attempt. Creates the runtime ~/target/<name> subscription the first
     time `name` is seen. Returns True once the target is known.
+
+    force_refresh=True re-fetches target/link_name/local_point/
+    position_center even if already resolved -- used by springs_updated_cb
+    for a name it already knows about, since ~/update_spring (edit an
+    existing spring in place, e.g. via the study panel's Adjust button) has
+    no live topic for link_name/local_point at all, and doesn't republish
+    ~/target/<name> either. Without this, an in-place edit's new geometry
+    is correctly applied server-side (and mirrored into parameters) but
+    this viewer keeps drawing the spring at its stale original
+    location/attachment forever -- confirmed live 2026-09-04, "Adjust" +
+    "Update spring" silently never moved anything in meshcat.
 
     A spring name can become known (e.g. via spring_names or
     ~/springs_updated) before its target/link_name sub-fetches -- separate
@@ -312,18 +323,18 @@ def _track_spring(name, prefix=None):
             if known[0] is None and resolved is not None:
                 known[0] = resolved
             return value
-        if entry.get("target") is None:
+        if force_refresh or entry.get("target") is None:
             entry["target"] = fetch(get_param_target)
-            print(f"[viz] retried target for '{name}': {entry['target']}")
-        if entry.get("link_name") is None:
+            print(f"[viz] refreshed target for '{name}': {entry['target']}")
+        if force_refresh or entry.get("link_name") is None:
             entry["link_name"] = fetch(get_param_link)
-            print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
-        if entry.get("local_point") is None:
+            print(f"[viz] refreshed link_name for '{name}': {entry['link_name']}")
+        if force_refresh or entry.get("local_point") is None:
             entry["local_point"] = fetch(get_param_local_point)
-            print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
-        if known[0] == "pose_springs" and entry.get("position_center") is None:
+            print(f"[viz] refreshed local_point for '{name}': {entry['local_point']}")
+        if known[0] == "pose_springs" and (force_refresh or entry.get("position_center") is None):
             entry["position_center"] = fetch(get_param_position_center)
-            print(f"[viz] retried position_center for '{name}': {entry['position_center']}")
+            print(f"[viz] refreshed position_center for '{name}': {entry['position_center']}")
         if entry.get("prefix") is None:
             entry["prefix"] = known[0]
     # local_point isn't part of the resolved-gate: draw_springs falls back
@@ -398,13 +409,17 @@ def springs_updated_cb(msg):
     active_names  = set(json.loads(msg.data))
     current_names = set(springs.keys())
 
-    # Add new springs, and retry any already-tracked one whose target
-    # fetch previously failed and never got picked up again (see
-    # _track_spring) -- a later ~/springs_updated message is otherwise the
-    # only other chance after the bootstrap retry loop gives up.
+    # New springs get a normal (lazy) track. Already-known ones get a
+    # forced full re-fetch, not just a retry of still-missing fields --
+    # ~/springs_updated is also the broadcast that follows an in-place
+    # ~/update_spring edit (e.g. the study panel's Adjust -> Update spring
+    # flow), which changes link_name/local_point/target with no other live
+    # signal this viewer listens to (see _track_spring's force_refresh
+    # docstring). This doubles as the old "retry a target fetch that
+    # previously failed" behavior too, since a forced refresh covers that
+    # case as well.
     for name in active_names:
-        if name not in current_names or springs[name].get("target") is None:
-            _track_spring(name)
+        _track_spring(name, force_refresh=(name in current_names))
 
     # Remove old springs
     for name in current_names - active_names:

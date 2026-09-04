@@ -6,13 +6,16 @@ arithmetic and file I/O, same rationale as test_fk_helper.py's docstring.
 import csv
 import math
 import os
+import random
 
 import pytest
 import yaml
 
 from springcontroller_ui.study_workspace_config import (
+    ALL_CONDITION_ORDERS,
     CM_TO_M,
     EYE_TARGET_Y_OFFSET_CM,
+    SHARED_SPRING_RADIUS_M,
     assign_condition_order,
     compute_candidate_center,
     compute_condition_params,
@@ -47,22 +50,22 @@ def test_eye_location_y_offset_much_smaller_than_a_full_arm_reach():
     assert eye["y"] < center["y"]
 
 
-def test_candidate_center_z_is_third_eye_height_when_within_cone():
-    # Long arm -> third-eye-height isn't more than 30 deg below eye level,
+def test_candidate_center_z_is_half_eye_height_when_within_cone():
+    # Long arm -> half-eye-height isn't more than 30 deg below eye level,
     # so it's used unclamped.
     center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=40.0, arm_length_cm=100.0)
-    assert center["z"] == pytest.approx(40.0 * CM_TO_M / 3.0)
+    assert center["z"] == pytest.approx(40.0 * CM_TO_M / 2.0)
 
 
-def test_candidate_center_z_clamped_to_30deg_cone_when_third_eye_height_too_steep():
-    # Typical measurements -- third-eye-height would be a >30 deg look-down
+def test_candidate_center_z_clamped_to_30deg_cone_when_half_eye_height_too_steep():
+    # Typical measurements -- half-eye-height would be a >30 deg look-down
     # at this reach, so z gets raised to exactly the 30 deg cutoff instead.
     eye_height_cm, arm_length_cm = 71.0, 46.0
     center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
-    third_eye_height_m = (eye_height_cm * CM_TO_M) / 3.0
+    half_eye_height_m = (eye_height_cm * CM_TO_M) / 2.0
     expected_z = (eye_height_cm * CM_TO_M) - (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
     assert center["z"] == pytest.approx(expected_z)
-    assert center["z"] > third_eye_height_m  # raised above the naive third-height point
+    assert center["z"] > half_eye_height_m  # raised above the naive half-height point
     elevation_deg = math.degrees(math.atan2((eye_height_cm * CM_TO_M) - center["z"], arm_length_cm * CM_TO_M))
     assert elevation_deg == pytest.approx(30.0)
 
@@ -87,23 +90,17 @@ def test_rest_length_is_zero():
     assert params["rest_length"] == 0
 
 
-def test_outer_radius_is_the_tighter_of_height_band_and_eye_cone():
-    # Same height-band/eye-cone calculation that used to size inner_radius,
-    # now sizing outer_radius instead (inner_radius stays 0 -- see
-    # test_inner_radius_is_always_zero).
+def test_outer_radius_is_fixed_regardless_of_measurements():
+    # outer_radius is a fixed SHARED_SPRING_RADIUS_M, not derived from
+    # eye_height/arm_length -- both conditions always agree on the same
+    # reach tolerance regardless of a given participant's measurements.
     center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
 
-    # Long arm -> the eye-level cone is looser than the height band, so the
-    # height-band half-width (10.16cm) wins.
-    loose = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=100.0)
-    assert loose["outer_radius"] == pytest.approx(10.16 * CM_TO_M)
+    a = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=100.0)
+    assert a["outer_radius"] == pytest.approx(SHARED_SPRING_RADIUS_M)
 
-    # Short arm -> the eye-level cone is the tighter bound instead.
-    arm_length_cm = 8.0
-    tight = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=arm_length_cm)
-    expected = (arm_length_cm * CM_TO_M) * math.tan(math.radians(30.0))
-    assert tight["outer_radius"] == pytest.approx(expected)
-    assert tight["outer_radius"] < 10.16 * CM_TO_M
+    b = compute_condition_params(center, eye_height_cm=76.0, arm_length_cm=8.0)
+    assert b["outer_radius"] == pytest.approx(SHARED_SPRING_RADIUS_M)
 
 
 def test_outer_radius_ignores_ramp_margin():
@@ -314,42 +311,65 @@ def test_assign_condition_order_raises_on_malformed_row(tmp_path):
         assign_condition_order(assignments_path, "P001")
 
 
-def test_assign_condition_order_rotates_kt_position_pose(tmp_path):
+def test_assign_condition_order_block_of_6_is_a_permutation_of_all_orders(tmp_path):
+    # Every consecutive block of 6 participants should see each of the 6
+    # distinct (first, second, third) orderings exactly once, in random
+    # (seeded here for determinism) order within the block.
     assignments_path = str(tmp_path / "condition_order.csv")
+    rng = random.Random(42)
 
-    first, already = assign_condition_order(assignments_path, "P001")
-    assert first == "KT"
-    assert already is False
+    orders = []
+    for i in range(6):
+        first, second, third, already = assign_condition_order(
+            assignments_path, f"P{i:03d}", rng=rng,
+        )
+        assert already is False
+        orders.append((first, second, third))
 
-    second, already = assign_condition_order(assignments_path, "P002")
-    assert second == "position"
-    assert already is False
+    assert sorted(orders) == sorted(ALL_CONDITION_ORDERS)
 
-    third, already = assign_condition_order(assignments_path, "P003")
-    assert third == "pose"
+    # A 7th participant starts a fresh block -- again drawn from the full
+    # set of 6 orderings, not constrained by the previous block.
+    seventh, _, _, already = assign_condition_order(assignments_path, "P006", rng=rng)
     assert already is False
+    assert seventh in {o[0] for o in ALL_CONDITION_ORDERS}
 
-    fourth, already = assign_condition_order(assignments_path, "P004")
-    assert fourth == "KT"
-    assert already is False
+
+def test_assign_condition_order_two_blocks_both_balanced(tmp_path):
+    assignments_path = str(tmp_path / "condition_order.csv")
+    rng = random.Random(7)
+
+    orders = [
+        assign_condition_order(assignments_path, f"P{i:03d}", rng=rng)[:3]
+        for i in range(12)
+    ]
+
+    first_block, second_block = orders[:6], orders[6:]
+    assert sorted(first_block) == sorted(ALL_CONDITION_ORDERS)
+    assert sorted(second_block) == sorted(ALL_CONDITION_ORDERS)
 
 
 def test_assign_condition_order_is_idempotent_per_participant(tmp_path):
     assignments_path = str(tmp_path / "condition_order.csv")
+    rng = random.Random(1)
 
-    first, already = assign_condition_order(assignments_path, "P001")
+    first, second, third, already = assign_condition_order(assignments_path, "P001", rng=rng)
     assert already is False
 
     # Same participant ID looked up again -- returns the same assignment,
-    # doesn't advance the rotation or re-randomize.
-    again, already = assign_condition_order(assignments_path, "P001")
-    assert again == first
+    # doesn't advance the block or re-randomize.
+    again_first, again_second, again_third, already = assign_condition_order(
+        assignments_path, "P001", rng=rng,
+    )
+    assert (again_first, again_second, again_third) == (first, second, third)
     assert already is True
 
-    # A second, different participant still gets the next slot in the
-    # rotation, unaffected by the repeat lookup above.
-    second, already = assign_condition_order(assignments_path, "P002")
-    assert second == "position"
+    # A second, different participant still gets a fresh slot in the
+    # current block, unaffected by the repeat lookup above.
+    second_first, second_second, second_third, already = assign_condition_order(
+        assignments_path, "P002", rng=rng,
+    )
+    assert (second_first, second_second, second_third) != (first, second, third)
     assert already is False
 
 

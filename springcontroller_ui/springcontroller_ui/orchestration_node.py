@@ -893,6 +893,37 @@ class StudyControlPanelNode(Node):
         if id_error:
             response.success = False
             response.message = id_error
+            response.already_exists = False
+            response.position_path = ""
+            response.pose_path = ""
+            response.kt_path = ""
+            response.warnings = []
+            return response
+
+        # Existence check happens before any of the (comparatively
+        # expensive) geometry/YAML-content computation below, and before
+        # touching disk at all -- request.overwrite=False (the UI's
+        # default first attempt) refuses outright rather than silently
+        # clobbering a previous participant run with the same ID, since
+        # position.yaml/pose.yaml/KT.yaml are exactly what gen3_spring.
+        # launch.py reads condition parameters from. The UI is expected to
+        # re-call with overwrite=True (an explicit "Overwrite participant"
+        # click) or a different participant_id (an explicit "Save with new
+        # participant ID" click) in response.
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        participant_dir = os.path.join(data_dir, request.participant_id)
+        position_path = os.path.join(participant_dir, "position.yaml")
+        pose_path = os.path.join(participant_dir, "pose.yaml")
+        kt_path = os.path.join(participant_dir, "KT.yaml")
+        existing = [p for p in (position_path, pose_path, kt_path) if os.path.isfile(p)]
+        if existing and not request.overwrite:
+            response.success = False
+            response.message = (
+                f"Participant '{request.participant_id}' already has saved condition "
+                f"file(s): {', '.join(existing)}. Overwrite, or save with a new "
+                f"participant ID."
+            )
+            response.already_exists = True
             response.position_path = ""
             response.pose_path = ""
             response.kt_path = ""
@@ -951,11 +982,6 @@ class StudyControlPanelNode(Node):
             "position_stiffness": self._workspace_pose_position_stiffness,
         }
 
-        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
-        participant_dir = os.path.join(data_dir, request.participant_id)
-        position_path = os.path.join(participant_dir, "position.yaml")
-        pose_path = os.path.join(participant_dir, "pose.yaml")
-        kt_path = os.path.join(participant_dir, "KT.yaml")
         csv_path = os.path.join(data_dir, "measurements.csv")
 
         # Embedded in every condition's YAML so gen3_spring.launch.py can
@@ -988,6 +1014,7 @@ class StudyControlPanelNode(Node):
         except OSError as e:
             response.success = False
             response.message = f"Failed writing study condition files: {e}"
+            response.already_exists = False
             response.position_path = ""
             response.pose_path = ""
             response.kt_path = ""
@@ -996,6 +1023,7 @@ class StudyControlPanelNode(Node):
 
         response.success = True
         response.message = "ok"
+        response.already_exists = False
         response.position_path = position_path
         response.pose_path = pose_path
         response.kt_path = kt_path
@@ -1008,6 +1036,8 @@ class StudyControlPanelNode(Node):
             response.success = False
             response.message = id_error
             response.first_condition = ""
+            response.second_condition = ""
+            response.third_condition = ""
             response.already_assigned = False
             return response
 
@@ -1015,19 +1045,23 @@ class StudyControlPanelNode(Node):
         assignments_path = os.path.join(data_dir, "condition_order.csv")
 
         try:
-            first_condition, already_assigned = assign_condition_order(
+            first_condition, second_condition, third_condition, already_assigned = assign_condition_order(
                 assignments_path, request.participant_id,
             )
         except (OSError, ValueError) as e:
             response.success = False
             response.message = f"Failed reading/writing condition order assignments: {e}"
             response.first_condition = ""
+            response.second_condition = ""
+            response.third_condition = ""
             response.already_assigned = False
             return response
 
         response.success = True
         response.message = "ok"
         response.first_condition = first_condition
+        response.second_condition = second_condition
+        response.third_condition = third_condition
         response.already_assigned = already_assigned
         return response
 

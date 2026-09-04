@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import csv
 import datetime
+import itertools
 import math
 import os
+import random
 from typing import Optional
 
 import yaml
@@ -39,6 +41,13 @@ EYE_ANGLE_DEG = 30.0
 # mark along the same +y axis compute_candidate_center reaches across,
 # just much shorter than a full arm's reach.
 EYE_TARGET_Y_OFFSET_CM = 20.0
+
+# Shared dead-zone radius for both conditions' springs (tip_spring's
+# outer_radius, pose spring's position_radius) -- a fixed value rather than
+# a per-participant computed one, so both conditions always agree on
+# exactly the same reach tolerance regardless of a given participant's
+# measurements.
+SHARED_SPRING_RADIUS_M = 0.07
 
 
 def _cm(value_cm: float) -> float:
@@ -66,15 +75,14 @@ def compute_candidate_center(
     push/adjust step. x/y: forearm's length across the table from the seat,
     plus a fixed 10cm clearance margin (+y, the table's short axis -- the
     participant sits along its long edge and reaches inward across it, not
-    further along it). z: a third of the way from the table (world z=0) to
-    eye height, unless that's more than 30 deg below eye level at the
-    measured arm length (reach distance), in which case it's raised to
-    exactly the 30 deg cutoff instead -- one-third-eye-height is always
-    below eye level, never above, so this is a one-sided clamp.
+    further along it). z: the higher of (half the way from the table
+    (world z=0) to eye height) and (the 30 deg-below-eye-level cutoff at
+    the measured arm length/reach distance) -- i.e. whichever puts the
+    candidate closer to eye level.
     """
     eye_height_m = _cm(eye_height_cm)
     arm_length_m = _cm(arm_length_cm)
-    z = eye_height_m / 3.0
+    z = eye_height_m / 2.0
     min_z = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
     z = max(z, min_z)
     return {
@@ -105,14 +113,13 @@ def compute_condition_params(
 ) -> dict:
     """No inner dead-zone shell for either condition: inner_radius is
     unconditionally 0, so tip_spring always exerts some pull. outer_radius
-    is min(half the 8" height band, the +-30 deg eye-level cone converted
-    to linear distance at the measured arm length) -- whichever bound is
-    tighter -- the same height/eye-band calculation that used to size
-    inner_radius, just driving outer_radius instead now that there's no
-    inner shell to size. ramp_margin_cm is accepted but unused -- kept for
-    call-site/wire compatibility with FinalizeStudyConditions.srv rather
-    than threading a signature change through the UI/service layer for a
-    parameter with nothing left to do.
+    is the fixed SHARED_SPRING_RADIUS_M, not computed per-participant --
+    both conditions' springs (tip_spring's outer_radius, pose spring's
+    position_radius) always agree on the same reach tolerance regardless
+    of a given participant's measurements. ramp_margin_cm is accepted but
+    unused -- kept for call-site/wire compatibility with
+    FinalizeStudyConditions.srv rather than threading a signature change
+    through the UI/service layer for a parameter with nothing left to do.
 
     Returns radii/rest_length in meters plus a list of human-readable
     warning strings (empty if none) -- these are advisory, not blocking,
@@ -123,7 +130,7 @@ def compute_condition_params(
     eye_height_m = _cm(eye_height_cm)
 
     inner_radius = 0.0
-    outer_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
+    outer_radius = SHARED_SPRING_RADIUS_M
     rest_length = 0
 
     warnings: list[str] = []
@@ -272,13 +279,33 @@ def log_measurement(
         f.flush()
 
 
-def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[str, bool]:
+# All 6 distinct orderings of the 3 study conditions -- see
+# assign_condition_order's docstring for why the whole order (not just
+# which one runs first) is block-randomized against this set.
+ALL_CONDITION_ORDERS = list(itertools.permutations(["KT", "position", "pose"]))
+
+
+def assign_condition_order(
+    assignments_path: str, participant_id: str, rng: Optional[random.Random] = None,
+) -> tuple[str, str, str, bool]:
     """
-    Counterbalances which condition (KT vs position vs pose) a
-    participant should run first:
-    Idempotent -- looking up a participant_id that's
-    already been assigned returns that same order again (never
-    re-randomizes/flip-flops on a repeat visit to the panel).
+    Block-randomizes the FULL order (not just which condition runs first)
+    a participant should run the three conditions (KT/position/pose) in.
+    With 3 conditions there are 3! = 6 distinct orderings
+    (ALL_CONDITION_ORDERS); every consecutive block of 6 participants gets
+    each of those 6 orderings exactly once, in random order within the
+    block -- picked by narrowing to whichever orderings haven't been used
+    yet in the current (possibly partial) block and choosing uniformly at
+    random among those, so a block that's just starting can land on any of
+    the 6, and the block's last slot is whatever's left over.
+
+    Purely advisory to the experimenter -- Kat runs the conditions
+    herself, this just tells her the order, it doesn't drive any robot
+    behavior.
+
+    Idempotent -- looking up a participant_id that's already been
+    assigned returns that same order again (never re-randomizes/
+    flip-flops on a repeat visit to the panel).
 
     Kept in its own small append-only CSV rather than reusing
     measurements.csv (see log_measurement) since assignment needs to
@@ -287,7 +314,10 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
     a participant's assigned order well before (or without ever)
     finalizing that participant's condition files that session.
 
-    Returns (first_condition, already_assigned).
+    rng is normally left as None (a fresh random.Random() per call) --
+    only tests inject a seeded one for determinism.
+
+    Returns (first_condition, second_condition, third_condition, already_assigned).
     """
     assignments_path = os.path.expanduser(assignments_path)
     os.makedirs(os.path.dirname(assignments_path), exist_ok=True)
@@ -297,22 +327,31 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         with open(assignments_path, newline="") as f:
             rows = list(csv.DictReader(f))
 
+    required_columns = {"participant_id", "first_condition", "second_condition", "third_condition"}
     for row in rows:
-        if "participant_id" not in row or "first_condition" not in row:
+        if not required_columns.issubset(row.keys()):
             raise ValueError(
                 f"Malformed row in {assignments_path}: expected "
-                "'participant_id' and 'first_condition' columns."
+                f"{sorted(required_columns)} columns."
             )
         if row["participant_id"] == participant_id:
-            return row["first_condition"], True
+            return row["first_condition"], row["second_condition"], row["third_condition"], True
 
-    conditions = ["KT", "position", "pose"]
-    first_condition = conditions[len(rows) % 3]
-        
+    block_start = (len(rows) // 6) * 6
+    used_in_block = {
+        (row["first_condition"], row["second_condition"], row["third_condition"])
+        for row in rows[block_start:]
+    }
+    remaining = [order for order in ALL_CONDITION_ORDERS if order not in used_in_block]
+    rng = rng or random.Random()
+    first_condition, second_condition, third_condition = rng.choice(remaining)
+
     new_row = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "participant_id": participant_id,
         "first_condition": first_condition,
+        "second_condition": second_condition,
+        "third_condition": third_condition,
     }
     is_new = not os.path.isfile(assignments_path)
     with open(assignments_path, "a", newline="") as f:
@@ -322,7 +361,7 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         writer.writerow(new_row)
         f.flush()
 
-    return first_condition, False
+    return first_condition, second_condition, third_condition, False
 
 
 def log_event(csv_path: str, event_text: str, condition: str, notes: str = "") -> str:

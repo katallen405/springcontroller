@@ -102,7 +102,7 @@ button.action.estop:hover { background: #a02020; }
 .msg-box { margin-top: 8px; padding: 7px 10px; border-radius: 7px; font-size: 12.5px; font-family: monospace; white-space: pre-wrap; }
 .msg-box.ok  { background: #f0faf0; color: #1e5a1e; border: 1px solid #cfe9cf; }
 .msg-box.err { background: #fdf0f0; color: #a02020; border: 1px solid #f0c8c8; }
-.msg-box.hidden { display: none; }
+.hidden { display: none; }
 
 label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #555; }
 
@@ -117,6 +117,7 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .hint-steps { margin: 4px 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
 .hint-steps li { font-size: 11px; color: #6b6b6b; }
 .hint-steps b { font-size: 12.5px; color: #333; }
+.hint-substeps { margin: 4px 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 
 .field-glossary { margin-bottom: 10px; }
 .field-glossary > summary {
@@ -258,7 +259,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>Participant ID <input type="text" id="wc-pid" value=""></label>
         </div>
         <p class="status-line">Study order: <span class="val" id="timer-order-display">unknown</span>
-          <button class="copy-btn" onclick="refreshStudyOrder()">Refresh</button></p>
+          <button class="copy-btn" onclick="refreshStudyOrder()">Get/Refresh</button></p>
 
         <div class="row" style="align-items:center">
           <label>Duration (min) <input type="number" step="0.25" min="0.25" id="timer-duration-min" value="2" onchange="timerReset()"></label>
@@ -296,7 +297,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
             </label>
           </div>
           <div class="row">
-            <label style="flex:1">Notes (optional, own CSV column -- not the participant ID field above)
+            <label style="flex:1">Notes (optional)
               <input type="text" id="log-notes" style="width:100%">
             </label>
           </div>
@@ -304,7 +305,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
             <button class="action on" onclick="logEvent()">Log</button>
           </div>
         </div>
-        <p class="hint">Logged rows always carry the server's clock time (for lining up against video later) -- the countdown above is a display only, purely to tell the participant how much time is left; it is never written to the log.</p>
         <div class="msg-box hidden" id="timer-log-msg" role="status" aria-live="polite"></div>
       </details>
 
@@ -318,7 +318,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </label>
           <span class="toggle-state val unknown" id="repulsion-toggle-state">?</span>
         </div>
-        <p class="hint">Distance (m) from an obstacle where the hard clamp/repulsion field kick in, and how hard the repulsion field pushes at danger_threshold. caution_threshold must stay greater than danger_threshold. Per-object tuning is future work (after 2026-09-18).</p>
         <div class="spring-form">
           <div class="row">
             <label>danger_threshold <input type="number" step="0.01" id="ct-danger" value="0.01"></label>
@@ -377,8 +376,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <ul class="hint-steps">
-        <li><b>Get condition order</b> -- enter the participant ID at the top of the <b>Session timer &amp; event log</b> panel, click. Sets which of the three conditions (KT/position/pose) runs first, rotating per new ID; re-checking the same ID just shows the existing assignment.</li>
-        <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
+        <li><b>Preview workspace center</b>
+          <ul class="hint-substeps">
+            <li>enter the two measurements, check that torque control is disabled, and then click.</li>
+            <li>Visually check the displayed location is correct and warn the participant before enabling torque.</li>
+          </ul>
+        </li>
         <li><b>Capture current location as workspace target</b> -- after pushing the arm to where you want it, click to lock <code>workspace_demo</code>'s target onto wherever the link/local point above currently is, instead of typing numbers into the retarget boxes below.</li>
         <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where the pose condition's pose spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
         <li><b>Finalize</b> -- writes position.yaml/pose.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
@@ -401,11 +404,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
         </div>
         <div class="btn-row">
-          <button class="action on" onclick="getConditionOrder()">Get condition order</button>
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
           <button class="action off" onclick="captureCurrentAsWorkspaceTarget()">Capture current location as workspace target</button>
           <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
+          <button class="action danger hidden" id="btn-finalize-overwrite" onclick="finalizeOverwriteParticipant()">Overwrite participant</button>
+          <button class="action on hidden" id="btn-finalize-new-id" onclick="finalizeWithNewParticipantId()">Save with new participant ID</button>
         </div>
       </div>
       <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
@@ -538,11 +542,10 @@ const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', 
 const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
 const svcLogEvent                = { name: NODE + '/log_event',                 type: 'springcontroller_ui_interfaces/srv/LogEvent' };
 // Explicit per-value map, not a binary ternary -- assign_condition_order
-// rotates through three values (KT/position/pose, see
-// study_workspace_config.py), and a two-way ternary would silently
-// mislabel "KT" as whatever wasn't 'position' 1 time in 3. Shared by
-// getConditionOrder() (Study workspace calibration panel) and
-// refreshStudyOrder() (Session timer & event log panel) below.
+// deals in three values (KT/position/pose, see study_workspace_config.py),
+// and a two-way ternary would silently mislabel "KT" as whatever wasn't
+// 'position' 1 time in 3. Used by refreshStudyOrder() below to render all
+// three of a participant's assigned first/second/third_condition fields.
 const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
@@ -1103,7 +1106,10 @@ const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
 // pushed past this study's 2026-09-18 deadline).
 const LINK_PRESETS = {
   block: { link_name: 'end_effector_link', local_point: [0, 0, 0.15] },
-  forearm: { link_name: 'forearm_link', local_point: [0, 0, 0] },
+  wrist_3: { link_name: 'half_arm_2_link', local_point: [0, 0, 0] },
+  elbow_4: { link_name: 'forearm_link', local_point: [0, 0, 0] },
+  elbow_6: { link_name: 'spherical_wrist_2_link', local_point: [0, 0, 0] },
+  wrist_7: { link_name: 'bracelet_link', local_point: [0, 0, 0] },
 };
 
 // Every backend call needs a real URDF frame name -- resolves a dropdown's
@@ -1725,21 +1731,6 @@ function previewWorkspaceCenter() {
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
-function getConditionOrder() {
-  const participantId = document.getElementById('wc-pid').value.trim();
-  if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
-  const req = {
-    participant_id: participantId,
-    data_dir: document.getElementById('wc-datadir').value.trim(),
-  };
-  callService(svcAssignConditionOrder, req, function(resp) {
-    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
-    const label = CONDITION_LABELS[resp.first_condition] || resp.first_condition;
-    const note = resp.already_assigned ? ' (previously assigned -- unchanged)' : ' (newly assigned)';
-    showMsg('workspace-msg', true, participantId + ': run ' + label + ' first' + note + '.');
-  }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
-}
-
 // Places a force-free (0 stiffness/damping) REAL pose spring at
 // condition 2's actual pose-spring target: in front of the
 // participant's actual face (chair position), NOT above wherever the
@@ -1807,7 +1798,21 @@ function previewEyeLocation() {
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
-function finalizeStudyConditions() {
+// Set (to the participant ID that conflicted) when finalizeStudyConditions
+// gets an already_exists response -- lets finalizeWithNewParticipantId
+// tell "you actually changed the ID" apart from "you clicked it again
+// without changing anything". Cleared on any non-conflicting outcome (see
+// hideFinalizeConflictButtons) so a later, unrelated conflict can't be
+// confused with a stale one.
+let finalizeConflictParticipantId = null;
+
+function hideFinalizeConflictButtons() {
+  finalizeConflictParticipantId = null;
+  document.getElementById('btn-finalize-overwrite').classList.add('hidden');
+  document.getElementById('btn-finalize-new-id').classList.add('hidden');
+}
+
+function finalizeStudyConditions(overwrite) {
   const participantId = document.getElementById('wc-pid').value.trim();
   if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
   const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
@@ -1840,9 +1845,21 @@ function finalizeStudyConditions() {
                     parseFloat(document.getElementById('wc-ly').value),
                     parseFloat(document.getElementById('wc-lz').value)],
       data_dir: document.getElementById('wc-datadir').value.trim(),
+      overwrite: !!overwrite,
     };
     callService(svcFinalizeStudyConditions, req, function(fr) {
-      if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
+      if (!fr.success) {
+        showMsg('workspace-msg', false, fr.message);
+        if (fr.already_exists) {
+          finalizeConflictParticipantId = participantId;
+          document.getElementById('btn-finalize-overwrite').classList.remove('hidden');
+          document.getElementById('btn-finalize-new-id').classList.remove('hidden');
+        } else {
+          hideFinalizeConflictButtons();
+        }
+        return;
+      }
+      hideFinalizeConflictButtons();
       let text = 'Wrote ' + fr.position_path + ', ' + fr.pose_path + ', and ' + fr.kt_path + '.';
       if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
       showMsg('workspace-msg', true, text);
@@ -1850,6 +1867,31 @@ function finalizeStudyConditions() {
       removeSpring(WORKSPACE_DEMO_EYE_SPRING_NAME);
     }, function(err) { showMsg('workspace-msg', false, 'finalize_study_conditions failed: ' + err); });
   }, function(err) { showMsg('workspace-msg', false, 'Could not read current target: ' + err); });
+}
+
+// "Overwrite participant": re-finalizes under the SAME participant ID that
+// just conflicted, with overwrite=true -- deliberately re-reads wc-pid
+// live rather than trusting finalizeConflictParticipantId, so if the
+// operator typed a different ID in between (without clicking "Save with
+// new participant ID"), this overwrites whatever ID is actually in the
+// box right now, not a stale remembered one.
+function finalizeOverwriteParticipant() {
+  finalizeStudyConditions(true);
+}
+
+// "Save with new participant ID": blocks unless the participant ID field
+// has actually changed since the conflict was flagged -- otherwise this
+// would just re-hit the exact same conflict and silently do nothing
+// useful, which reads as "the button doesn't work" rather than "you
+// still need to change the ID".
+function finalizeWithNewParticipantId() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (participantId === finalizeConflictParticipantId) {
+    showMsg('workspace-msg', false,
+      'Change the participant ID above before saving as a new participant.');
+    return;
+  }
+  finalizeStudyConditions(false);
 }
 
 function reloadMeshcat() {
@@ -1929,8 +1971,9 @@ function refreshStudyOrder() {
   callService(svcAssignConditionOrder, req, function(resp) {
     const el = document.getElementById('timer-order-display');
     if (!resp.success) { el.textContent = resp.message; return; }
-    const label = CONDITION_LABELS[resp.first_condition] || resp.first_condition;
-    el.textContent = participantId + ': ' + label + ' first' +
+    const order = [resp.first_condition, resp.second_condition, resp.third_condition]
+      .map(function(c) { return CONDITION_LABELS[c] || c; }).join(', ');
+    el.textContent = participantId + ': [' + order + ']' +
       (resp.already_assigned ? ' (previously assigned)' : ' (newly assigned)');
   }, function(err) {
     document.getElementById('timer-order-display').textContent = 'assign_condition_order failed: ' + err;
