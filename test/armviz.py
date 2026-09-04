@@ -250,8 +250,7 @@ def _track_spring(name, prefix=None, force_refresh=False):
     ~/target/<name> either. Without this, an in-place edit's new geometry
     is correctly applied server-side (and mirrored into parameters) but
     this viewer keeps drawing the spring at its stale original
-    location/attachment forever -- confirmed live 2026-09-04, "Adjust" +
-    "Update spring" silently never moved anything in meshcat.
+    location/attachment forever.
 
     A spring name can become known (e.g. via spring_names or
     ~/springs_updated) before its target/link_name sub-fetches -- separate

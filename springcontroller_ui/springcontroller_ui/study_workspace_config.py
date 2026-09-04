@@ -27,12 +27,12 @@ import yaml
 
 CM_TO_M = 0.01
 
-# Elbow-height band above the table (world z=0, see gen3_collision_scene.yaml),
-# and the eye-level cone the workspace must stay within -- both are fixed
-# ergonomic specs for this study, independent of what unit measurements are
-# entered in.
-HEIGHT_BAND_CM = 20.32  # 8 inches
+# Eye-level cone the workspace must stay within -- a fixed ergonomic spec
+# for this study, independent of what unit measurements are entered in.
 EYE_ANGLE_DEG = 30.0
+# Float round-trip slop (tan/atan2) tolerance for the eye-level-cone warning
+# below -- see compute_condition_params.
+EYE_ANGLE_EPSILON_DEG = 1e-6
 
 # Condition 2's pose-spring "look-at" target sits in front of the
 # participant's actual face, not above wherever the reach-center (used for
@@ -82,14 +82,40 @@ def compute_candidate_center(
     """
     eye_height_m = _cm(eye_height_cm)
     arm_length_m = _cm(arm_length_cm)
-    z = eye_height_m / 2.0
-    min_z = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
-    z = max(z, min_z)
+    half_eye_height_m = eye_height_m / 2.0
+    cone_clamp_z_m = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
+    z = max(half_eye_height_m, cone_clamp_z_m)
     return {
         "x": seat_x,
         "y": seat_y + arm_length_m + 0.1,
         "z": z,
+        # Intermediate values, not needed by any caller's own math -- kept
+        # on the dict purely so describe_candidate_center can explain how
+        # z was derived without recomputing it.
+        "half_eye_height_m": half_eye_height_m,
+        "cone_clamp_z_m": cone_clamp_z_m,
+        "z_used_cone_clamp": cone_clamp_z_m > half_eye_height_m,
     }
+
+
+def describe_candidate_center(seat_x: float, seat_y: float, arm_length_cm: float, center: dict) -> str:
+    """Human-readable breakdown of compute_candidate_center's y/z derivation,
+    for display alongside the numeric center -- x needs no explanation,
+    it's just the seat's x unchanged. `center` is compute_candidate_center's
+    return value (needs its half_eye_height_m/cone_clamp_z_m/
+    z_used_cone_clamp fields, not just x/y/z)."""
+    arm_length_m = _cm(arm_length_cm)
+    y_line = (
+        f"y = seat_y ({seat_y:.3f}) + arm_length ({arm_length_m:.3f}) "
+        f"+ 0.10 margin = {center['y']:.3f} m"
+    )
+    clamp_note = " (cone-clamped)" if center["z_used_cone_clamp"] else ""
+    z_line = (
+        f"z = max(eye_height/2 = {center['half_eye_height_m']:.3f}, "
+        f"eye_height - arm_length*tan(30) = {center['cone_clamp_z_m']:.3f}) "
+        f"= {center['z']:.3f} m{clamp_note}"
+    )
+    return y_line + "\n" + z_line
 
 
 def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> dict:
@@ -135,15 +161,16 @@ def compute_condition_params(
 
     warnings: list[str] = []
 
+    # elbow-height-band check removed (outdated once outer_radius stopped
+    # being derived from HEIGHT_BAND_CM) -- the eye-level cone check below
+    # is the only remaining advisory bound.
     height_above_table = center["z"]
-    if not (0.0 <= height_above_table <= _cm(HEIGHT_BAND_CM)):
-        warnings.append(
-            f"Center height {height_above_table / CM_TO_M:.1f}cm above the table is "
-            f"outside the confirmed [0, {HEIGHT_BAND_CM:.1f}cm] elbow-height band."
-        )
-
     elevation_deg = math.degrees(math.atan2(eye_height_m - height_above_table, arm_length_m))
-    if abs(elevation_deg) > EYE_ANGLE_DEG:
+    # A center placed via compute_candidate_center's own 30 deg clamp round-trips
+    # through tan/atan2 and can land a hair past EYE_ANGLE_DEG (e.g.
+    # 30.00000000000003) from floating-point error alone -- EYE_ANGLE_EPSILON_DEG
+    # absorbs that so an exactly-at-the-cutoff center never spuriously warns.
+    if abs(elevation_deg) > EYE_ANGLE_DEG + EYE_ANGLE_EPSILON_DEG:
         warnings.append(
             f"Center is {elevation_deg:.1f} deg from eye level, outside the "
             f"confirmed +-{EYE_ANGLE_DEG:.0f} deg cone."

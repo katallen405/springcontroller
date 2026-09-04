@@ -4,5 +4,6 @@ float64 arm_length_cm
 bool success
 string message
 float64[3] center
+string center_math
 float64[3] eye_location
 float64[3] orientation_local_face_normal

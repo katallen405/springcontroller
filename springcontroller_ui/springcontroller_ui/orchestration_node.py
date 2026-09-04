@@ -75,6 +75,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    describe_candidate_center,
     log_event,
     log_measurement,
     validate_participant_id,
@@ -880,6 +881,9 @@ class StudyControlPanelNode(Node):
         response.success = True
         response.message = "ok"
         response.center = [float(center["x"]), float(center["y"]), float(center["z"])]
+        response.center_math = describe_candidate_center(
+            self._workspace_seat_x, self._workspace_seat_y, request.arm_length_cm, center,
+        )
         response.eye_location = [
             float(eye_location["x"]), float(eye_location["y"]), float(eye_location["z"]),
         ]

@@ -67,82 +67,41 @@ study instructions
   where the robot's gripper is to avoid getting pinched.
 
 - I am going to measure your eye height and arm length to determine
-  your ergonomic workspace.  Then we can look at a preview of the workspace
-  to figure out if you want any adjustments, and set it for the study.
+  your ergonomic workspace.  Then we can look at a preview of the
+  workspace to figure out if you want any adjustments, and set it for
+  the study.
 
-- There are three conditions which you will see in a random
-  order. I'll introduce the way you control the arm in the three
-  conditions when we get to them.  In all of them, you will have up to
-  2 minutes to decorate two opposite faces of the block.  When you're
-  done or time is up, we'll stop and you can answer some questions
-  about this way of interacting with the robot arm, and then you will
-  get to decorate two other faces of the block in each of the two
-  other conditions.  You can stop the test at any time by saying
-  "stop", and I may stop the test if I am concerned that something
-  unsafe is happening.
+- I am going to put the robot in three different modes to try to help
+  you in different ways. In each of them you will get to paint two
+  sides of the block.  
+
+paint pens - show how the paint can flow out if you press the tip 
 
 Condition KT:
-
-In this condition, you will control the arm using the two buttons on
-the wrist of the robot.  The button that is indented allows you to
-move the arm by joint, so pushing on a joint will move it.  The button
-that is outdented allows you to move the arm with cartesian control -
-it will try to move the gripper around in logical x/y/z space.  If you
-use both at the same time, it keeps the gripper where it is and moves
-the joints in their "latent space" -- moving joints around in the
-links that are further back from the gripper that are not constrained
-by the current gripper position.  You can use any or all of these
-modes at any time to adjust the block position or the rest of the
-robot.  If you are not pressing any of the buttons, the robot will be
-in "position hold" -- it will not move when you push on it.
+- two buttons on the wrist
+  - indented moves by joint
+  - outdented moves just to move the gripper
+  - both freezes the gripper and moves the latent joints
+- no buttons = position hold
 
 Condition position:
-
-In this condition, the torque controller will be active. The torque
-controller allows you to push the arm around freely.  We can also
-constrain the arm's movement in this condition with virtual springs --
-we create them in the control software connecting any part of the arm
-to any point in space, with any strength we like.  When this condition
-starts, there will be just one spring, connecting the gripper to the
-point we identified as the center of your workspace based on your eye
-height and arm length and adjusted in the beginning of the study.  You
-can add or remove springs at any point during this part of the study
-by telling me where you want them on the arm and moving the arm to the
-place where you want it to be. To remove a spring, you can tell me
-which one you want removed and I will remove it.  We can also "freeze"
-the arm into a "position hold" -- in position hold it will not move
-when you push on it, and you can tell me if you want to put it back
-into the spring controller mode.
+ 
+- torque controller plus one spring pulling the gripper towards a
+point in space
+- tell me if you want position hold
+- can add imaginary springs pulling any part of the arm to its current
+  location
 
 Condition pose:
 
-In this condition, the torque controller will be
-active.  The torque controller allows you to push the arm around
-freely.  We can also constrain the arm's movement in this condition
-with virtual springs -- we create them in the control software
-connecting any part of the arm to any point in space, with any
-strength we like.  When this condition starts, there will be just one
-spring, which pulls the gripper towards the point in space we
-identified as the center of your workspace based on your eye height
-and arm length and adjusted in the beginning of the study, **and**
-tries to orient one side of the block towards your face.
+- torque controller plus
+  - one spring pulling towards your workspace
+  - and trying to orient the face of the block towards you
+- can add imaginary springs pulling any part of the arm to its current
+  location
 
-In this part of the study, there are two kinds of springs you can use.
-One, the pose spring, has both a position and an orientation
-component.  You can change the position it pulls to in space, change
-where on the block it is attached, and change where it orients to, as
-well as the strength of the spring and the length of the "dead zone"
-before it starts pulling.  You can also use a position spring, which
-just pulls any part of the arm towards a particular point in space.
-We can also freeze the arm into a position hold -- in position hold it
-will not move when you push on it, and you can tell me if you want to
-put it back into the spring controller mode.
 
 All conditions:
-
-You will have 2 minutes to decorate the two sides of
-the block.  I will tell you when your time is half finished, and the
-time you spend adjusting the robot's position does not count against
-your painting time. If you need the robot to let go of the block so
-you can change which way the block is facing in the gripper, let me
-know and I will help you.
+- 2 minutes
+- ask me if you want the robot to drop the block
+- ask if you need help

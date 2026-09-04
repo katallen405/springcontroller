@@ -20,6 +20,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    describe_candidate_center,
     log_event,
     log_measurement,
     validate_participant_id,
@@ -70,6 +71,21 @@ def test_candidate_center_z_clamped_to_30deg_cone_when_half_eye_height_too_steep
     assert elevation_deg == pytest.approx(30.0)
 
 
+def test_describe_candidate_center_flags_cone_clamp_when_used():
+    eye_height_cm, arm_length_cm = 71.0, 46.0
+    center = compute_candidate_center(seat_x=0.0, seat_y=-0.1, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
+    text = describe_candidate_center(0.0, -0.1, arm_length_cm, center)
+    assert "cone-clamped" in text
+    assert f"{center['z']:.3f}" in text
+
+
+def test_describe_candidate_center_no_clamp_note_when_unclamped():
+    eye_height_cm, arm_length_cm = 40.0, 100.0
+    center = compute_candidate_center(seat_x=0.0, seat_y=0.0, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
+    text = describe_candidate_center(0.0, 0.0, arm_length_cm, center)
+    assert "cone-clamped" not in text
+
+
 def test_inner_radius_is_always_zero():
     # No dead-zone shell -- tip_spring always exerts some pull, regardless
     # of eye height / arm length.
@@ -112,18 +128,6 @@ def test_outer_radius_ignores_ramp_margin():
     assert with_margin["outer_radius"] == pytest.approx(default["outer_radius"])
 
 
-def test_warns_when_center_height_outside_confirmed_band():
-    too_high = {"x": 0.0, "y": 0.0, "z": 50.0 * CM_TO_M}
-    params = compute_condition_params(too_high, eye_height_cm=71.0, arm_length_cm=46.0)
-    assert any("elbow-height band" in w for w in params["warnings"])
-
-
-def test_no_height_warning_when_center_within_band():
-    ok = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
-    params = compute_condition_params(ok, eye_height_cm=71.0, arm_length_cm=46.0)
-    assert not any("elbow-height band" in w for w in params["warnings"])
-
-
 def test_warns_when_center_outside_eye_level_cone():
     # Eyes far above the center and a short arm -> steep look-down angle.
     center = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -135,6 +139,19 @@ def test_no_eye_angle_warning_when_within_cone():
     # Eyes roughly level with the center -> ~0 deg elevation, well inside +-30.
     center = {"x": 0.0, "y": 0.0, "z": 71.0 * CM_TO_M}
     params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
+    assert not any("eye level" in w for w in params["warnings"])
+
+
+def test_no_eye_angle_warning_at_exactly_the_30deg_clamp():
+    # A center placed via compute_candidate_center's own 30 deg clamp
+    # (i.e. exactly at the cutoff by construction) must never trip this
+    # warning, even though the tan/atan2 round-trip can land it a hair
+    # past 30.0 from floating-point error alone.
+    eye_height_cm, arm_length_cm = 71.0, 46.0
+    center = compute_candidate_center(
+        seat_x=0.0, seat_y=0.0, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm,
+    )
+    params = compute_condition_params(center, eye_height_cm=eye_height_cm, arm_length_cm=arm_length_cm)
     assert not any("eye level" in w for w in params["warnings"])
 
 
@@ -273,18 +290,21 @@ def test_log_measurement_creates_header_once_and_appends(tmp_path):
 
 def test_log_measurement_records_warnings(tmp_path):
     csv_path = str(tmp_path / "measurements.csv")
-    too_high = {"x": 0.0, "y": 0.0, "z": 50.0 * CM_TO_M}
-    condition_params = compute_condition_params(too_high, eye_height_cm=71.0, arm_length_cm=46.0)
+    # Eyes far above the center and a short arm -> steep look-down angle,
+    # outside the eye-level cone (the only warning compute_condition_params
+    # can still produce -- see test_warns_when_center_outside_eye_level_cone).
+    steep = {"x": 0.0, "y": 0.0, "z": 0.0}
+    condition_params = compute_condition_params(steep, eye_height_cm=100.0, arm_length_cm=15.0)
     pose_target = {"x": 0.0, "y": 0.0, "z": 71.0 * CM_TO_M}
 
     log_measurement(
-        csv_path, "P003", 71.0, 46.0, too_high, condition_params, pose_target,
+        csv_path, "P003", 100.0, 15.0, steep, condition_params, pose_target,
         "c1.yaml", "c2.yaml",
     )
 
     with open(csv_path, newline="") as f:
         row = next(csv.DictReader(f))
-    assert "elbow-height band" in row["warnings"]
+    assert "eye level" in row["warnings"]
 
 
 def test_validate_participant_id_accepts_ordinary_id():

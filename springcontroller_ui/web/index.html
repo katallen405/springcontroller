@@ -1136,6 +1136,13 @@ const EXCLUDED_LINK_PATTERN = /robotiq/i;
 
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
+    // A prior call (e.g. the first attempt right after rosbridge connects,
+    // racing study_control_panel_node's own startup -- see
+    // ros.on('connection', ...) below) can have left a stale "Could not
+    // list link names" error here; a later successful retry (e.g. after a
+    // rosbridge reconnect re-fires this same handler) should clear it
+    // rather than leave it sitting on screen forever.
+    document.getElementById('spring-msg').classList.add('hidden');
     const names = (resp.link_names || []).filter(function(n) { return !EXCLUDED_LINK_PATTERN.test(n); });
     const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
     const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
@@ -1716,11 +1723,12 @@ function previewWorkspaceCenter() {
     const placeSpring = function() {
       callService(svcAddSpring, addReq, function(addResp) {
         const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+        const mathText = resp.center_math ? '\n' + resp.center_math : '';
         showMsg('workspace-msg', addResp.success,
           'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
             (addResp.success
               ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
-              : 'Failed to place demo spring.')));
+              : 'Failed to place demo spring.')) + mathText);
       }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
     };
     // add_spring refuses if the name already exists, so re-previewing with
@@ -1994,7 +2002,13 @@ function logEvent() {
     data_dir: document.getElementById('wc-datadir').value.trim(),
   };
   callService(svcLogEvent, req, function(resp) {
-    showMsg('timer-log-msg', resp.success, resp.message);
+    // Reminder for the one event type that has a required next step the
+    // operator can't see from the panel itself -- Qualtrics runs outside
+    // this UI entirely.
+    const reminder = (resp.success && req.event_text === 'Trial end')
+      ? '\nMove the arm back to start position, have the participant answer the questions in Qualtrics, and start the next condition.'
+      : '';
+    showMsg('timer-log-msg', resp.success, resp.message + reminder);
     // Notes carries over into the next entry otherwise -- easy to forget
     // it's still sitting there and log the same note again by accident.
     // Left alone on failure so a retry doesn't lose what was typed.
