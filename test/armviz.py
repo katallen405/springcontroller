@@ -836,23 +836,6 @@ def draw_springs(q):
             )
             viz.viewer[f"springs/{name}/target"].set_transform(T_target)
 
-        # position_center (EXPERIMENTAL, see PoseSpring in virtual_spring.py)
-        # -- the point position_stiffness actually pulls the attachment
-        # point back toward once it's outside position_radius, distinct
-        # from target above (which is only ever a look-at direction, never
-        # a pull). Teal so it reads as a third, different kind of point at
-        # a glance from target's purple/red and attachment's blue. Added
-        # 2026-09-03 -- previously nothing marked this point at all.
-        position_center = spring.get("position_center")
-        if is_pose and position_center is not None:
-            T_position_center = np.eye(4)
-            T_position_center[:3, 3] = position_center
-            viz.viewer[f"springs/{name}/position_center"].set_object(
-                g.Sphere(_SPRING_MARKER_RADIUS),
-                g.MeshLambertMaterial(color=0x00cccc, transparent=False)
-            )
-            viz.viewer[f"springs/{name}/position_center"].set_transform(T_position_center)
-
             # Orange line from attachment to target
             vertices = np.column_stack([attachment, target])  # 3x2
             viz.viewer[f"springs/{name}/line"].set_object(
@@ -868,6 +851,34 @@ def draw_springs(q):
                   f"/virtual_spring_node/target/{name} "
                   f"geometry_msgs/msg/PointStamped "
                   f"'{{header: {{frame_id: world}}, point: {{x: 0.0, y: 0.0, z: 0.5}}}}'")
+
+        # position_center (EXPERIMENTAL, see PoseSpring in virtual_spring.py)
+        # -- the point position_stiffness actually pulls the attachment
+        # point back toward once it's outside position_radius, distinct
+        # from target above (which is only ever a look-at direction, never
+        # a pull). Teal so it reads as a third, different kind of point at
+        # a glance from target's purple/red and attachment's blue. Added
+        # 2026-09-03 -- previously nothing marked this point at all.
+        #
+        # Deliberately its own independent if, not folded into the
+        # `if target is not None` block above (or its elif) -- a bug fix
+        # 2026-09-03: an earlier version nested the no-target warning's
+        # elif under `if is_pose and position_center is not None` instead,
+        # which is False for every non-pose spring regardless of whether
+        # its target had resolved -- meaning that elif fired, and printed
+        # the warning, every single frame for every VirtualSpring/
+        # JointSpring with an already-resolved target. Confirmed live:
+        # tip_spring showing correctly in meshcat while still spamming
+        # "no target yet" every cycle.
+        position_center = spring.get("position_center")
+        if is_pose and position_center is not None:
+            T_position_center = np.eye(4)
+            T_position_center[:3, 3] = position_center
+            viz.viewer[f"springs/{name}/position_center"].set_object(
+                g.Sphere(_SPRING_MARKER_RADIUS),
+                g.MeshLambertMaterial(color=0x00cccc, transparent=False)
+            )
+            viz.viewer[f"springs/{name}/position_center"].set_transform(T_position_center)
 
 def draw_frames(q):
     """Draw all available attachment frames as black dots with name labels."""
