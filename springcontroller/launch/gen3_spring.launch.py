@@ -383,10 +383,20 @@ def generate_launch_description():
 
     audio_device_arg = DeclareLaunchArgument(
         "audio_device",
-        default_value="",
+        default_value="plughw:CARD=Microphones,DEV=0",
         description=(
-            "ALSA device string for audio_capture_node (empty = system "
-            "default capture device, e.g. whichever mic is plugged in). "
+            "ALSA device string for audio_capture_node -- pinned to the "
+            "Blue Microphones USB mic by card *name* (stable across "
+            "reboots/replugs, same reasoning as video_device's by-id "
+            "path) rather than left empty. An empty string resolves to "
+            "ALSA's `default` PCM, which on this machine routes through "
+            "PipeWire and follows whatever PipeWire currently considers "
+            "the default source -- that can silently point at a "
+            "different input entirely (e.g. the desktop's own onboard "
+            "audio-in jack) after the USB mic is unplugged/replugged, "
+            "producing bags with real /audio/audio messages but no "
+            "usable signal. Run `arecord -l` to find the right CARD= "
+            "name for a given machine/mic if this default doesn't match. "
             "Only used when record_audio:=true."
         ),
     )
