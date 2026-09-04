@@ -16,7 +16,7 @@ arm's current tip position.
 Position moves never go through ros2_kortex/kortex_bringup -- that driver
 and gen3_torque_control both open independent Kortex sessions and fight
 over the arm-global servoing mode if run at the same time against real
-hardware (see gen3_ros2_kortex_coexistence in project memory, 2026-08-19).
+hardware (see gen3_ros2_kortex_coexistence in project memory).
 "Position control" in this file means "torque disabled, arm holding
 position via SINGLE_LEVEL_SERVOING," not a separate ros2_control
 controller.
@@ -77,6 +77,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_eye_location,
     log_event,
     log_measurement,
+    validate_participant_id,
     write_condition_yaml,
 )
 
@@ -179,9 +180,9 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("workspace_spring_damping", 5.0)
         self.declare_parameter("workspace_pose_spring_name", "face_participant")
         # The 'block' link preset's held face points along its local +y,
-        # not +z -- see LINK_PRESETS in web/index.html. Confirmed live
-        # 2026-09-03. study_control_panel.yaml overrides this at launch;
-        # kept in sync here as the fallback default.
+        # not +z -- see LINK_PRESETS in web/index.html.
+        # study_control_panel.yaml overrides this at launch; kept in sync
+        # here as the fallback default.
         self.declare_parameter("workspace_pose_local_face_normal", [0.0, 1.0, 0.0])
         self.declare_parameter("workspace_pose_stiffness", 5.0)
         self.declare_parameter("workspace_pose_damping", 0.2)
@@ -274,9 +275,9 @@ class StudyControlPanelNode(Node):
         # TRANSIENT_LOCAL: matches virtual_spring_node's own QoS for this
         # topic (see its target_qos) -- current target is state, not a
         # stream, and every publisher on ~/target/<name> needs matching
-        # durability or DDS refuses to deliver between them. A plain
-        # default-QoS publisher here triggered a live "requesting
-        # incompatible QoS ... DURABILITY" warning (2026-08-19).
+        # durability or DDS refuses to deliver between them (a plain
+        # default-QoS publisher here triggers a "requesting incompatible
+        # QoS ... DURABILITY" warning).
         latched_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -456,10 +457,9 @@ class StudyControlPanelNode(Node):
         Only waits for confirmation the move *started*, not for it to
         finish -- a real PlayJointTrajectory move can take many seconds to
         tens of seconds, far longer than rosbridge's own service-call
-        timeout tolerates (confirmed live 2026-08-19: move_to_study_start
-        timed out through rosbridge waiting for full completion). Actual
-        completion is tracked separately by the UI's live move-status
-        display (gen3_torque_control/move_status), not this call's return.
+        timeout tolerates. Actual completion is tracked separately by the
+        UI's live move-status display (gen3_torque_control/move_status),
+        not this call's return.
         """
         check_resp = self._call_sync(
             self._check_collision_client,
@@ -518,10 +518,9 @@ class StudyControlPanelNode(Node):
         add/remove, so a cache could easily be stale/empty just because
         this node started after the last change). Returns None if the
         parameter service is unavailable (virtual_spring_node not
-        running). pose_spring_names (then orientation_spring_names, pre-
-        rename) was missing here until 2026-08-19 -- meant
-        _reset_springs_cb silently left any pose spring in place instead
-        of actually resetting to a single tip anchor."""
+        running). Must query all three lists -- _reset_springs_cb relies
+        on this to remove every spring, pose springs included, not just
+        position ones."""
         req = GetParameters.Request()
         req.names = ["spring_names", "pose_spring_names", "joint_spring_names"]
         resp = self._call_sync(self._spring_params_client, req, timeout_sec=2.0)
@@ -852,12 +851,11 @@ class StudyControlPanelNode(Node):
 
     def _list_link_names_cb(self, request, response):
         # Excludes joint frames (pinocchio auto-creates one per URDF joint,
-        # same name as the joint e.g. "joint_1") -- selectable here only as
-        # a spring's attachment link, not a real rigid body. Confirmed live
-        # 2026-08-21: anchoring a spring to a joint frame caused seriously
-        # unstable behavior; root cause investigation deferred, this is the
-        # immediate fix (still a valid link_name for validate_link_name/
-        # get_link_pose, just no longer offered in this picker).
+        # same name as the joint e.g. "joint_1") -- anchoring a spring to a
+        # joint frame (not a real rigid body) causes seriously unstable
+        # behavior, so it's still a valid link_name for
+        # validate_link_name/get_link_pose, just not offered in this
+        # picker.
         response.success = True
         response.message = "ok"
         joint_names = set(self._arm.joint_names)
@@ -891,9 +889,10 @@ class StudyControlPanelNode(Node):
         return response
 
     def _finalize_study_conditions_cb(self, request, response):
-        if not request.participant_id.strip():
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
             response.success = False
-            response.message = "participant_id is required."
+            response.message = id_error
             response.position_path = ""
             response.pose_path = ""
             response.kt_path = ""
@@ -908,11 +907,10 @@ class StudyControlPanelNode(Node):
         condition_params = compute_condition_params(
             center, request.eye_height_cm, request.arm_length_cm, request.ramp_margin_cm,
         )
-        # In front of the participant's actual face (chair position),
-        # NOT above the approved reach-center -- those are two different
+        # In front of the participant's actual face (chair position), NOT
+        # above the approved reach-center -- those are two different
         # points on the participant's body, see compute_eye_location's
-        # docstring. Confirmed wrong 2026-08-21: this used to reuse
-        # center's x/y outright.
+        # docstring.
         pose_target = compute_eye_location(
             self._workspace_seat_x, self._workspace_seat_y, request.eye_height_cm,
         )
@@ -936,12 +934,11 @@ class StudyControlPanelNode(Node):
         # numbers between two places -- but pose.yaml itself carries no
         # tip_spring: position_center/position_radius are a passive dead
         # zone (full authority inside, ramped toward zero beyond, see
-        # PoseSpring.compute_torques), not an active pull toward that point.
-        # Added 2026-09-02 after a live incident where an orientation
-        # spring with no position bound pulled the tip well outside its
-        # intended workspace; confirmed 2026-09-03 that condition "pose"
-        # should have no separate position-pulling spring at all -- the
-        # dead-zone center simply goes where a tip spring would have gone.
+        # PoseSpring.compute_torques), not an active pull toward that
+        # point. An orientation spring with no position bound can pull the
+        # tip well outside its intended workspace, which is why "pose" has
+        # no separate position-pulling spring at all -- the dead-zone
+        # center simply goes where a tip spring would have gone.
         pose_params = {
             "link_name": request.link_name,
             "local_point": local_point,
@@ -1006,9 +1003,10 @@ class StudyControlPanelNode(Node):
         return response
 
     def _assign_condition_order_cb(self, request, response):
-        if not request.participant_id.strip():
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
             response.success = False
-            response.message = "participant_id is required."
+            response.message = id_error
             response.first_condition = ""
             response.already_assigned = False
             return response
@@ -1020,7 +1018,7 @@ class StudyControlPanelNode(Node):
             first_condition, already_assigned = assign_condition_order(
                 assignments_path, request.participant_id,
             )
-        except OSError as e:
+        except (OSError, ValueError) as e:
             response.success = False
             response.message = f"Failed reading/writing condition order assignments: {e}"
             response.first_condition = ""
@@ -1034,9 +1032,10 @@ class StudyControlPanelNode(Node):
         return response
 
     def _log_event_cb(self, request, response):
-        if not request.participant_id.strip():
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
             response.success = False
-            response.message = "participant_id is required."
+            response.message = id_error
             response.log_path = ""
             return response
 

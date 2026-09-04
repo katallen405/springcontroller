@@ -2,12 +2,11 @@
   ros__parameters:
 
     # No springs loaded -- gravity compensation only. Useful for isolating
-    # torque-mode-enable behavior (e.g. the entry-into-torque-mode fix,
-    # gen3_torque_control commit e95eda4) from spring-force effects.
+    # torque-mode-enable behavior from spring-force effects.
     #
-    # spring_names: [""] rather than [] -- confirmed live (2026-08-07) that
-    # BOTH extremes break this: [] has no inferrable element type and
-    # throws virtual_spring_node into ParameterUninitializedException at
+    # spring_names: [""] rather than [] -- BOTH extremes break this: []
+    # has no inferrable element type and throws virtual_spring_node into
+    # ParameterUninitializedException at
     # startup (before it gets far enough to publish anything, gravity comp
     # included); omitting the key entirely leaves ros__parameters: with no
     # actual value, which rcl's params parser also rejects ("No value at

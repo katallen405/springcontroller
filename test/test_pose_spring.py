@@ -1,9 +1,8 @@
 """
 test_pose_spring.py
 
-Unit tests for PoseSpring (renamed from OrientationSpring, 2026-09-02 --
-now a position-and-orientation hybrid, see virtual_spring.py). Uses a
-minimal stub arm so no real URDF is required.
+Unit tests for PoseSpring (a position-and-orientation hybrid, see
+virtual_spring.py). Uses a minimal stub arm so no real URDF is required.
 """
 
 import pytest

@@ -13,9 +13,8 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         # Globbed rather than listed by name: add a new launch/*.launch.py
         # or config/*.yaml file and it's installed automatically, no
-        # setup.py edit needed. (A file that previously went missing here
-        # -- config/springs.yaml -- would install silently broken with the
-        # old explicit-list approach; see git history if curious.)
+        # setup.py edit needed -- an explicit list risks a config file
+        # silently missing from the install.
         ("share/" + package_name + "/launch", glob.glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob.glob("config/*.yaml")),
     ],

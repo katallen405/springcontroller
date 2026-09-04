@@ -37,7 +37,7 @@ http://localhost:8090/
 each of these requires a relaunch
 
 KT (no torque controller):
-  config:=~/gen3_study_date/<participant ID>/KT.yaml
+  config:=~/gen3_study_data/<participant ID>/KT.yaml
 
 Position (relaunch springcontroller above with):
   config:=~/gen3_study_data/<participant ID>/position.yaml

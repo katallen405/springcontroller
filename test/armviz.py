@@ -155,15 +155,13 @@ def _get_spring_param(name, key, prefix=None):
     actually worked (the given `prefix`, echoed back, when one was given),
     or None if every prefix failed. Callers that started with prefix=None
     need this to actually learn the spring's real type, not just its
-    field values -- confirmed live 2026-09-02: without this, a spring
-    first seen via ~/springs_updated (i.e. one added at runtime, which is
-    how the UI always adds springs) got its target/link_name/local_point
-    resolved fine via the guess-and-fallback below, but the *type itself*
-    was silently discarded, leaving `prefix` stuck at None forever on that
-    spring's entry -- so draw_springs's `is_pose` check always
-    failed for it, and an orientation spring added from the UI never got
-    its purple target sphere or RGB attachment triad, only ever the
-    generic blue/red position-spring look."""
+    field values -- a spring first seen via ~/springs_updated (i.e. added
+    at runtime) would otherwise get its target/link_name/local_point
+    resolved via the guess-and-fallback below while the *type itself*
+    stays discarded, so draw_springs's `is_pose` check always fails for
+    it and an orientation spring added from the UI never gets its purple
+    target sphere or RGB attachment triad, only the generic blue/red
+    position-spring look."""
     prefixes = [prefix] if prefix is not None else SPRING_PARAM_PREFIXES
     for p in prefixes:
         try:
@@ -207,13 +205,11 @@ def get_param_position_center(name, prefix=None):
 
 def get_param_local_point(name, prefix=None):
     """Read initial local_point (attachment offset within the link's own
-    frame) from the spring node's ROS parameters. Unlike target/link_name,
-    this was never fetched at all before -- the blue attachment sphere
-    always sat at the link's frame origin regardless of local_point,
-    confirmed live 2026-08-21 (a (0,0,0.1) local_point still drew the ball
-    at (0,0,0) in the link frame). Same "None means not resolved yet, no
-    hardcoded fallback" contract as get_param_target/get_param_link.
-    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    frame) from the spring node's ROS parameters -- without it, the blue
+    attachment sphere sits at the link's frame origin regardless of
+    local_point. Same "None means not resolved yet, no hardcoded
+    fallback" contract as get_param_target/get_param_link. Returns
+    (value, resolved_prefix) -- see _get_spring_param."""
     out, resolved_prefix = _get_spring_param(name, 'local_point', prefix)
     if out is None:
         print(f"[viz] could not read local_point for '{name}'")
@@ -232,13 +228,11 @@ def get_param_link(name, prefix=None):
         # None, not a hardcoded fallback -- this script is robot-agnostic
         # (used for both UR3e and Gen3), so guessing a specific robot's
         # frame name here is wrong by construction for whichever robot
-        # *isn't* that guess. Confirmed live 2026-08-19 on a Gen3 run: a
-        # transient timeout on this one read (competing with
+        # *isn't* that guess. A transient read timeout (competing with
         # virtual_spring_node's own heavy startup for CPU, same root cause
-        # _track_spring's docstring already describes for target) left
-        # link_name permanently stuck at the old "ur3e_tool0" fallback,
-        # since -- unlike target -- nothing ever retried it. Callers must
-        # treat None as "not resolved yet", same as target=None.
+        # _track_spring's docstring describes for target) needs a retry
+        # like target gets, not a fallback that sticks forever. Callers
+        # must treat None as "not resolved yet", same as target=None.
         return None, None
     return out.split(':')[-1].strip(), resolved_prefix
 
@@ -253,13 +247,13 @@ def _track_spring(name, prefix=None):
     'ros2 param get' subprocesses, each with their own DDS discovery --
     actually succeed, especially right after virtual_spring_node's own
     heavy startup (URDF/collision model load) when it's competing hardest
-    for CPU. Previously a spring already present in `springs` was treated
-    as fully handled even with target=None, so a single transient failure
-    meant it silently never got a target -- confirmed 2026-08-14:
-    tip_spring showed up (arm was genuinely pulling toward it) but never
-    appeared in meshcat. Calling this again for an already-tracked name is
-    what gives a later retry (bootstrap loop, or another ~/springs_updated
-    message) a chance to actually recover from that.
+    for CPU. A spring already present in `springs` must not be treated as
+    fully handled while target=None, or a single transient failure means
+    it never gets a target and never appears in meshcat even though the
+    arm is genuinely pulling toward it. Calling this again for an
+    already-tracked name is what gives a later retry (bootstrap loop, or
+    another ~/springs_updated message) a chance to actually recover from
+    that.
 
     `prefix`, when given, is this spring's already-known parameter-name
     prefix (see SPRING_PARAM_PREFIXES) -- load_springs_from_params knows it
@@ -603,17 +597,15 @@ def safety_status_cb(msg):
     Show the caution halo only for the object ~/safety_status currently
     reports as the closest pair, and only while that's not SAFE.
 
-    A first version of this (2026-08-20) called set_property() from here
-    unconditionally on every message -- but virtual_spring_node republishes
-    ~/safety_status continuously (every joint_state cycle, ~100Hz), not
-    just on change, so that sent a fresh SetProperty command to the
-    browser about 100x/second on top of everything else armviz already
-    pushes at that same rate (frames, springs, robot pose). That flood is
-    the most likely cause of meshcat freezing entirely live (collision
-    objects and robot frames both stopped rendering) -- not a logic bug in
-    the halo code itself. Fixed by only sending a command on an actual
-    transition (entering/leaving caution, or the closest object changing),
-    via _active_halo_obj_id.
+    virtual_spring_node republishes ~/safety_status continuously (every
+    joint_state cycle, ~100Hz), not just on change -- calling
+    set_property() unconditionally on every message would send a fresh
+    SetProperty command to the browser about 100x/second on top of
+    everything else armviz already pushes at that same rate (frames,
+    springs, robot pose), which can flood the browser into freezing
+    entirely. Only send a command on an actual transition (entering/
+    leaving caution, or the closest object changing), via
+    _active_halo_obj_id.
 
     ~/safety_status only ever reports the single globally closest pair
     (see virtual_spring_node's _publish_safety_status), so at most one
@@ -690,9 +682,8 @@ def closest_points_cb(msg):
     _publish_safety_status) -- the actual detected closest pair's location,
     not something inferred from geometry. A thin cylinder rather than a
     Line: WebGL commonly ignores LineBasicMaterial's linewidth above 1px
-    regardless of the requested value (confirmed live 2026-09-01 -- bumping
-    it 4x had no visible effect), so this is drawn as real geometry instead,
-    the same way scene-object cylinders already are (see
+    regardless of the requested value, so this is drawn as real geometry
+    instead, the same way scene-object cylinders already are (see
     _CYLINDER_AXIS_ALIGN above, though that one converts a different
     axis convention -- this builds its transform directly from the two
     world points instead). Empty data (no collision model / nothing to
@@ -716,13 +707,12 @@ def closest_points_cb(msg):
 
 def collision_thresholds_cb(msg):
     """
-    [danger_threshold, caution_threshold, repulsion_max_force_n] --
-    CAUTION_THRESHOLD only ever came from the --caution-threshold launch
-    arg before this, so live-tuning it via the study UI silently left the
-    drawn halo at its stale launch-time size while the real triggering
-    distance had changed -- confirmed live 2026-08-20 (halo looked ~7cm
-    padded, actual caution_threshold was 0.73m). Redraws every tracked
-    object's halo at the new size, then restores whichever one (if any)
+    [danger_threshold, caution_threshold, repulsion_max_force_n] -- without
+    this, CAUTION_THRESHOLD only ever comes from the --caution-threshold
+    launch arg, so live-tuning it via the study UI would leave the drawn
+    halo at its stale launch-time size while the real triggering distance
+    changed. Redraws every tracked object's halo at the new size, then
+    restores whichever one (if any)
     safety_status_cb currently has shown -- draw_collision_object()
     unconditionally hides the halo, so that state would otherwise be lost.
     """
@@ -739,9 +729,7 @@ def collision_thresholds_cb(msg):
             set_halo_visible(obj_id, True)
 
 
-# Spring marker sphere radius (attachment/target/position_center) --
-# shrunk 2026-09-03 (confirmed live: 0.025, 5cm diameter, was still too
-# big) to half that.
+# Spring marker sphere radius (attachment/target/position_center).
 _SPRING_MARKER_RADIUS = 0.012
 
 # Triad line length for a pose spring's attachment marker (see
@@ -780,10 +768,8 @@ def draw_springs(q):
         _unknown_frame_warned.discard(name)
         # Offset by local_point in the link's own frame -- same transform
         # virtual_spring.py's force computation uses (T @ [local_point,1]).
-        # Previously this always used the link's frame origin outright, so
-        # the blue ball ignored local_point entirely regardless of what
-        # was actually configured -- confirmed live 2026-08-21 with a
-        # (0,0,0.1) local_point still drawing at the link origin.
+        # Without this, the blue ball would ignore local_point entirely
+        # and always draw at the link origin.
         placement = data.oMf[frame_id]
         local_point = spring.get("local_point")
         if local_point is None:
@@ -797,12 +783,10 @@ def draw_springs(q):
 
         # Attachment marker: blue sphere for a position (VirtualSpring)
         # attachment point, same as always -- but an RGB axis triad for a
-        # pose spring, showing the link's actual world orientation
-        # there (a bare dot never could -- and couldn't have shown, at a
-        # glance, that a live incident's orientation spring -- pre-rename,
-        # see PoseSpring in virtual_spring.py -- was rotating the link far
-        # more violently than intended, 2026-09-02). Uses
-        # placement.rotation directly (the link's raw world rotation, from
+        # pose spring, showing the link's actual world orientation there
+        # (a bare dot can't show, at a glance, whether an orientation
+        # spring is rotating the link far more violently than intended).
+        # Uses placement.rotation directly (the link's raw world rotation, from
         # the same FK already computed above) rather than aligning to the
         # spring's configured local_face_normal -- armviz doesn't fetch
         # local_face_normal at all today, and in the common default-normal
@@ -857,19 +841,15 @@ def draw_springs(q):
         # point back toward once it's outside position_radius, distinct
         # from target above (which is only ever a look-at direction, never
         # a pull). Teal so it reads as a third, different kind of point at
-        # a glance from target's purple/red and attachment's blue. Added
-        # 2026-09-03 -- previously nothing marked this point at all.
+        # a glance from target's purple/red and attachment's blue.
         #
         # Deliberately its own independent if, not folded into the
-        # `if target is not None` block above (or its elif) -- a bug fix
-        # 2026-09-03: an earlier version nested the no-target warning's
-        # elif under `if is_pose and position_center is not None` instead,
-        # which is False for every non-pose spring regardless of whether
-        # its target had resolved -- meaning that elif fired, and printed
-        # the warning, every single frame for every VirtualSpring/
-        # JointSpring with an already-resolved target. Confirmed live:
-        # tip_spring showing correctly in meshcat while still spamming
-        # "no target yet" every cycle.
+        # `if target is not None` block above (or its elif) -- nesting the
+        # no-target warning's elif under `if is_pose and position_center
+        # is not None` instead is False for every non-pose spring
+        # regardless of whether its target had resolved, so that elif
+        # would fire (and print the warning) every single frame for every
+        # VirtualSpring/JointSpring with an already-resolved target.
         position_center = spring.get("position_center")
         if is_pose and position_center is not None:
             T_position_center = np.eye(4)

@@ -24,13 +24,12 @@ objects:
     frame_id: "world"
     pose:
       # z = -half the box height so the top face lands at z=0 -- world's
-      # origin is now defined at table height (see base_joint in
-      # gen3_kinova_flat.urdf), so a flush table is exactly z=0 again; no
-      # per-object mounting-hardware offset needed here any more.
-      # x/y measured live 2026-08-20: table is 60in (x) x 30in (y), with the
-      # robot base 4.5in from the -x edge and 15.75in from the -y edge.
-      # center = edge + half-dimension; rounded to the nearest cm since
-      # nothing finer matters here.
+      # origin is defined at table height (see base_joint in
+      # gen3_kinova_flat.urdf), so a flush table is exactly z=0.
+      # x/y: table is 60in (x) x 30in (y), with the robot base 4.5in from
+      # the -x edge and 15.75in from the -y edge. center = edge +
+      # half-dimension; rounded to the nearest cm since nothing finer
+      # matters here.
       position: [0.65, -0.02, -0.025]
       orientation: [0.0, 0.0, 0.0, 1.0]
     # Optional, YAML-only (moveit_msgs/CollisionObject has no field for this):
@@ -44,8 +43,7 @@ objects:
 
   camera_tower:
     shape: box
-    # 7cm x 7cm footprint, 1.5m tall. Widened from 4cm 2026-08-21 after the
-    # tower was physically relocated.
+    # 7cm x 7cm footprint, 1.5m tall.
     dimensions: [0.07, 0.07, 1.5]
     frame_id: "world"
     pose:
@@ -65,18 +63,18 @@ objects:
   # ~/collision_object using the same id ("person_1"), no scene reload needed.
   person_1:
     shape: cylinder
-    # radius widened back to 0.3m 2026-08-20 (was shrunk to 0.15m in PR #11
-    # after it tripped collisions on a real seated setup -- if that recurs,
-    # re-check the seat offsets above before shrinking this again).
+    # radius sized to approximate a seated person without tripping
+    # collisions against a real seated setup -- if it does, re-check the
+    # seat offsets below before shrinking this.
     dimensions: [1.5, 0.25]
     frame_id: "world"
     pose:
       # x/y centered on the pre-set participant seat position (see
       # workspace_seat_x/workspace_seat_y in
-      # springcontroller_ui/config/study_control_panel.yaml) -- measured
-      # live 2026-08-20: chair is 45cm in from the table's -x edge, and a
-      # further 30cm out past the table's -y edge (the participant sits
-      # off the end of the table, not under it). Rounded to the nearest
-      # cm since nothing finer matters here.
+      # springcontroller_ui/config/study_control_panel.yaml) -- chair is
+      # 45cm in from the table's -x edge, and a further 30cm out past the
+      # table's -y edge (the participant sits off the end of the table,
+      # not under it). Rounded to the nearest cm since nothing finer
+      # matters here.
       position: [0.34, -0.70, 0.0]
       orientation: [0.0, 0.0, 0.0, 1.0]

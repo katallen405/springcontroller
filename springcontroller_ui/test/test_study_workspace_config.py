@@ -19,6 +19,7 @@ from springcontroller_ui.study_workspace_config import (
     compute_eye_location,
     log_event,
     log_measurement,
+    validate_participant_id,
     write_condition_yaml,
 )
 
@@ -78,9 +79,9 @@ def test_inner_radius_is_always_zero():
 
 
 def test_rest_length_is_zero():
-    # rest_length is unconditionally 0 (not inner_radius) as of commit
-    # 53755a1 -- the position spring always has a gentle pull toward the
-    # literal center of the workspace, no dead-zone shell equilibrium.
+    # rest_length is unconditionally 0 (not inner_radius) -- the position
+    # spring always has a gentle pull toward the literal center of the
+    # workspace, no dead-zone shell equilibrium.
     center = {"x": 0.0, "y": 0.0, "z": 10.16 * CM_TO_M}
     params = compute_condition_params(center, eye_height_cm=71.0, arm_length_cm=46.0)
     assert params["rest_length"] == 0
@@ -287,6 +288,30 @@ def test_log_measurement_records_warnings(tmp_path):
     with open(csv_path, newline="") as f:
         row = next(csv.DictReader(f))
     assert "elbow-height band" in row["warnings"]
+
+
+def test_validate_participant_id_accepts_ordinary_id():
+    assert validate_participant_id("P001") is None
+
+
+def test_validate_participant_id_rejects_empty():
+    assert validate_participant_id("") is not None
+    assert validate_participant_id("   ") is not None
+
+
+def test_validate_participant_id_rejects_path_separator():
+    assert validate_participant_id("../other") is not None
+    assert validate_participant_id("a/b") is not None
+    assert validate_participant_id("..") is not None
+
+
+def test_assign_condition_order_raises_on_malformed_row(tmp_path):
+    assignments_path = str(tmp_path / "condition_order.csv")
+    with open(assignments_path, "w", newline="") as f:
+        f.write("not_the_right,columns\nx,y\n")
+
+    with pytest.raises(ValueError):
+        assign_condition_order(assignments_path, "P001")
 
 
 def test_assign_condition_order_rotates_kt_position_pose(tmp_path):

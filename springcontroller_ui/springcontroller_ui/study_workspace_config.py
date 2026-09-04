@@ -19,6 +19,7 @@ import csv
 import datetime
 import math
 import os
+from typing import Optional
 
 import yaml
 
@@ -42,6 +43,19 @@ EYE_TARGET_Y_OFFSET_CM = 20.0
 
 def _cm(value_cm: float) -> float:
     return value_cm * CM_TO_M
+
+
+def validate_participant_id(participant_id: str) -> Optional[str]:
+    """Returns an error message if participant_id is unsafe to use as a
+    single path component under a study data dir, else None. Guards
+    against a typo'd '/' or '..' writing/reading outside the intended
+    per-participant directory, not just an empty string."""
+    participant_id = participant_id.strip()
+    if not participant_id:
+        return "participant_id is required."
+    if os.path.basename(participant_id) != participant_id or participant_id in (".", ".."):
+        return "participant_id must be a single path component (no '/', '..', etc.)."
+    return None
 
 
 def compute_candidate_center(
@@ -284,6 +298,11 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
             rows = list(csv.DictReader(f))
 
     for row in rows:
+        if "participant_id" not in row or "first_condition" not in row:
+            raise ValueError(
+                f"Malformed row in {assignments_path}: expected "
+                "'participant_id' and 'first_condition' columns."
+            )
         if row["participant_id"] == participant_id:
             return row["first_condition"], True
 

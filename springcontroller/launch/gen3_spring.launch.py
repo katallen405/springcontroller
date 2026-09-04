@@ -19,10 +19,7 @@ Prerequisites
       # nothing here subscribes to (both virtual_spring_node and armviz
       # listen on joint_states_topic:= below) -- virtual_spring_node then
       # never receives joint states, so no spring target ever resolves and
-      # nothing gets published, silently. Confirmed as a real regression
-      # 2026-08-19: virtual_spring_node's own remap was dropped in a WIP
-      # snapshot commit on 2026-08-03 and never restored, while armviz's
-      # matching remap was restored separately -- the two fell out of sync.
+      # nothing gets published, silently.
 
 Audio/video recording (record_audio:=true / record_video:=true)
 ------------------------------------------------------------
@@ -39,9 +36,7 @@ Audio/video recording (record_audio:=true / record_video:=true)
   it's recorded -- only the throttled+compressed topic goes in the bag,
   never the raw feed. video_jpeg_quality is applied via a delayed
   `ros2 param set` rather than a static launch parameter -- see
-  video_jpeg_quality_arg for why. Live-verified 2026-08-21 against two
-  real USB cameras + a mic; video size vs. quality tradeoff still being
-  tuned (see project memory for the running notes).
+  video_jpeg_quality_arg for why.
 
 Study-participant rosbag routing (participant_id:=... condition_name:=...)
 ------------------------------------------------------------
@@ -55,7 +50,7 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
   condition_name:=pose) rather than one long-running launch
   switching conditions live -- see participant_id_arg/condition_name_arg.
 
-  As of 2026-09-03, ~/finalize_study_conditions also embeds
+  ~/finalize_study_conditions also embeds
   participant_id/condition_name directly into position.yaml/pose.yaml/
   KT.yaml themselves (plain custom keys under ros__parameters -- harmless
   to virtual_spring_node, which declares every key it's handed as a ROS
@@ -151,10 +146,8 @@ def generate_launch_description():
             "started with its documented -r joint_states:=... remap (see "
             "web/index.html and the module docstring above) -- both "
             "virtual_spring_node and armviz remap their /joint_states "
-            "subscription to this single argument so the two can't fall out "
-            "of sync again the way they did 2026-08-03..2026-08-19 (see "
-            "git history: virtual_spring_node's remap was dropped in a WIP "
-            "snapshot commit and never restored, while armviz's was)."
+            "subscription to this single argument so the two can't fall "
+            "out of sync with each other."
         ),
     )
 
@@ -250,9 +243,9 @@ def generate_launch_description():
             "If false (default), enable_torque_control:=true refuses to "
             "enable when virtual_spring_node's ~/safety_status reports the "
             "resting pose is already inside danger_threshold or in "
-            "collision -- that's what's been tripping the Kinova's own "
-            "actuator fault protection (2026-08-07, 2026-08-13). Set true "
-            "only when deliberately testing from a near-collision pose."
+            "collision -- that trips the Kinova's own actuator fault "
+            "protection. Set true only when deliberately testing from a "
+            "near-collision pose."
         ),
     )
 
@@ -320,13 +313,11 @@ def generate_launch_description():
         description=(
             "If true (default), record the key torque/state/status topics "
             "plus /rosout to a rosbag under rosbag_dir for the duration of "
-            "this launch. Replaces ad-hoc 'ros2 topic echo >> file' capture "
-            "(imprecise, single-topic, hard to parse) used through "
-            "2026-08-07 -- a real bag gives properly-timestamped multi-topic "
-            "data, replayable/plottable directly in PlotJuggler. Purely "
-            "additive (a subscriber, not in the control path); default true "
-            "since unlike enabling torque control there's no downside "
-            "beyond disk space."
+            "this launch -- a real bag gives properly-timestamped "
+            "multi-topic data, replayable/plottable directly in "
+            "PlotJuggler. Purely additive (a subscriber, not in the "
+            "control path); default true since unlike enabling torque "
+            "control there's no downside beyond disk space."
         ),
     )
 
@@ -382,10 +373,9 @@ def generate_launch_description():
         default_value="false",
         description=(
             "If true, launch audio_capture_node (package ros-kilted-"
-            "audio-capture, not installed on this dev machine as of "
-            "2026-08-21 -- see module docstring) and mic-capture audio for "
-            "the run. Defaults to false, same reasoning as armviz:= -- "
-            "needs real hardware/a package this box doesn't have yet, so "
+            "audio-capture -- see module docstring) and mic-capture audio "
+            "for the run. Defaults to false, same reasoning as armviz:= -- "
+            "needs real hardware/a package that may not be installed, so "
             "it's an explicit opt-in rather than something that fails "
             "loudly on every plain control-code launch."
         ),
@@ -420,8 +410,8 @@ def generate_launch_description():
             "If true, launch v4l2_camera_node plus a topic_tools throttle "
             "node and record downsampled webcam video for the run. "
             "Defaults to false, same reasoning as record_audio:= above -- "
-            "needs a camera and packages not installed on this dev machine "
-            "as of 2026-08-21 (see module docstring)."
+            "needs a camera and packages that may not be installed (see "
+            "module docstring)."
         ),
     )
 
@@ -433,10 +423,9 @@ def generate_launch_description():
             "Only used when record_video:=true. Defaults to a "
             "/dev/v4l/by-id/... symlink (identifies this specific USB "
             "device by its serial) rather than a plain /dev/videoN path -- "
-            "confirmed live 2026-08-21 this dev machine has two cameras "
-            "plugged in and plain /dev/videoN numbering depends on USB "
-            "enumeration order, which can shift after a reboot or "
-            "unplug/replug; the by-id symlink doesn't. Run `ls "
+            "with two cameras plugged in, plain /dev/videoN numbering "
+            "depends on USB enumeration order, which can shift after a "
+            "reboot or unplug/replug; the by-id symlink doesn't. Run `ls "
             "/dev/v4l/by-id/` to find the right symlink for a given "
             "machine/camera if this default doesn't match."
         ),
@@ -493,20 +482,14 @@ def generate_launch_description():
             "resolution. Applied via a delayed `ros2 param set` "
             "(set_video_jpeg_quality below), not as a static launch "
             "parameter -- passing it as a Node(parameters=[...]) override "
-            "at startup consistently left it unset (two failed live "
-            "attempts, 2026-08-21: first as a silent NOT_SET, then -- "
-            "after confirming via `ros2 param list /camera` that the real "
-            "declared name is prefixed with the node's own name "
-            "('camera.image_raw.compressed.jpeg_quality', not the bare "
-            "'image_raw.compressed.jpeg_quality' both this arg's static "
-            "form and the first delayed-set attempt used) -- as an "
-            "explicit 'not declared' `ros2 param set` failure. Both "
-            "camera1/camera2's delayed-set calls now use the correct "
-            "node-name-prefixed name, confirmed to exist via `ros2 param "
-            "list /camera` -- NOT YET live-tested that `ros2 param set` "
-            "actually succeeds against it (let alone that it shrinks "
-            "subsequent frames' encoded size). Check both before relying "
-            "on this for a long/unattended run."
+            "at startup consistently leaves it unset, since "
+            "compressed_image_transport declares this parameter lazily "
+            "under the node-name-prefixed key "
+            "('camera.image_raw.compressed.jpeg_quality'), only once "
+            "something subscribes to .../compressed. NOT YET confirmed "
+            "that the delayed `ros2 param set` actually shrinks "
+            "subsequent frames' encoded size -- check before relying on "
+            "this for a long/unattended run."
         ),
     )
 
@@ -559,14 +542,12 @@ def generate_launch_description():
 
     # Waits for virtual_spring_node to actually be alive and publishing
     # valid torques (up to 10s) before enabling torque control, instead of
-    # blindly firing after a fixed delay. Confirmed live 2026-08-07: a
-    # crashed virtual_spring_node (bad springs config) still got torque
-    # control enabled under the old fixed-delay approach -- the arm briefly
-    # entered torque mode with nobody actually commanding it before
-    # gen3_torque_control's own watchdog caught the missing stream and
-    # disabled again ~200ms later. Also refuses to enable from an already-
-    # unsafe resting pose unless enable_torque_control_allow_danger:=true
-    # -- see wait_and_enable_torque.py.
+    # blindly firing after a fixed delay -- a crashed virtual_spring_node
+    # (e.g. bad springs config) would otherwise still get torque control
+    # enabled with nobody actually commanding the arm. Also refuses to
+    # enable from an already-unsafe resting pose unless
+    # enable_torque_control_allow_danger:=true -- see
+    # wait_and_enable_torque.py.
     enable_torque_control = ExecuteProcess(
         cmd=[
             SPRINGCONTROLLER_VENV_PYTHON,
@@ -608,8 +589,8 @@ def generate_launch_description():
             # pinned_meshcat_server.py only ever prints two short lines
             # total, so they'd sit in the buffer and never actually appear
             # in the launch log until the process exited, making a
-            # perfectly-running server look like it had silently failed to
-            # start (confirmed 2026-08-19).
+            # perfectly-running server look like it had silently failed
+            # to start.
             SPRINGCONTROLLER_VENV_PYTHON, "-u",
             PINNED_MESHCAT_SERVER_SCRIPT,
             "--zmq-url", LaunchConfiguration("meshcat_zmq_url"),
@@ -638,8 +619,8 @@ def generate_launch_description():
                     "--ros-args",
                     # Same joint_states_topic argument virtual_spring_node's
                     # own remappings=[...] uses above -- a single source of
-                    # truth instead of two hardcoded copies that can (and
-                    # did, 2026-08-03..2026-08-19) drift apart.
+                    # truth instead of two hardcoded copies that can drift
+                    # apart.
                     "-r", ["/joint_states:=", LaunchConfiguration("joint_states_topic")],
                 ],
                 output="screen",
@@ -672,9 +653,8 @@ def generate_launch_description():
     )
 
     # First of two cameras (see video_device2_arg / v4l2_camera_node2 below
-    # for the second) -- confirmed live 2026-08-21 this dev machine has two
-    # USB cameras plugged in and only one was ever being captured/recorded,
-    # so the second silently had no topic at all for rqt_image_view to show.
+    # for the second) -- each needs its own node/topic or the second
+    # camera silently has nothing for rqt_image_view to show.
     #
     # Captures at a reduced resolution (video_image_size) and republishes
     # via image_transport, which -- once compressed_image_transport is
@@ -708,11 +688,11 @@ def generate_launch_description():
     # compressed_image_transport's lazy publisher on v4l2_camera_node
     # actually turn on in the first place.
     #
-    # Output topic ends in /compressed, not /compressed_throttled -- confirmed
-    # live 2026-08-21: image_transport-aware viewers (rqt_image_view,
-    # image_view) parse a topic's *last* path segment as a transport-plugin
-    # name (<base_topic>/<transport>, e.g. .../compressed), so naming this
-    # .../compressed_throttled made them try to load a nonexistent
+    # Output topic ends in /compressed, not /compressed_throttled --
+    # image_transport-aware viewers (rqt_image_view, image_view) parse a
+    # topic's *last* path segment as a transport-plugin name
+    # (<base_topic>/<transport>, e.g. .../compressed), so naming this
+    # .../compressed_throttled would make them try to load a nonexistent
     # "compressed_throttled" transport plugin and fail outright. Only "raw"
     # and "compressed" are real registered transport suffixes -- putting
     # "_throttled" on the base-topic segment instead keeps this a normal,
@@ -742,11 +722,10 @@ def generate_launch_description():
     # load_collision_scene above, with extra margin since this depends on
     # two nodes (camera + throttle) instead of one being ready.
     #
-    # Parameter name confirmed live 2026-08-21 via `ros2 param list
-    # /camera` -- it's prefixed with the node's own name
+    # Parameter name is prefixed with the node's own name
     # ("camera.image_raw.compressed.jpeg_quality"), not the bare
-    # "image_raw.compressed.jpeg_quality" this used before, which is why
-    # every earlier attempt to set it failed ("not declared").
+    # "image_raw.compressed.jpeg_quality" -- get this wrong and the
+    # `ros2 param set` call fails with "not declared".
     set_video_jpeg_quality = TimerAction(
         period=5.0,
         actions=[
@@ -819,22 +798,20 @@ def generate_launch_description():
     # up gen3_torque_control's joint_states_topic and
     # /gen3_torque_control/status.
     #
-    # /kinova/joint_states_lowlevel is also listed explicitly (added
-    # 2026-09-03), even though joint_states_topic's own default already
-    # resolves to this exact name (see joint_states_topic_arg) -- ros2 bag
-    # record harmlessly dedupes a topic named twice, and this way the raw
-    # low-level joint states still get recorded under their real name even
-    # if joint_states_topic is ever overridden to something else.
+    # /kinova/joint_states_lowlevel is also listed explicitly, even though
+    # joint_states_topic's own default already resolves to this exact name
+    # (see joint_states_topic_arg) -- ros2 bag record harmlessly dedupes a
+    # topic named twice, and this way the raw low-level joint states still
+    # get recorded under their real name even if joint_states_topic is
+    # ever overridden to something else.
     #
-    # /gen3_torque_control/ee_pose and /gen3_torque_control/move_status
-    # (added 2026-09-03) -- move_status backs the study control panel's
-    # move-status display (see index.html's handleMoveStatus), useful to
-    # have recorded now that a stale FAILED move-status message not
-    # clearing is under investigation.
+    # /gen3_torque_control/ee_pose and /gen3_torque_control/move_status --
+    # move_status backs the study control panel's move-status display
+    # (see index.html's handleMoveStatus).
     #
-    # /virtual_spring_node/spring_forces (added 2026-09-03) -- every
-    # active spring's current force/moment/distance/angle_offset_rad (see
-    # SpringForce.msg and _publish_spring_forces in virtual_spring_node.py).
+    # /virtual_spring_node/spring_forces -- every active spring's current
+    # force/moment/distance/angle_offset_rad (see SpringForce.msg and
+    # _publish_spring_forces in virtual_spring_node.py).
     #
     # /virtual_spring_node/springs_updated is a latched std_msgs/String
     # publishing the full current list of spring names as JSON on every
@@ -881,8 +858,7 @@ def generate_launch_description():
         # in), the same gotcha virtual_spring_node.py's own config_path
         # handling already works around. Without this, a literal leading
         # "~" here means os.path.isfile() below is always False, so this
-        # whole fallback silently never fires -- confirmed live
-        # 2026-09-03 as the reason a KT.yaml launch still fell through to
+        # whole fallback silently never fires and the bag falls through to
         # the flat rosbag_dir instead of routing into the study folder.
         config_path = os.path.expanduser(LaunchConfiguration("config").perform(context))
         if config_path and os.path.isfile(config_path):
@@ -922,12 +898,10 @@ def generate_launch_description():
                     # Write to disk immediately instead of batching in an
                     # in-memory cache -- trades a little write throughput
                     # for the bag actually being (mostly) readable if the
-                    # recorder has to be hard-killed. Confirmed live
-                    # 2026-08-19: rosbag2's writer needs a clean shutdown to
-                    # finalize, so a Ctrl-\ during an e-stop incident meant
-                    # the bag for that whole session was lost outright,
-                    # even though the per-node ~/.ros/log/ text logs
-                    # survived fine.
+                    # recorder has to be hard-killed. rosbag2's writer
+                    # needs a clean shutdown to finalize otherwise, so a
+                    # hard kill mid-session (e.g. during an E-STOP) would
+                    # lose that whole session's bag outright.
                     "--max-cache-size", "0",
                     *output_name_args,
                     LaunchConfiguration("joint_states_topic"),
@@ -957,16 +931,16 @@ def generate_launch_description():
 
     return LaunchDescription([
         # Keep all ROS2/DDS traffic on loopback, off the Gen3's dedicated
-        # Ethernet link entirely -- confirmed 2026-08-19: when the physical
-        # E-STOP kills that interface, Cyclone DDS's own multicast
-        # discovery/shutdown traffic hung on it too (even for nodes with
-        # nothing to do with the robot, e.g. plain `ros2 bag record`),
-        # needing SIGKILL across the board. gen3_torque_control's actual
-        # robot connection is a separate raw Kortex socket, unrelated to
-        # DDS -- this doesn't touch that. Backstops the same setting in
-        # ~/.bashrc (this repo's copy survives a machine reimage/different
-        # account; doesn't help gen3_torque_node's own bare `ros2 run`,
-        # which still needs the shell-level export -- see README).
+        # Ethernet link entirely -- when the physical E-STOP kills that
+        # interface, Cyclone DDS's own multicast discovery/shutdown
+        # traffic hangs on it too (even for nodes unrelated to the robot,
+        # e.g. plain `ros2 bag record`), needing SIGKILL across the board.
+        # gen3_torque_control's actual robot connection is a separate raw
+        # Kortex socket, unrelated to DDS -- this doesn't touch that.
+        # Backstops the same setting in ~/.bashrc (this repo's copy
+        # survives a machine reimage/different account; doesn't help
+        # gen3_torque_node's own bare `ros2 run`, which still needs the
+        # shell-level export -- see README).
         SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
         urdf_path_arg,
         config_arg,

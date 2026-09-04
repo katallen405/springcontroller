@@ -102,12 +102,12 @@ def test_rest_length_no_force_at_natural_length():
 
 
 def test_deadband_continuous_at_outer_radius_regardless_of_rest_length():
-    # Regression for a live incident (2026-09-02): with rest_length=0 and a
-    # deadband (inner_radius=0.1016, outer_radius=0.127), extension sitting
-    # right at outer_radius made the commanded force jump ~5x depending on
-    # which side of the boundary floating-point noise landed on. The force
-    # magnitude just inside vs. just outside outer_radius must now match to
-    # within the size of the probe step, however rest_length is configured.
+    # Regression test: with rest_length=0 and a deadband (inner_radius=
+    # 0.1016, outer_radius=0.127), extension sitting right at outer_radius
+    # could make the commanded force jump depending on which side of the
+    # boundary floating-point noise landed on. The force magnitude just
+    # inside vs. just outside outer_radius must match to within the size
+    # of the probe step, however rest_length is configured.
     inner, outer = 0.1016, 0.127
     for rest_length in (0.0, inner, outer, 5.0):
         arm = StubArm()

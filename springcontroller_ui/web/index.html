@@ -632,20 +632,15 @@ function callTrigger(desc, label, targetMsgId) {
 }
 
 // gen3_torque_control's own /gen3_torque_control/move_status topic
-// (handleMoveStatus) is a one-shot notification, not a continuous state
-// -- it only publishes again on the *next* move attempt, so a stale
-// "FAILED: ..." from a past fault just sits there forever with nothing
-// to overwrite it, even after the fault is actually cleared. Ideally
-// gen3_torque_control would publish move_status itself once a fault
-// clears (e.g. back to "IDLE") so handleMoveStatus picks it up for
-// free -- until then, reset the display here on a successful clear so
-// it doesn't keep showing a resolved fault as if it were still live.
+// move_status is a one-shot notification with no clear-on-fix signal
+// from the fault controller, so a stale "FAILED: ..." would otherwise
+// sit here forever -- reset the display ourselves on a successful clear.
 function clearFaults() {
   callService(svcClearFaults, {}, function(resp) {
     showMsg('mode-msg', resp.success, 'Clear faults: ' + resp.message);
     if (resp.success) {
       const el = document.getElementById('move-state');
-      el.textContent = 'cleared (faults reset -- move status stays here until the next move attempt)';
+      el.textContent = 'cleared';
       el.className = 'val inactive';
     }
   }, function(err) {
