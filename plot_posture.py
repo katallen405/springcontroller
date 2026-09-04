@@ -7,6 +7,11 @@ Produces a time-series PNG with:
   - head_pitch_dev_deg / head_roll_dev_deg (sparse, only when a face was detected)
 
 All series are already baseline-relative (see extract_posture.py docstring).
+
+Pass --episodes-csv (the *_episodes.csv from classify_ergonomics.py) to
+shade hunch/lean episodes across all three panels, so a flagged episode can
+be visually cross-checked against --out-face-video/--out-video before
+trusting it.
 """
 import argparse
 import csv
@@ -16,6 +21,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+ZONE_COLORS = {
+    "hunch": ("tab:red", 0.12),
+    "lean": ("tab:purple", 0.12),
+    "hunch+lean": ("tab:brown", 0.15),
+}
+
 
 def to_float(v):
     try:
@@ -24,10 +35,25 @@ def to_float(v):
         return float("nan")
 
 
+def load_episodes(path):
+    return list(csv.DictReader(open(path)))
+
+
+def shade_episodes(ax, episodes):
+    for ep in episodes:
+        color, alpha = ZONE_COLORS.get(ep["zone"], (None, 0))
+        if color is None:
+            continue
+        if ep["sustained"] == "True":
+            alpha += 0.15
+        ax.axvspan(float(ep["start_sec"]), float(ep["end_sec"]), color=color, alpha=alpha, linewidth=0)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("csv_path")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--episodes-csv", default=None, help="*_episodes.csv from classify_ergonomics.py, to shade hunch/lean zones")
     args = ap.parse_args()
 
     csv_path = Path(args.csv_path)
@@ -44,6 +70,11 @@ def main():
     face_roll = [to_float(r["head_roll_dev_deg"]) for r in rows if r["face_detected"] == "True"]
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+
+    episodes = load_episodes(args.episodes_csv) if args.episodes_csv else []
+    if episodes:
+        for ax in axes:
+            shade_episodes(ax, episodes)
 
     axes[0].plot(t, shoulder_lean, color="tab:blue")
     axes[0].axhline(0, color="gray", linewidth=0.8)

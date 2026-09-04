@@ -90,7 +90,9 @@ source /opt/ros/kilted/setup.bash
 source ~/.posture_venv/bin/activate
 
 python3 extract_posture.py <path/to/bag_dir> --out-video <out>.mp4
-python3 plot_posture.py <path/to/bag_dir>_posture.csv
+python3 classify_ergonomics.py <path/to/bag_dir>_posture.csv
+python3 plot_posture.py <path/to/bag_dir>_posture.csv \
+  --episodes-csv <path/to/bag_dir>_posture_episodes.csv
 ```
 
 `extract_posture.py` writes `<bag_dir>_posture.csv` next to the bag by
@@ -111,6 +113,62 @@ Useful flags:
 
 If a bag only has one camera recorded, the other signal's columns just come
 back all NaN/not-detected -- the script doesn't require both.
+
+## Classifying hunch/lean exposure
+
+`classify_ergonomics.py` turns a `*_posture.csv` into a heuristic
+**threshold + time-in-zone** exposure summary -- not an adapted RULA-style
+composite score. These are camera-derived deviation proxies, not
+goniometric angles, so a heavier clinical scoring model would claim more
+precision than the input actually has. Duration matters as much as peak
+magnitude, so the unit of analysis is contiguous "episodes" in a zone, not
+just per-frame flags.
+
+```bash
+python3 classify_ergonomics.py <bag_dir>_posture.csv \
+  [--event-log <bag_dir>/event_log.csv]
+```
+
+Per frame, a zone (`hunch` / `lean` / `hunch+lean` / `neutral` / unclassified)
+is picked using whichever signal is available:
+
+- **Primary (face)**: `head_pitch_dev_deg > --hunch-threshold-deg` (default
+  20deg, an adapted reference point from the commonly-cited >20deg
+  neck-flexion risk cutoff in ergonomics literature -- **not** a validated
+  cutoff for this rig) and/or `abs(head_roll_dev_deg) > --lean-threshold-deg`
+  (default 15deg).
+- **Fallback (shoulder)**, only when the face wasn't detected: since
+  `shoulder_dist_dev_px`/`shoulder_line_dev_deg` are in pixels, not degrees,
+  they can't share the face signal's literature-derived cutoff. Instead
+  they're checked against a **session-relative percentile**
+  (`--shoulder-percentile`, default 75th) of that same session's own values.
+  Every row records which source (`face` vs `shoulder_fallback`) produced
+  its label.
+- Frames with neither signal are left unclassified and excluded from the
+  hunch/lean/neutral percentages (reported separately as a % of wall-clock
+  time, so low coverage stays visible instead of silently counting as
+  "neutral").
+
+Contiguous same-zone frames are merged into episodes, bridging momentary
+(`--gap-tolerance`, default 1.0s) unclassified gaps so one real episode
+isn't split by a single missed detection. Episodes at or above
+`--sustained-seconds` (default 4.0s) are flagged `sustained`.
+
+Outputs (next to the input CSV, or via `--out-zones`/`--out-episodes`/
+`--out-summary`):
+- `*_zones.csv` -- per-frame zone + source
+- `*_episodes.csv` -- one row per episode (zone, source, start/end/duration,
+  sustained); feed this into `plot_posture.py --episodes-csv ...` to shade
+  hunch/lean episodes on the time-series plot
+- `*_ergo_summary.csv` -- one row of exposure stats for the whole session,
+  plus one row per trial if `--event-log` is given (matched by `Trial
+  start`/`Trial end` timestamps against the study's `event_log.csv`)
+
+As with everything else in this repo: **always spot-check a flagged
+"sustained" episode against `--out-face-video`/`--out-video` before trusting
+it.** The default thresholds are starting points, not validated for this
+rig -- revisit them once there's a session with a human-rated ground truth
+to compare against.
 
 ## Notes / data hygiene
 
