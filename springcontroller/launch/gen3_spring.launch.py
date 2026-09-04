@@ -926,6 +926,7 @@ def generate_launch_description():
                     "/gen3_torque_control/status",
                     "/gen3_torque_control/ee_pose",
                     "/gen3_torque_control/move_status",
+                    "/gen3_torque_control/gripper_state",
                     "/audio/audio",
                     "/camera/image_raw_throttled/compressed",
                     "/camera2/image_raw_throttled/compressed",
