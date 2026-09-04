@@ -53,9 +53,15 @@ Worth adding as a second dedicated camera rather than replacing the current
 task-view one.
 
 **Also found:** `/camera/image_raw_throttled/compressed` (the other camera)
-has 0 recorded messages in every bag checked so far -- only camera2 is
-actually being captured. Check whatever launch config is supposed to record
-it if you want that second view too.
+had 0 recorded messages in every bag checked so far -- only camera2 was
+actually being captured. This turned out to be a loose USB extension cable
+on that camera, not a launch-file bug (`gen3_spring.launch.py` was already
+wired correctly for both cameras) -- a fully unseated USB connector doesn't
+enumerate at all, so the node never sees a device. springcontroller's test
+procedure now checks both cameras' cabling before a recording, so new bags
+should have both feeds; if you hit a bag with 0 messages on either camera
+topic again, check `ls /dev/v4l/by-id/` and `journalctl -k` for that
+camera's serial before suspecting this code or the launch file.
 
 ## Setup
 
