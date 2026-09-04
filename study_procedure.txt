@@ -1,15 +1,4 @@
-=========================
-- all of these can be auto-populated into terminals ready to start with
-~/config/ros-layout.sh
-=========================
---- Pre-flight: confirm both cameras before launching (do this every session) ---
-2026_study.launch.py records video from two USB cameras (record_video
-defaults to true). Their device paths are hardcoded by USB serial number
-(video_device / video_device2 args in gen3_spring.launch.py), so if only
-one is actually plugged in, that arg's camera silently records 0 frames
-all session -- the launch doesn't fail, the bag just has an empty topic
-for that camera and nobody notices until reviewing footage afterward.
-
+--- Pre-flight: confirm both cameras before launching ---
 Before launching, run:
   ls /dev/v4l/by-id/
 ...and confirm you see symlinks for BOTH:
@@ -18,8 +7,16 @@ Before launching, run:
 If either is missing, plug that camera in (or swap USB ports/hubs) and
 re-run the ls until both show up -- then launch as normal.
 
-Start the gen3 controller node:
-ros2 launch gen3_torque_control gen3_torque_control.launch.py
+To check that they are aimed correctly:
+ffplay -f v4l2 -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_91E4D430-video-index0
+ ffplay -f v4l2 -i /dev/v4l/by-id/usb-USB_CAMERA_USB_CAMERA_240725172848-video-index0
+=========================
+all of these three ros launches can be
+auto-populated into terminals ready to start with
+~/config/ros-layout.sh
+=========================
+Start the gen3 controller node: ros2 launch gen3_torque_control
+gen3_torque_control.launch.py
 
 Start the springcontroller:
 ros2 launch springcontroller 2026_study.launch.py
