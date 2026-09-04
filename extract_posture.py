@@ -42,8 +42,11 @@ this script, absolute values are not physically meaningful on their own.
 Instead it calibrates a per-recording, per-signal baseline from the first
 few seconds after that signal is first detected (assumed roughly neutral
 posture) and reports deviation from that baseline. Always sanity-check
-against the annotated overlay video (--out-video) before trusting numbers --
-these are proxies, not calibrated biomechanical angles.
+against the annotated overlay video before trusting numbers -- these are
+proxies, not calibrated biomechanical angles. --out-video shows the
+shoulder-topic footage; --out-face-video shows the face-topic footage that
+head_pitch_deg/head_roll_deg actually come from -- use that one to judge
+whether the head-pose numbers are trustworthy.
 
 If a bag only has one camera recording (check with `ros2 bag info`), the
 other signal's columns are simply all NaN/not-detected -- this has happened
@@ -145,11 +148,16 @@ def make_pose_landmarker():
     return mp_vision.PoseLandmarker.create_from_options(opts)
 
 
-def extract_face_rows(bag_path, topic, every, t0_ns):
+def extract_face_rows(bag_path, topic, every, t0_ns, out_video=None):
     """Full pass over the face camera: returns a list of dicts sorted by
-    t_ns, plus the (possibly updated) shared t0_ns."""
+    t_ns, plus the (possibly updated) shared t0_ns. If out_video is given,
+    also writes an annotated overlay video of this camera's own footage
+    (face mesh + pitch/roll readout) -- use this to sanity-check head-pose
+    numbers against the camera that actually produced them, since --out-video
+    shows the *other* camera's footage."""
     face_lm = make_face_landmarker()
     rows = []
+    writer = None
     last_t_ms = -1
     for i, (t_ns, frame) in enumerate(iter_images(bag_path, topic)):
         if i % every != 0:
@@ -174,6 +182,26 @@ def extract_face_rows(bag_path, topic, every, t0_ns):
             row["head_yaw_deg"] = yaw
             row["head_roll_deg"] = roll
         rows.append(row)
+
+        if out_video:
+            h, w = frame.shape[:2]
+            if writer is None:
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(out_video, fourcc, 15, (w, h))
+            annotated = frame.copy()
+            if result.face_landmarks:
+                for p in result.face_landmarks[0][::5]:
+                    cv2.circle(annotated, (int(p.x * w), int(p.y * h)), 1, (255, 200, 0), -1)
+            text = (
+                f"pitch={row.get('head_pitch_deg', float('nan')):.1f} "
+                f"roll={row.get('head_roll_deg', float('nan')):.1f} "
+                f"yaw={row.get('head_yaw_deg', float('nan')):.1f}"
+            )
+            cv2.putText(annotated, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            writer.write(annotated)
+
+    if writer:
+        writer.release()
     face_lm.close()
     return rows, t0_ns
 
@@ -209,6 +237,11 @@ def main():
         "--out-video", default=None,
         help="optional annotated overlay video (mp4), built from the shoulder-topic frames",
     )
+    ap.add_argument(
+        "--out-face-video", default=None,
+        help="optional annotated overlay video (mp4), built from the face-topic frames -- "
+        "use this to check head_pitch/head_roll against the camera that actually produced them",
+    )
     ap.add_argument("--every", type=int, default=1, help="process every Nth frame of each camera")
     ap.add_argument(
         "--max-pair-gap", type=float, default=0.2,
@@ -229,7 +262,9 @@ def main():
 
     # Pass 1: face camera, fully processed up front so shoulder-frame pairing
     # below is a simple nearest-timestamp lookup.
-    face_rows, t0_ns = extract_face_rows(bag_path, args.face_topic, args.every, None)
+    face_rows, t0_ns = extract_face_rows(
+        bag_path, args.face_topic, args.every, None, out_video=args.out_face_video
+    )
     face_t_ns_sorted = [r["t_ns"] for r in face_rows]
 
     # Pass 2: shoulder camera, streamed (so --out-video can be written
@@ -381,6 +416,8 @@ def main():
     print(f"wrote {out_csv}")
     if args.out_video:
         print(f"wrote {args.out_video}")
+    if args.out_face_video:
+        print(f"wrote {args.out_face_video}")
 
 
 if __name__ == "__main__":

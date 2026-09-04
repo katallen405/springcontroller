@@ -94,10 +94,13 @@ python3 plot_posture.py <path/to/bag_dir>_posture.csv
 ```
 
 `extract_posture.py` writes `<bag_dir>_posture.csv` next to the bag by
-default (override with `--out-csv`). `--out-video` is optional and draws the
-shoulder points and a live metric readout (pitch/roll from the paired face
-frame, plus the shoulder proxies) over the shoulder camera's video -- use it
-to sanity-check the numbers, not just skim the CSV.
+default (override with `--out-csv`). Two optional overlay videos, each
+showing its own camera's footage annotated with what was detected from it,
+so you're checking numbers against the frames that actually produced them:
+- `--out-video` -- shoulder points + the live metric readout, over the
+  shoulder camera's footage
+- `--out-face-video` -- face mesh + pitch/roll/yaw readout, over the face
+  camera's own footage (use this one to judge head-pose numbers)
 
 Useful flags:
 - `--face-topic` / `--shoulder-topic` -- override which topic plays which
