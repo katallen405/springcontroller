@@ -135,98 +135,194 @@ def get_all_frames():
 # ---------------------------------------------------------------------------
 
 # Cartesian-target spring types live under different parameter prefixes
-# (VirtualSpring: springs.<name>.*, OrientationSpring: orientation_springs.
+# (VirtualSpring: springs.<name>.*, PoseSpring: pose_springs.
 # <name>.*) but both publish on the same /virtual_spring_node/target/<name>
 # topic and both have a meaningful attachment point + target to draw, so
 # armviz treats them the same everywhere except this prefix lookup.
-SPRING_PARAM_PREFIXES = ["springs", "orientation_springs"]
+SPRING_PARAM_PREFIXES = ["springs", "pose_springs"]
 
-def _get_spring_param(name, key):
-    """Try each known spring-type prefix in turn; return the raw `ros2
-    param get` output from whichever one actually has this parameter."""
-    for prefix in SPRING_PARAM_PREFIXES:
+def get_joint_spring_names():
+    """Names currently in the spring node's joint_spring_names param, as a
+    set. JointSprings (e.g. a damping-only joint_7 spring) have no
+    link_name/target/local_point at all -- nothing here can draw them as a
+    Cartesian glyph -- so callers use this to filter them out before ever
+    reaching _track_spring/SPRING_PARAM_PREFIXES, rather than let the
+    guess-every-prefix fallback burn through "springs" and "pose_springs"
+    (each a guaranteed "Invalid access to undeclared parameter(s)" WARN on
+    the node side) only to still end up with nothing to draw. Queried
+    fresh on every call (not cached) since a joint spring can be added at
+    runtime via ~/add_joint_spring, same as spring_names/pose_spring_names
+    in load_springs_from_params. Returns an empty set (not an error) if
+    the param read fails or the node hasn't declared it yet."""
+    try:
+        out = subprocess.check_output([
+            'ros2', 'param', 'get', SPRING_NODE, 'joint_spring_names'
+        ], timeout=5).decode()
+    except Exception:
+        return set()
+    return set(re.findall(r"'([^']+)'", out))
+
+def _get_spring_param(name, key, prefix=None):
+    """Fetch `<prefix>.<name>.<key>` via `ros2 param get`. When `prefix` is
+    known (the caller already knows this spring's type -- see
+    load_springs_from_params) it's queried directly, no guessing. Otherwise
+    falls back to trying each known spring-type prefix in turn -- this is
+    the only path left that generates the "Invalid access to undeclared
+    parameter(s)" WARN on the node side, and it only fires for a spring
+    whose type wasn't known when it was first tracked (e.g. one added after
+    startup, seen only via ~/springs_updated).
+
+    Returns (value, resolved_prefix) -- resolved_prefix is whichever prefix
+    actually worked (the given `prefix`, echoed back, when one was given),
+    or None if every prefix failed. Callers that started with prefix=None
+    need this to actually learn the spring's real type, not just its
+    field values -- a spring first seen via ~/springs_updated (i.e. added
+    at runtime) would otherwise get its target/link_name/local_point
+    resolved via the guess-and-fallback below while the *type itself*
+    stays discarded, so draw_springs's `is_pose` check always fails for
+    it and an orientation spring added from the UI never gets its purple
+    target sphere or RGB attachment triad, only the generic blue/red
+    position-spring look."""
+    prefixes = [prefix] if prefix is not None else SPRING_PARAM_PREFIXES
+    for p in prefixes:
         try:
-            return subprocess.check_output([
+            out = subprocess.check_output([
                 'ros2', 'param', 'get', SPRING_NODE,
-                f'{prefix}.{name}.{key}'
+                f'{p}.{name}.{key}'
             ], timeout=5).decode()
+            return out, p
         except Exception:
             continue
-    return None
+    return None, None
 
-def get_param_target(name):
-    """Read initial spring target from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'target')
+def get_param_target(name, prefix=None):
+    """Read initial spring target from the spring node's ROS parameters.
+    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'target', prefix)
     if out is None:
         print(f"[viz] could not read target for '{name}'")
-        return None
+        return None, None
     nums = re.findall(r'[-\d.]+', out.split(':')[-1])
     if len(nums) == 3:
-        return np.array([float(x) for x in nums])
-    return None
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
 
-def get_param_local_point(name):
+def get_param_position_center(name, prefix=None):
+    """Read a pose spring's position_center (EXPERIMENTAL, see PoseSpring
+    in virtual_spring.py) from the spring node's ROS parameters --
+    PoseSpring-only, so only ever called once _track_spring already knows
+    a spring resolved to the pose_springs prefix (no "could not read"
+    print here, unlike get_param_target/get_param_link/
+    get_param_local_point, which apply to every spring type and so treat
+    a failed read as worth logging). Returns (value, resolved_prefix) --
+    see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'position_center', prefix)
+    if out is None:
+        return None, None
+    nums = re.findall(r'[-\d.]+', out.split(':')[-1])
+    if len(nums) == 3:
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
+
+def get_param_local_point(name, prefix=None):
     """Read initial local_point (attachment offset within the link's own
-    frame) from the spring node's ROS parameters. Unlike target/link_name,
-    this was never fetched at all before -- the blue attachment sphere
-    always sat at the link's frame origin regardless of local_point,
-    confirmed live 2026-08-21 (a (0,0,0.1) local_point still drew the ball
-    at (0,0,0) in the link frame). Same "None means not resolved yet, no
-    hardcoded fallback" contract as get_param_target/get_param_link."""
-    out = _get_spring_param(name, 'local_point')
+    frame) from the spring node's ROS parameters -- without it, the blue
+    attachment sphere sits at the link's frame origin regardless of
+    local_point. Same "None means not resolved yet, no hardcoded
+    fallback" contract as get_param_target/get_param_link. Returns
+    (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'local_point', prefix)
     if out is None:
         print(f"[viz] could not read local_point for '{name}'")
-        return None
+        return None, None
     nums = re.findall(r'[-\d.]+', out.split(':')[-1])
     if len(nums) == 3:
-        return np.array([float(x) for x in nums])
-    return None
+        return np.array([float(x) for x in nums]), resolved_prefix
+    return None, None
 
-def get_param_link(name):
-    """Read initial link_name from the spring node's ROS parameters."""
-    out = _get_spring_param(name, 'link_name')
+def get_param_link(name, prefix=None):
+    """Read initial link_name from the spring node's ROS parameters.
+    Returns (value, resolved_prefix) -- see _get_spring_param."""
+    out, resolved_prefix = _get_spring_param(name, 'link_name', prefix)
     if out is None:
         print(f"[viz] could not read link_name for '{name}'")
         # None, not a hardcoded fallback -- this script is robot-agnostic
         # (used for both UR3e and Gen3), so guessing a specific robot's
         # frame name here is wrong by construction for whichever robot
-        # *isn't* that guess. Confirmed live 2026-08-19 on a Gen3 run: a
-        # transient timeout on this one read (competing with
+        # *isn't* that guess. A transient read timeout (competing with
         # virtual_spring_node's own heavy startup for CPU, same root cause
-        # _track_spring's docstring already describes for target) left
-        # link_name permanently stuck at the old "ur3e_tool0" fallback,
-        # since -- unlike target -- nothing ever retried it. Callers must
-        # treat None as "not resolved yet", same as target=None.
-        return None
-    return out.split(':')[-1].strip()
+        # _track_spring's docstring describes for target) needs a retry
+        # like target gets, not a fallback that sticks forever. Callers
+        # must treat None as "not resolved yet", same as target=None.
+        return None, None
+    return out.split(':')[-1].strip(), resolved_prefix
 
-def _track_spring(name):
+def _track_spring(name, prefix=None, force_refresh=False):
     """Ensure `name` is present in `springs` with a resolved target,
     (re)trying the target fetch if it's still missing from a previous
     attempt. Creates the runtime ~/target/<name> subscription the first
     time `name` is seen. Returns True once the target is known.
+
+    force_refresh=True re-fetches target/link_name/local_point/
+    position_center even if already resolved -- used by springs_updated_cb
+    for a name it already knows about, since ~/update_spring (edit an
+    existing spring in place, e.g. via the study panel's Adjust button) has
+    no live topic for link_name/local_point at all, and doesn't republish
+    ~/target/<name> either. Without this, an in-place edit's new geometry
+    is correctly applied server-side (and mirrored into parameters) but
+    this viewer keeps drawing the spring at its stale original
+    location/attachment forever.
 
     A spring name can become known (e.g. via spring_names or
     ~/springs_updated) before its target/link_name sub-fetches -- separate
     'ros2 param get' subprocesses, each with their own DDS discovery --
     actually succeed, especially right after virtual_spring_node's own
     heavy startup (URDF/collision model load) when it's competing hardest
-    for CPU. Previously a spring already present in `springs` was treated
-    as fully handled even with target=None, so a single transient failure
-    meant it silently never got a target -- confirmed 2026-08-14:
-    tip_spring showed up (arm was genuinely pulling toward it) but never
-    appeared in meshcat. Calling this again for an already-tracked name is
-    what gives a later retry (bootstrap loop, or another ~/springs_updated
-    message) a chance to actually recover from that."""
+    for CPU. A spring already present in `springs` must not be treated as
+    fully handled while target=None, or a single transient failure means
+    it never gets a target and never appears in meshcat even though the
+    arm is genuinely pulling toward it. Calling this again for an
+    already-tracked name is what gives a later retry (bootstrap loop, or
+    another ~/springs_updated message) a chance to actually recover from
+    that.
+
+    `prefix`, when given, is this spring's already-known parameter-name
+    prefix (see SPRING_PARAM_PREFIXES) -- load_springs_from_params knows it
+    from which of spring_names/pose_spring_names/joint_spring_names
+    it found the name under, so passing it here skips straight to the
+    right one instead of guessing "springs" first and eating a guaranteed
+    "Invalid access to undeclared parameter(s)" WARN for every non-Cartesian
+    spring. Once resolved (here or on a later call), it's cached on the
+    entry so retries reuse it even if a later caller (e.g. springs_updated_cb,
+    which only gets a bare name with no type) doesn't pass one."""
     entry = springs.get(name)
     if entry is None:
-        target      = get_param_target(name)
-        link_name   = get_param_link(name)
-        local_point = get_param_local_point(name)
+        # `known` is a 1-element mutable box (not a plain local) so `fetch`
+        # below can update it in place: once ANY field resolves a prefix
+        # (when we started with prefix=None), the rest go straight to that
+        # same prefix instead of each independently re-guessing through
+        # SPRING_PARAM_PREFIXES -- they must all agree, a spring only
+        # exists under one prefix. See _get_spring_param's docstring for
+        # why capturing this matters at all (not just an efficiency thing).
+        known = [prefix]
+        def fetch(getter):
+            value, resolved = getter(name, known[0])
+            if known[0] is None and resolved is not None:
+                known[0] = resolved
+            return value
+        target      = fetch(get_param_target)
+        link_name   = fetch(get_param_link)
+        local_point = fetch(get_param_local_point)
+        # PoseSpring-only -- see get_param_position_center's docstring.
+        # known[0] is settled by now (target/link_name/local_point all
+        # attempt to resolve it above).
+        position_center = fetch(get_param_position_center) if known[0] == "pose_springs" else None
         springs[name] = entry = {
-            "target":      target,
-            "link_name":   link_name,
-            "local_point": local_point,
+            "target":          target,
+            "link_name":       link_name,
+            "local_point":     local_point,
+            "position_center": position_center,
+            "prefix":          known[0],
         }
         # TRANSIENT_LOCAL to match virtual_spring_node's ~/target/<name>
         # publisher -- see _latched_qos below for why a plain VOLATILE
@@ -239,17 +335,28 @@ def _track_spring(name):
             _latched_qos,
         )
         target_subs[name] = sub
-        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}")
+        print(f"[viz] tracking spring: '{name}'  link={link_name}  target={target}  prefix={known[0]}")
     else:
-        if entry.get("target") is None:
-            entry["target"] = get_param_target(name)
-            print(f"[viz] retried target for '{name}': {entry['target']}")
-        if entry.get("link_name") is None:
-            entry["link_name"] = get_param_link(name)
-            print(f"[viz] retried link_name for '{name}': {entry['link_name']}")
-        if entry.get("local_point") is None:
-            entry["local_point"] = get_param_local_point(name)
-            print(f"[viz] retried local_point for '{name}': {entry['local_point']}")
+        known = [prefix if prefix is not None else entry.get("prefix")]
+        def fetch(getter):
+            value, resolved = getter(name, known[0])
+            if known[0] is None and resolved is not None:
+                known[0] = resolved
+            return value
+        if force_refresh or entry.get("target") is None:
+            entry["target"] = fetch(get_param_target)
+            print(f"[viz] refreshed target for '{name}': {entry['target']}")
+        if force_refresh or entry.get("link_name") is None:
+            entry["link_name"] = fetch(get_param_link)
+            print(f"[viz] refreshed link_name for '{name}': {entry['link_name']}")
+        if force_refresh or entry.get("local_point") is None:
+            entry["local_point"] = fetch(get_param_local_point)
+            print(f"[viz] refreshed local_point for '{name}': {entry['local_point']}")
+        if known[0] == "pose_springs" and (force_refresh or entry.get("position_center") is None):
+            entry["position_center"] = fetch(get_param_position_center)
+            print(f"[viz] refreshed position_center for '{name}': {entry['position_center']}")
+        if entry.get("prefix") is None:
+            entry["prefix"] = known[0]
     # local_point isn't part of the resolved-gate: draw_springs falls back
     # to zero for it (the ball just sits at the link origin, same as
     # before this was tracked at all) rather than blocking the whole
@@ -259,11 +366,15 @@ def _track_spring(name):
 
 def load_springs_from_params():
     """Bootstrap spring list from ROS params at startup. Returns True only
-    once every known spring name (Cartesian or orientation) also has a
+    once every known spring name (Cartesian or pose) also has a
     target -- see _track_spring."""
     any_found = False
     all_resolved = True
-    for names_param in ("spring_names", "orientation_spring_names"):
+    names_param_prefix = {
+        "spring_names":             "springs",
+        "pose_spring_names": "pose_springs",
+    }
+    for names_param in ("spring_names", "pose_spring_names"):
         try:
             out = subprocess.check_output([
                 'ros2', 'param', 'get', SPRING_NODE, names_param
@@ -281,8 +392,17 @@ def load_springs_from_params():
         # List comprehension, not all(gen) -- must attempt every name
         # (each with its own retry) rather than short-circuiting on the
         # first one still missing a target.
-        if not all([_track_spring(name) for name in names]):
+        prefix = names_param_prefix[names_param]
+        if not all([_track_spring(name, prefix) for name in names]):
             all_resolved = False
+
+    # JointSprings are loaded by the node too but never drawn here -- see
+    # get_joint_spring_names' docstring. Logged for visibility only, no
+    # _track_spring call.
+    joint_names = get_joint_spring_names()
+    if joint_names:
+        print(f"[viz] found joint springs from params (not visualized): {sorted(joint_names)}")
+
     return any_found and all_resolved
 # ---------------------------------------------------------------------------
 # ROS callbacks
@@ -314,16 +434,25 @@ def make_target_cb(spring_name):
 
 def springs_updated_cb(msg):
     """Called when the spring node adds or removes springs."""
-    active_names  = set(json.loads(msg.data))
+    all_active_names = set(json.loads(msg.data))
+    # _publish_springs_updated broadcasts every spring's name regardless of
+    # type -- drop JointSprings here so they never reach _track_spring (see
+    # get_joint_spring_names' docstring for why there's nothing to draw for
+    # one anyway).
+    active_names  = all_active_names - get_joint_spring_names()
     current_names = set(springs.keys())
 
-    # Add new springs, and retry any already-tracked one whose target
-    # fetch previously failed and never got picked up again (see
-    # _track_spring) -- a later ~/springs_updated message is otherwise the
-    # only other chance after the bootstrap retry loop gives up.
+    # New springs get a normal (lazy) track. Already-known ones get a
+    # forced full re-fetch, not just a retry of still-missing fields --
+    # ~/springs_updated is also the broadcast that follows an in-place
+    # ~/update_spring edit (e.g. the study panel's Adjust -> Update spring
+    # flow), which changes link_name/local_point/target with no other live
+    # signal this viewer listens to (see _track_spring's force_refresh
+    # docstring). This doubles as the old "retry a target fetch that
+    # previously failed" behavior too, since a forced refresh covers that
+    # case as well.
     for name in active_names:
-        if name not in current_names or springs[name].get("target") is None:
-            _track_spring(name)
+        _track_spring(name, force_refresh=(name in current_names))
 
     # Remove old springs
     for name in current_names - active_names:
@@ -516,17 +645,15 @@ def safety_status_cb(msg):
     Show the caution halo only for the object ~/safety_status currently
     reports as the closest pair, and only while that's not SAFE.
 
-    A first version of this (2026-08-20) called set_property() from here
-    unconditionally on every message -- but virtual_spring_node republishes
-    ~/safety_status continuously (every joint_state cycle, ~100Hz), not
-    just on change, so that sent a fresh SetProperty command to the
-    browser about 100x/second on top of everything else armviz already
-    pushes at that same rate (frames, springs, robot pose). That flood is
-    the most likely cause of meshcat freezing entirely live (collision
-    objects and robot frames both stopped rendering) -- not a logic bug in
-    the halo code itself. Fixed by only sending a command on an actual
-    transition (entering/leaving caution, or the closest object changing),
-    via _active_halo_obj_id.
+    virtual_spring_node republishes ~/safety_status continuously (every
+    joint_state cycle, ~100Hz), not just on change -- calling
+    set_property() unconditionally on every message would send a fresh
+    SetProperty command to the browser about 100x/second on top of
+    everything else armviz already pushes at that same rate (frames,
+    springs, robot pose), which can flood the browser into freezing
+    entirely. Only send a command on an actual transition (entering/
+    leaving caution, or the closest object changing), via
+    _active_halo_obj_id.
 
     ~/safety_status only ever reports the single globally closest pair
     (see virtual_spring_node's _publish_safety_status), so at most one
@@ -572,39 +699,68 @@ def safety_status_cb(msg):
         _active_collision_obj_id = collision_obj_id
 
 
-_CLOSEST_LINE_MATERIAL = g.LineBasicMaterial(color=0xff00ff, linewidth=3)
+_CLOSEST_LINE_MATERIAL = g.MeshBasicMaterial(color=0xff00ff)
+_CLOSEST_LINE_RADIUS = 0.004
+
+
+def _cylinder_transform_between(point_a, point_b):
+    """(4,4) world transform for a meshcat Cylinder (local +Y axis) spanning
+    point_a to point_b, plus its height. Returns (None, 0.0) if the two
+    points coincide (degenerate, zero-length)."""
+    direction = point_b - point_a
+    height = np.linalg.norm(direction)
+    if height < 1e-9:
+        return None, 0.0
+    y_axis = direction / height
+    # Any vector not parallel to y_axis works as a seed for an orthonormal frame.
+    seed = np.array([1.0, 0.0, 0.0]) if abs(y_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x_axis = np.cross(y_axis, seed)
+    x_axis /= np.linalg.norm(x_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    T = np.eye(4)
+    T[:3, 0], T[:3, 1], T[:3, 2] = x_axis, y_axis, z_axis
+    T[:3, 3] = (point_a + point_b) / 2.0
+    return T, height
 
 
 def closest_points_cb(msg):
     """
-    Draws a magenta line between the two witness points
+    Draws a magenta cylinder between the two witness points
     ~/closest_collision_points reports (see virtual_spring_node's
     _publish_safety_status) -- the actual detected closest pair's location,
-    not something inferred from geometry. Empty data (no collision model /
-    nothing to report) hides the line rather than leaving a stale one from
-    the last real reading.
+    not something inferred from geometry. A thin cylinder rather than a
+    Line: WebGL commonly ignores LineBasicMaterial's linewidth above 1px
+    regardless of the requested value, so this is drawn as real geometry
+    instead, the same way scene-object cylinders already are (see
+    _CYLINDER_AXIS_ALIGN above, though that one converts a different
+    axis convention -- this builds its transform directly from the two
+    world points instead). Empty data (no collision model / nothing to
+    report) deletes the object rather than leaving a stale one from the
+    last real reading.
     """
     if len(msg.data) < 6:
-        viz.viewer["debug/closest_collision_line"].set_property("visible", False)
+        viz.viewer["debug/closest_collision_line"].delete()
         return
     point_a = np.array(msg.data[0:3])
     point_b = np.array(msg.data[3:6])
-    vertices = np.column_stack([point_a, point_b])  # 3x2
+    T, height = _cylinder_transform_between(point_a, point_b)
+    if T is None:
+        viz.viewer["debug/closest_collision_line"].delete()
+        return
     viz.viewer["debug/closest_collision_line"].set_object(
-        g.Line(g.PointsGeometry(vertices), _CLOSEST_LINE_MATERIAL)
+        g.Cylinder(height, _CLOSEST_LINE_RADIUS), _CLOSEST_LINE_MATERIAL
     )
-    viz.viewer["debug/closest_collision_line"].set_property("visible", True)
+    viz.viewer["debug/closest_collision_line"].set_transform(T)
 
 
 def collision_thresholds_cb(msg):
     """
-    [danger_threshold, caution_threshold, repulsion_max_force_n] --
-    CAUTION_THRESHOLD only ever came from the --caution-threshold launch
-    arg before this, so live-tuning it via the study UI silently left the
-    drawn halo at its stale launch-time size while the real triggering
-    distance had changed -- confirmed live 2026-08-20 (halo looked ~7cm
-    padded, actual caution_threshold was 0.73m). Redraws every tracked
-    object's halo at the new size, then restores whichever one (if any)
+    [danger_threshold, caution_threshold, repulsion_max_force_n] -- without
+    this, CAUTION_THRESHOLD only ever comes from the --caution-threshold
+    launch arg, so live-tuning it via the study UI would leave the drawn
+    halo at its stale launch-time size while the real triggering distance
+    changed. Redraws every tracked object's halo at the new size, then
+    restores whichever one (if any)
     safety_status_cb currently has shown -- draw_collision_object()
     unconditionally hides the halo, so that state would otherwise be lost.
     """
@@ -619,6 +775,15 @@ def collision_thresholds_cb(msg):
         draw_collision_object(obj_id)
         if obj_id == _active_halo_obj_id:
             set_halo_visible(obj_id, True)
+
+
+# Spring marker sphere radius (attachment/target/position_center).
+_SPRING_MARKER_RADIUS = 0.012
+
+# Triad line length for a pose spring's attachment marker (see
+# draw_springs) -- comparable to _SPRING_MARKER_RADIUS, so neither marker
+# style dominates the scene when both spring kinds are loaded together.
+_POSE_TRIAD_SCALE = 0.03
 
 
 def draw_springs(q):
@@ -651,33 +816,55 @@ def draw_springs(q):
         _unknown_frame_warned.discard(name)
         # Offset by local_point in the link's own frame -- same transform
         # virtual_spring.py's force computation uses (T @ [local_point,1]).
-        # Previously this always used the link's frame origin outright, so
-        # the blue ball ignored local_point entirely regardless of what
-        # was actually configured -- confirmed live 2026-08-21 with a
-        # (0,0,0.1) local_point still drawing at the link origin.
+        # Without this, the blue ball would ignore local_point entirely
+        # and always draw at the link origin.
         placement = data.oMf[frame_id]
         local_point = spring.get("local_point")
         if local_point is None:
             local_point = np.zeros(3)
         attachment = placement.translation + placement.rotation @ local_point
 
-        # Blue sphere at attachment point
+        # Hoisted once, used both for the attachment marker (below) and the
+        # target-sphere color (below) -- was checked twice with the same
+        # `spring.get("prefix") == "pose_springs"` expression.
+        is_pose = spring.get("prefix") == "pose_springs"
+
+        # Attachment marker: blue sphere for a position (VirtualSpring)
+        # attachment point, same as always -- but an RGB axis triad for a
+        # pose spring, showing the link's actual world orientation there
+        # (a bare dot can't show, at a glance, whether an orientation
+        # spring is rotating the link far more violently than intended).
+        # Uses placement.rotation directly (the link's raw world rotation, from
+        # the same FK already computed above) rather than aligning to the
+        # spring's configured local_face_normal -- armviz doesn't fetch
+        # local_face_normal at all today, and in the common default-normal
+        # case (+Z) the triad's blue axis already approximates it.
         T_attach = np.eye(4)
         T_attach[:3, 3] = attachment
-        viz.viewer[f"springs/{name}/attachment"].set_object(
-            g.Sphere(0.05),
-            g.MeshLambertMaterial(color=0x0088ff, transparent=False)
-        )
+        if is_pose:
+            T_attach[:3, :3] = placement.rotation
+            viz.viewer[f"springs/{name}/attachment"].set_object(
+                g.triad(scale=_POSE_TRIAD_SCALE)
+            )
+        else:
+            viz.viewer[f"springs/{name}/attachment"].set_object(
+                g.Sphere(_SPRING_MARKER_RADIUS),
+                g.MeshLambertMaterial(color=0x0088ff, transparent=False)
+            )
         viz.viewer[f"springs/{name}/attachment"].set_transform(T_attach)
 
         if target is not None:
             _no_target_warned.discard(name)
-            # Red sphere at target
+            # Red sphere at target -- purple for a pose spring's
+            # look-at point, so it's visually distinguishable at a glance
+            # from a position spring's target (both were previously
+            # identical red spheres, easy to confuse in a screenshot).
+            target_color = 0x9c27b0 if is_pose else 0xff0000
             T_target = np.eye(4)
             T_target[:3, 3] = target
             viz.viewer[f"springs/{name}/target"].set_object(
-                g.Sphere(0.05),
-                g.MeshLambertMaterial(color=0xff0000, transparent=False)
+                g.Sphere(_SPRING_MARKER_RADIUS),
+                g.MeshLambertMaterial(color=target_color, transparent=False)
             )
             viz.viewer[f"springs/{name}/target"].set_transform(T_target)
 
@@ -696,6 +883,30 @@ def draw_springs(q):
                   f"/virtual_spring_node/target/{name} "
                   f"geometry_msgs/msg/PointStamped "
                   f"'{{header: {{frame_id: world}}, point: {{x: 0.0, y: 0.0, z: 0.5}}}}'")
+
+        # position_center (EXPERIMENTAL, see PoseSpring in virtual_spring.py)
+        # -- the point position_stiffness actually pulls the attachment
+        # point back toward once it's outside position_radius, distinct
+        # from target above (which is only ever a look-at direction, never
+        # a pull). Teal so it reads as a third, different kind of point at
+        # a glance from target's purple/red and attachment's blue.
+        #
+        # Deliberately its own independent if, not folded into the
+        # `if target is not None` block above (or its elif) -- nesting the
+        # no-target warning's elif under `if is_pose and position_center
+        # is not None` instead is False for every non-pose spring
+        # regardless of whether its target had resolved, so that elif
+        # would fire (and print the warning) every single frame for every
+        # VirtualSpring/JointSpring with an already-resolved target.
+        position_center = spring.get("position_center")
+        if is_pose and position_center is not None:
+            T_position_center = np.eye(4)
+            T_position_center[:3, 3] = position_center
+            viz.viewer[f"springs/{name}/position_center"].set_object(
+                g.Sphere(_SPRING_MARKER_RADIUS),
+                g.MeshLambertMaterial(color=0x00cccc, transparent=False)
+            )
+            viz.viewer[f"springs/{name}/position_center"].set_transform(T_position_center)
 
 def draw_frames(q):
     """Draw all available attachment frames as black dots with name labels."""

@@ -1,0 +1,45 @@
+# Dry-run config for testing PoseSpring alone -- no other springs
+# loaded, so the only thing pulling on the arm is gravity compensation plus
+# this one spring. Meant to be viewed in armviz (meshcat) with torque
+# control left DISABLED (enable_torque_control defaults to false in
+# gen3_spring.launch.py -- don't pass it for this test) so nothing actually
+# moves; you're just watching what the node *computes* it would do.
+#
+# Target point below is the edge of the "person_1" collision cylinder from
+# config/gen3_collision_scene.yaml (radius 0.3 m, center axis at
+# x=0.34, y=-0.70), at the side nearest the robot base (assumed ~world
+# origin), at z=0.5 m -- the top of the cylinder (pose.position.z=0.0 is
+# its *geometric center*, coal/hpp-fcl convention, and it's only 1.0 m
+# tall, so it reaches z=0.5 m at most).
+#
+# Edge-point math (recompute if you move the cylinder):
+#   center = (0.34, -0.70), radius = 0.3
+#   direction toward robot base (0, 0): normalize(0 - 0.34, 0 - (-0.70))
+#     = (-0.437, 0.900)
+#   edge point = center + radius * direction
+#     = (0.34 - 0.3*0.437, -0.70 + 0.3*0.900)
+#     = (0.209, -0.430)
+#
+# position_center/position_radius (EXPERIMENTAL, see PoseSpring in
+# virtual_spring.py) are required by the loader -- no safe default. Reused
+# the same edge point as position_center here (there's no paired
+# VirtualSpring in this dry-run config to couple to) with a 0.15 m radius,
+# loosely matching the outer_radius scale used by the study-calibration
+# flow's paired position springs (orchestration_node.py).
+
+/**:
+  ros__parameters:
+
+    pose_spring_names:
+      - face_test_point
+
+    pose_springs:
+      face_test_point:
+        link_name:          "end_effector_link"
+        local_point:        [0.0, 0.0, 0.1]   # gripper/block center, link-local (m)
+        local_face_normal:  [0.0, 0.0, 1.0]   # gripper's +Z, link-local
+        target:             [0.209, -0.430, 0.5]   # see edge-point math above (m)
+        stiffness:          2.0                # N*m/rad -- soft, just for viewing
+        damping:            0.2                # N*m*s/rad
+        position_center:    [0.209, -0.430, 0.5]   # same edge point (m)
+        position_radius:    0.15                    # m

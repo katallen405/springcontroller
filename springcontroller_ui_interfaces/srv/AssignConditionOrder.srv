@@ -4,4 +4,6 @@ string data_dir
 bool success
 string message
 string first_condition
+string second_condition
+string third_condition
 bool already_assigned

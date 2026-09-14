@@ -16,7 +16,7 @@ arm's current tip position.
 Position moves never go through ros2_kortex/kortex_bringup -- that driver
 and gen3_torque_control both open independent Kortex sessions and fight
 over the arm-global servoing mode if run at the same time against real
-hardware (see gen3_ros2_kortex_coexistence in project memory, 2026-08-19).
+hardware (see gen3_ros2_kortex_coexistence in project memory).
 "Position control" in this file means "torque disabled, arm holding
 position via SINGLE_LEVEL_SERVOING," not a separate ros2_control
 controller.
@@ -64,6 +64,7 @@ from springcontroller_ui_interfaces.srv import (
     FinalizeStudyConditions,
     GetLinkPose,
     ListLinkNames,
+    LogEvent,
     MoveToJointAngles,
     PreviewWorkspaceCenter,
 )
@@ -74,7 +75,10 @@ from springcontroller_ui.study_workspace_config import (
     compute_candidate_center,
     compute_condition_params,
     compute_eye_location,
+    describe_candidate_center,
+    log_event,
     log_measurement,
+    validate_participant_id,
     write_condition_yaml,
 )
 
@@ -175,10 +179,35 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("workspace_spring_name", "tip_spring")
         self.declare_parameter("workspace_spring_stiffness", 50.0)
         self.declare_parameter("workspace_spring_damping", 5.0)
-        self.declare_parameter("workspace_orientation_spring_name", "face_participant")
-        self.declare_parameter("workspace_orientation_local_face_normal", [0.0, 0.0, 1.0])
-        self.declare_parameter("workspace_orientation_stiffness", 2.0)
-        self.declare_parameter("workspace_orientation_damping", 0.2)
+        self.declare_parameter("workspace_pose_spring_name", "face_participant")
+        # The 'block' link preset's held face points along its local +y,
+        # not +z -- see LINK_PRESETS in web/index.html.
+        # study_control_panel.yaml overrides this at launch; kept in sync
+        # here as the fallback default.
+        self.declare_parameter("workspace_pose_local_face_normal", [0.0, 1.0, 0.0])
+        self.declare_parameter("workspace_pose_stiffness", 5.0)
+        self.declare_parameter("workspace_pose_damping", 0.2)
+        # Restoring pull (N/m) back toward position_center once the arm
+        # drifts past position_radius -- see PoseSpring.position_stiffness
+        # in virtual_spring.py. The "pose" condition has no separate
+        # position-pulling spring of its own (see write_condition_yaml),
+        # so without this the arm has nothing at all anchoring it once
+        # past position_radius. An order of magnitude gentler than
+        # workspace_spring_stiffness (50.0): meant as a soft "don't wander
+        # off" bound, not a firm anchor.
+        self.declare_parameter("workspace_pose_position_stiffness", 10.0)
+        # Damping-only (stiffness 0) joint spring on joint_7, position
+        # condition only -- tip_spring's attachment point sits on joint_7's
+        # own rotation axis, so it has zero authority to arrest wrist-roll
+        # drift there (see JointSpring's docstring in virtual_spring.py).
+        # Damping-only so it resists drift velocity without pulling the
+        # wrist back to a fixed angle if the participant/experimenter
+        # rotates it on purpose. Not added to the pose condition: its
+        # PoseSpring already drives joint_7 to aim local_face_normal at the
+        # target, and a joint spring there would fight that correction.
+        self.declare_parameter("workspace_joint7_spring_name", "joint7_damper")
+        self.declare_parameter("workspace_joint7_name", "joint_7")
+        self.declare_parameter("workspace_joint7_damping", 1.5)
         self.declare_parameter("joint_state_freshness_sec", 1.0)
         self.declare_parameter("safety_status_freshness_sec", 3.0)
         self.declare_parameter("service_call_timeout_sec", 5.0)
@@ -212,10 +241,14 @@ class StudyControlPanelNode(Node):
         self._workspace_spring_name = gp("workspace_spring_name")
         self._workspace_spring_stiffness = float(gp("workspace_spring_stiffness"))
         self._workspace_spring_damping = float(gp("workspace_spring_damping"))
-        self._workspace_orientation_spring_name = gp("workspace_orientation_spring_name")
-        self._workspace_orientation_local_face_normal = list(gp("workspace_orientation_local_face_normal"))
-        self._workspace_orientation_stiffness = float(gp("workspace_orientation_stiffness"))
-        self._workspace_orientation_damping = float(gp("workspace_orientation_damping"))
+        self._workspace_pose_spring_name = gp("workspace_pose_spring_name")
+        self._workspace_pose_local_face_normal = list(gp("workspace_pose_local_face_normal"))
+        self._workspace_pose_stiffness = float(gp("workspace_pose_stiffness"))
+        self._workspace_pose_damping = float(gp("workspace_pose_damping"))
+        self._workspace_pose_position_stiffness = float(gp("workspace_pose_position_stiffness"))
+        self._workspace_joint7_spring_name = gp("workspace_joint7_spring_name")
+        self._workspace_joint7_name = gp("workspace_joint7_name")
+        self._workspace_joint7_damping = float(gp("workspace_joint7_damping"))
         self._joint_state_freshness_sec = float(gp("joint_state_freshness_sec"))
         self._safety_status_freshness_sec = float(gp("safety_status_freshness_sec"))
         self._service_call_timeout_sec = float(gp("service_call_timeout_sec"))
@@ -258,9 +291,9 @@ class StudyControlPanelNode(Node):
         # TRANSIENT_LOCAL: matches virtual_spring_node's own QoS for this
         # topic (see its target_qos) -- current target is state, not a
         # stream, and every publisher on ~/target/<name> needs matching
-        # durability or DDS refuses to deliver between them. A plain
-        # default-QoS publisher here triggered a live "requesting
-        # incompatible QoS ... DURABILITY" warning (2026-08-19).
+        # durability or DDS refuses to deliver between them (a plain
+        # default-QoS publisher here triggers a "requesting incompatible
+        # QoS ... DURABILITY" warning).
         latched_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -323,6 +356,8 @@ class StudyControlPanelNode(Node):
                              self._finalize_study_conditions_cb, callback_group=cb_group)
         self.create_service(AssignConditionOrder, "~/assign_condition_order",
                              self._assign_condition_order_cb, callback_group=cb_group)
+        self.create_service(LogEvent, "~/log_event",
+                             self._log_event_cb, callback_group=cb_group)
 
         self.get_logger().info("study_control_panel_node ready.")
 
@@ -438,10 +473,9 @@ class StudyControlPanelNode(Node):
         Only waits for confirmation the move *started*, not for it to
         finish -- a real PlayJointTrajectory move can take many seconds to
         tens of seconds, far longer than rosbridge's own service-call
-        timeout tolerates (confirmed live 2026-08-19: move_to_study_start
-        timed out through rosbridge waiting for full completion). Actual
-        completion is tracked separately by the UI's live move-status
-        display (gen3_torque_control/move_status), not this call's return.
+        timeout tolerates. Actual completion is tracked separately by the
+        UI's live move-status display (gen3_torque_control/move_status),
+        not this call's return.
         """
         check_resp = self._call_sync(
             self._check_collision_client,
@@ -495,17 +529,16 @@ class StudyControlPanelNode(Node):
 
     def _list_current_spring_names(self) -> Optional[list[str]]:
         """Live query of virtual_spring_node's spring_names/
-        orientation_spring_names/joint_spring_names parameters (not a
+        pose_spring_names/joint_spring_names parameters (not a
         cached topic value -- ~/springs_updated is only published on
         add/remove, so a cache could easily be stale/empty just because
         this node started after the last change). Returns None if the
         parameter service is unavailable (virtual_spring_node not
-        running). orientation_spring_names was missing here until
-        2026-08-19 -- meant _reset_springs_cb silently left any
-        orientation spring in place instead of actually resetting to a
-        single tip anchor."""
+        running). Must query all three lists -- _reset_springs_cb relies
+        on this to remove every spring, pose springs included, not just
+        position ones."""
         req = GetParameters.Request()
-        req.names = ["spring_names", "orientation_spring_names", "joint_spring_names"]
+        req.names = ["spring_names", "pose_spring_names", "joint_spring_names"]
         resp = self._call_sync(self._spring_params_client, req, timeout_sec=2.0)
         if resp is None:
             return None
@@ -826,15 +859,23 @@ class StudyControlPanelNode(Node):
             return response
 
         T = self._arm.get_link_transform(request.link_name)
+        local_point = np.array(request.local_point, dtype=float)
         response.success = True
         response.message = "ok"
-        response.point = [float(v) for v in T[:3, 3]]
+        response.point = [float(v) for v in (T[:3, :3] @ local_point + T[:3, 3])]
         return response
 
     def _list_link_names_cb(self, request, response):
+        # Excludes joint frames (pinocchio auto-creates one per URDF joint,
+        # same name as the joint e.g. "joint_1") -- anchoring a spring to a
+        # joint frame (not a real rigid body) causes seriously unstable
+        # behavior, so it's still a valid link_name for
+        # validate_link_name/get_link_pose, just not offered in this
+        # picker.
         response.success = True
         response.message = "ok"
-        response.link_names = sorted(self._arm.link_names)
+        joint_names = set(self._arm.joint_names)
+        response.link_names = sorted(n for n in self._arm.link_names if n not in joint_names)
         return response
 
     # ------------------------------------------------------------
@@ -855,17 +896,56 @@ class StudyControlPanelNode(Node):
         response.success = True
         response.message = "ok"
         response.center = [float(center["x"]), float(center["y"]), float(center["z"])]
+        response.center_math = describe_candidate_center(
+            self._workspace_seat_x, self._workspace_seat_y, request.arm_length_cm, center,
+        )
         response.eye_location = [
             float(eye_location["x"]), float(eye_location["y"]), float(eye_location["z"]),
+        ]
+        response.orientation_local_face_normal = [
+            float(v) for v in self._workspace_pose_local_face_normal
         ]
         return response
 
     def _finalize_study_conditions_cb(self, request, response):
-        if not request.participant_id.strip():
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
             response.success = False
-            response.message = "participant_id is required."
-            response.condition1_path = ""
-            response.condition2_path = ""
+            response.message = id_error
+            response.already_exists = False
+            response.position_path = ""
+            response.pose_path = ""
+            response.kt_path = ""
+            response.warnings = []
+            return response
+
+        # Existence check happens before any of the (comparatively
+        # expensive) geometry/YAML-content computation below, and before
+        # touching disk at all -- request.overwrite=False (the UI's
+        # default first attempt) refuses outright rather than silently
+        # clobbering a previous participant run with the same ID, since
+        # position.yaml/pose.yaml/KT.yaml are exactly what gen3_spring.
+        # launch.py reads condition parameters from. The UI is expected to
+        # re-call with overwrite=True (an explicit "Overwrite participant"
+        # click) or a different participant_id (an explicit "Save with new
+        # participant ID" click) in response.
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        participant_dir = os.path.join(data_dir, request.participant_id)
+        position_path = os.path.join(participant_dir, "position.yaml")
+        pose_path = os.path.join(participant_dir, "pose.yaml")
+        kt_path = os.path.join(participant_dir, "KT.yaml")
+        existing = [p for p in (position_path, pose_path, kt_path) if os.path.isfile(p)]
+        if existing and not request.overwrite:
+            response.success = False
+            response.message = (
+                f"Participant '{request.participant_id}' already has saved condition "
+                f"file(s): {', '.join(existing)}. Overwrite, or save with a new "
+                f"participant ID."
+            )
+            response.already_exists = True
+            response.position_path = ""
+            response.pose_path = ""
+            response.kt_path = ""
             response.warnings = []
             return response
 
@@ -877,12 +957,11 @@ class StudyControlPanelNode(Node):
         condition_params = compute_condition_params(
             center, request.eye_height_cm, request.arm_length_cm, request.ramp_margin_cm,
         )
-        # In front of the participant's actual face (chair position),
-        # NOT above the approved reach-center -- those are two different
+        # In front of the participant's actual face (chair position), NOT
+        # above the approved reach-center -- those are two different
         # points on the participant's body, see compute_eye_location's
-        # docstring. Confirmed wrong 2026-08-21: this used to reuse
-        # center's x/y outright.
-        orientation_target = compute_eye_location(
+        # docstring.
+        pose_target = compute_eye_location(
             self._workspace_seat_x, self._workspace_seat_y, request.eye_height_cm,
         )
 
@@ -897,53 +976,96 @@ class StudyControlPanelNode(Node):
             "inner_radius": condition_params["inner_radius"],
             "outer_radius": condition_params["outer_radius"],
         }
-        orientation_params = {
+        # position_center/position_radius (EXPERIMENTAL, see PoseSpring in
+        # virtual_spring.py) reuse the SAME center/outer_radius spring_params
+        # above already computed -- so the pose condition agrees with the
+        # position condition's own tip spring on where the arm is supposed
+        # to be, by construction, not by an operator manually copying two
+        # numbers between two places -- but pose.yaml itself carries no
+        # tip_spring: position_center/position_radius are a passive dead
+        # zone (full authority inside, ramped toward zero beyond, see
+        # PoseSpring.compute_torques), not an active pull toward that
+        # point. An orientation spring with no position bound can pull the
+        # tip well outside its intended workspace, which is why "pose" has
+        # no separate position-pulling spring at all -- the dead-zone
+        # center simply goes where a tip spring would have gone.
+        pose_params = {
             "link_name": request.link_name,
             "local_point": local_point,
-            "local_face_normal": list(self._workspace_orientation_local_face_normal),
-            "target": [orientation_target["x"], orientation_target["y"], orientation_target["z"]],
-            "stiffness": self._workspace_orientation_stiffness,
-            "damping": self._workspace_orientation_damping,
+            "local_face_normal": list(self._workspace_pose_local_face_normal),
+            "target": [pose_target["x"], pose_target["y"], pose_target["z"]],
+            "stiffness": self._workspace_pose_stiffness,
+            "damping": self._workspace_pose_damping,
+            "position_center": [center["x"], center["y"], center["z"]],
+            "position_radius": condition_params["outer_radius"],
+            "position_stiffness": self._workspace_pose_position_stiffness,
+        }
+        # Damping-only -- no target_angle/stiffness, see write_condition_yaml's
+        # docstring and this method's joint7 param comments above.
+        joint7_spring_params = {
+            "joint_name": self._workspace_joint7_name,
+            "stiffness": 0.0,
+            "damping": self._workspace_joint7_damping,
         }
 
-        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
-        participant_dir = os.path.join(data_dir, request.participant_id)
-        condition1_path = os.path.join(participant_dir, "condition1.yaml")
-        condition2_path = os.path.join(participant_dir, "condition2.yaml")
         csv_path = os.path.join(data_dir, "measurements.csv")
 
+        # Embedded in every condition's YAML so gen3_spring.launch.py can
+        # route the rosbag into ~/gen3_study_data/<participant_id>/ with
+        # condition_name labeling it straight from `config:=` alone --
+        # see _make_record_rosbag_action's YAML fallback -- without also
+        # needing a separate participant_id:=/condition_name:= on the
+        # launch command line.
+        rosbag_routing = {"participant_id": request.participant_id}
+
         try:
-            write_condition_yaml(condition1_path, self._workspace_spring_name, spring_params)
             write_condition_yaml(
-                condition2_path, self._workspace_spring_name, spring_params,
-                include_orientation=True,
-                orientation_name=self._workspace_orientation_spring_name,
-                orientation_params=orientation_params,
+                position_path, self._workspace_spring_name, spring_params,
+                joint_spring_name=self._workspace_joint7_spring_name,
+                joint_spring_params=joint7_spring_params,
+                extra_params={**rosbag_routing, "condition_name": "position"},
+            )
+            write_condition_yaml(
+                pose_path,
+                include_pose=True,
+                pose_name=self._workspace_pose_spring_name,
+                pose_params=pose_params,
+                extra_params={**rosbag_routing, "condition_name": "pose"},
+            )
+            write_condition_yaml(
+                kt_path, extra_params={**rosbag_routing, "condition_name": "KT"},
             )
             log_measurement(
                 csv_path, request.participant_id, request.eye_height_cm, request.arm_length_cm,
-                center, condition_params, orientation_target, condition1_path, condition2_path,
+                center, condition_params, pose_target, position_path, pose_path,
             )
         except OSError as e:
             response.success = False
             response.message = f"Failed writing study condition files: {e}"
-            response.condition1_path = ""
-            response.condition2_path = ""
+            response.already_exists = False
+            response.position_path = ""
+            response.pose_path = ""
+            response.kt_path = ""
             response.warnings = []
             return response
 
         response.success = True
         response.message = "ok"
-        response.condition1_path = condition1_path
-        response.condition2_path = condition2_path
+        response.already_exists = False
+        response.position_path = position_path
+        response.pose_path = pose_path
+        response.kt_path = kt_path
         response.warnings = condition_params["warnings"]
         return response
 
     def _assign_condition_order_cb(self, request, response):
-        if not request.participant_id.strip():
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
             response.success = False
-            response.message = "participant_id is required."
+            response.message = id_error
             response.first_condition = ""
+            response.second_condition = ""
+            response.third_condition = ""
             response.already_assigned = False
             return response
 
@@ -951,20 +1073,49 @@ class StudyControlPanelNode(Node):
         assignments_path = os.path.join(data_dir, "condition_order.csv")
 
         try:
-            first_condition, already_assigned = assign_condition_order(
+            first_condition, second_condition, third_condition, already_assigned = assign_condition_order(
                 assignments_path, request.participant_id,
             )
-        except OSError as e:
+        except (OSError, ValueError) as e:
             response.success = False
             response.message = f"Failed reading/writing condition order assignments: {e}"
             response.first_condition = ""
+            response.second_condition = ""
+            response.third_condition = ""
             response.already_assigned = False
             return response
 
         response.success = True
         response.message = "ok"
         response.first_condition = first_condition
+        response.second_condition = second_condition
+        response.third_condition = third_condition
         response.already_assigned = already_assigned
+        return response
+
+    def _log_event_cb(self, request, response):
+        id_error = validate_participant_id(request.participant_id)
+        if id_error:
+            response.success = False
+            response.message = id_error
+            response.log_path = ""
+            return response
+
+        data_dir = os.path.expanduser(request.data_dir or self._workspace_study_data_dir)
+        log_path = os.path.join(data_dir, request.participant_id, "event_log.csv")
+
+        try:
+            timestamp = log_event(log_path, request.event_text, request.condition, request.notes)
+        except OSError as e:
+            response.success = False
+            response.message = f"Failed writing event log: {e}"
+            response.log_path = ""
+            return response
+
+        note_suffix = f" Notes: {request.notes}" if request.notes.strip() else ""
+        response.success = True
+        response.message = f"Logged '{request.event_text}' ({request.condition}) at {timestamp}.{note_suffix}"
+        response.log_path = log_path
         return response
 
 

@@ -17,32 +17,54 @@ from __future__ import annotations
 
 import csv
 import datetime
+import itertools
 import math
 import os
+import random
+from typing import Optional
 
 import yaml
 
 CM_TO_M = 0.01
 
-# Elbow-height band above the table (world z=0, see gen3_live_table_scene.yaml),
-# and the eye-level cone the workspace must stay within -- both are fixed
-# ergonomic specs for this study, independent of what unit measurements are
-# entered in.
-HEIGHT_BAND_CM = 20.32  # 8 inches
+# Eye-level cone the workspace must stay within -- a fixed ergonomic spec
+# for this study, independent of what unit measurements are entered in.
 EYE_ANGLE_DEG = 30.0
+# Float round-trip slop (tan/atan2) tolerance for the eye-level-cone warning
+# below -- see compute_condition_params.
+EYE_ANGLE_EPSILON_DEG = 1e-6
 
-# Condition 2's orientation-spring "look-at" target sits in front of the
+# Condition 2's pose-spring "look-at" target sits in front of the
 # participant's actual face, not above wherever the reach-center (used for
 # condition 1's position spring) happens to land -- those are two different
 # points on the participant's body. This is a fixed offset from the seat
 # mark along the same +y axis compute_candidate_center reaches across,
-# just much shorter than a full arm's reach. Confirmed wrong 2026-08-21:
-# it had been reusing the approved reach-center's x/y outright.
-EYE_TARGET_Y_OFFSET_CM = 15.0
+# just much shorter than a full arm's reach.
+EYE_TARGET_Y_OFFSET_CM = 20.0
+
+# Shared dead-zone radius for both conditions' springs (tip_spring's
+# outer_radius, pose spring's position_radius) -- a fixed value rather than
+# a per-participant computed one, so both conditions always agree on
+# exactly the same reach tolerance regardless of a given participant's
+# measurements.
+SHARED_SPRING_RADIUS_M = 0.07
 
 
 def _cm(value_cm: float) -> float:
     return value_cm * CM_TO_M
+
+
+def validate_participant_id(participant_id: str) -> Optional[str]:
+    """Returns an error message if participant_id is unsafe to use as a
+    single path component under a study data dir, else None. Guards
+    against a typo'd '/' or '..' writing/reading outside the intended
+    per-participant directory, not just an empty string."""
+    participant_id = participant_id.strip()
+    if not participant_id:
+        return "participant_id is required."
+    if os.path.basename(participant_id) != participant_id or participant_id in (".", ".."):
+        return "participant_id must be a single path component (no '/', '..', etc.)."
+    return None
 
 
 def compute_candidate_center(
@@ -50,36 +72,60 @@ def compute_candidate_center(
 ) -> dict:
     """
     Initial candidate for the workspace center, before the human-in-the-loop
-    push/adjust step. x/y: forearm's length across the table from the seat
-    (+y, the table's short axis -- the participant sits along its long edge
-    and reaches inward across it, not further along it). z: halfway from
-    the table (world z=0) to eye height, unless that's more than 30 deg
-    below eye level at the measured arm length (reach distance), in which
-    case it's raised to exactly the 30 deg cutoff instead -- half-eye-height
-    is always below eye level, never above, so this is a one-sided clamp.
+    push/adjust step. x/y: forearm's length across the table from the seat,
+    plus a fixed 10cm clearance margin (+y, the table's short axis -- the
+    participant sits along its long edge and reaches inward across it, not
+    further along it). z: the higher of (half the way from the table
+    (world z=0) to eye height) and (the 30 deg-below-eye-level cutoff at
+    the measured arm length/reach distance) -- i.e. whichever puts the
+    candidate closer to eye level.
     """
     eye_height_m = _cm(eye_height_cm)
     arm_length_m = _cm(arm_length_cm)
-    z = eye_height_m / 2.0
-    min_z = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
-    z = max(z, min_z)
+    half_eye_height_m = eye_height_m / 2.0
+    cone_clamp_z_m = eye_height_m - arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG))
+    z = max(half_eye_height_m, cone_clamp_z_m)
     return {
         "x": seat_x,
-        "y": seat_y + arm_length_m,
+        "y": seat_y + arm_length_m + 0.1,
         "z": z,
+        # Intermediate values, not needed by any caller's own math -- kept
+        # on the dict purely so describe_candidate_center can explain how
+        # z was derived without recomputing it.
+        "half_eye_height_m": half_eye_height_m,
+        "cone_clamp_z_m": cone_clamp_z_m,
+        "z_used_cone_clamp": cone_clamp_z_m > half_eye_height_m,
     }
 
 
+def describe_candidate_center(seat_x: float, seat_y: float, arm_length_cm: float, center: dict) -> str:
+    """Human-readable breakdown of compute_candidate_center's y/z derivation,
+    for display alongside the numeric center -- x needs no explanation,
+    it's just the seat's x unchanged. `center` is compute_candidate_center's
+    return value (needs its half_eye_height_m/cone_clamp_z_m/
+    z_used_cone_clamp fields, not just x/y/z)."""
+    arm_length_m = _cm(arm_length_cm)
+    y_line = (
+        f"y = seat_y ({seat_y:.3f}) + arm_length ({arm_length_m:.3f}) "
+        f"+ 0.10 margin = {center['y']:.3f} m"
+    )
+    clamp_note = " (cone-clamped)" if center["z_used_cone_clamp"] else ""
+    z_line = (
+        f"z = max(eye_height/2 = {center['half_eye_height_m']:.3f}, "
+        f"eye_height - arm_length*tan(30) = {center['cone_clamp_z_m']:.3f}) "
+        f"= {center['z']:.3f} m{clamp_note}"
+    )
+    return y_line + "\n" + z_line
+
+
 def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> dict:
-    """
-    Condition 2's orientation-spring target: directly in front of the
-    participant's face, at the chair's x, the chair's y plus a fixed
-    EYE_TARGET_Y_OFFSET_CM (toward the table -- same direction as
-    compute_candidate_center's reach, just much shorter), and eye height
+    """Condition 2's pose-spring target: directly in front of
+    the participant's face, at the chair's x, the chair's y plus a
+    fixed EYE_TARGET_Y_OFFSET_CM (toward the table), and eye height
     above the table. Independent of arm_length_cm and of wherever the
-    reach-center (condition 1's position-spring target) ended up after
-    the human-in-the-loop push/adjust step -- the participant's face
-    doesn't move just because their hand did.
+    reach-center ended up after the human-in-the-loop push/adjust step
+    -- the participant's face doesn't move just because their hand
+    did.
     """
     return {
         "x": seat_x,
@@ -91,40 +137,40 @@ def compute_eye_location(seat_x: float, seat_y: float, eye_height_cm: float) -> 
 def compute_condition_params(
     center: dict, eye_height_cm: float, arm_length_cm: float, ramp_margin_cm: float = 2.54,
 ) -> dict:
-    """
-    Derive the condition-1 dead-zone sphere from the *final, approved*
-    center point.
-
-    inner_radius = min(half the 8" height band, the +-30 deg eye-level cone
-    converted to linear distance at the measured arm length) -- whichever
-    bound is tighter. outer_radius adds a small ramp margin rather than a
-    hard on/off. rest_length == inner_radius keeps VirtualSpring's force
-    continuous at the dead-zone boundary instead of jumping by
-    stiffness*inner_radius the instant a target leaves the dead zone (see
-    virtual_spring.py's force computation).
+    """No inner dead-zone shell for either condition: inner_radius is
+    unconditionally 0, so tip_spring always exerts some pull. outer_radius
+    is the fixed SHARED_SPRING_RADIUS_M, not computed per-participant --
+    both conditions' springs (tip_spring's outer_radius, pose spring's
+    position_radius) always agree on the same reach tolerance regardless
+    of a given participant's measurements. ramp_margin_cm is accepted but
+    unused -- kept for call-site/wire compatibility with
+    FinalizeStudyConditions.srv rather than threading a signature change
+    through the UI/service layer for a parameter with nothing left to do.
 
     Returns radii/rest_length in meters plus a list of human-readable
     warning strings (empty if none) -- these are advisory, not blocking,
     since a person always reviews the candidate live before finalizing.
+
     """
     arm_length_m = _cm(arm_length_cm)
     eye_height_m = _cm(eye_height_cm)
 
-    inner_radius = min(_cm(HEIGHT_BAND_CM / 2.0), arm_length_m * math.tan(math.radians(EYE_ANGLE_DEG)))
-    outer_radius = inner_radius + _cm(ramp_margin_cm)
-    rest_length = inner_radius
+    inner_radius = 0.0
+    outer_radius = SHARED_SPRING_RADIUS_M
+    rest_length = 0
 
     warnings: list[str] = []
 
+    # elbow-height-band check removed (outdated once outer_radius stopped
+    # being derived from HEIGHT_BAND_CM) -- the eye-level cone check below
+    # is the only remaining advisory bound.
     height_above_table = center["z"]
-    if not (0.0 <= height_above_table <= _cm(HEIGHT_BAND_CM)):
-        warnings.append(
-            f"Center height {height_above_table / CM_TO_M:.1f}cm above the table is "
-            f"outside the confirmed [0, {HEIGHT_BAND_CM:.1f}cm] elbow-height band."
-        )
-
     elevation_deg = math.degrees(math.atan2(eye_height_m - height_above_table, arm_length_m))
-    if abs(elevation_deg) > EYE_ANGLE_DEG:
+    # A center placed via compute_candidate_center's own 30 deg clamp round-trips
+    # through tan/atan2 and can land a hair past EYE_ANGLE_DEG (e.g.
+    # 30.00000000000003) from floating-point error alone -- EYE_ANGLE_EPSILON_DEG
+    # absorbs that so an exactly-at-the-cutoff center never spuriously warns.
+    if abs(elevation_deg) > EYE_ANGLE_DEG + EYE_ANGLE_EPSILON_DEG:
         warnings.append(
             f"Center is {elevation_deg:.1f} deg from eye level, outside the "
             f"confirmed +-{EYE_ANGLE_DEG:.0f} deg cone."
@@ -138,6 +184,7 @@ def compute_condition_params(
     }
 
 
+
 class _NoAliasDumper(yaml.SafeDumper):
     """
     ROS 2's params-file YAML parser (rcl_yaml_param_parser) doesn't support
@@ -145,14 +192,9 @@ class _NoAliasDumper(yaml.SafeDumper):
     PyYAML's default SafeDumper auto-emits them whenever the *same*
     Python list/dict object (by identity) appears more than once in the
     data being dumped. write_condition_yaml's condition-2 output does
-    exactly that: spring_params and orientation_params both carry the
+    exactly that: spring_params and pose_params both carry the
     same local_point list object (see _finalize_study_conditions_cb in
-    orchestration_node.py). Confirmed live 2026-08-21: virtual_spring_node
-    crashed on startup ("Will not support aliasing at line 26") loading a
-    real condition2.yaml written before this fix. Disabling aliasing
-    entirely keeps every written condition YAML loadable regardless of
-    how a future caller happens to share (or not share) list/dict objects
-    -- cheaper than auditing every call site for accidental object reuse.
+    orchestration_node.py).
     """
     def ignore_aliases(self, data):
         return True
@@ -169,28 +211,64 @@ def _atomic_write_yaml(path: str, data: dict) -> None:
 
 def write_condition_yaml(
     path: str,
-    spring_name: str,
-    spring_params: dict,
-    include_orientation: bool = False,
-    orientation_name: str = "",
-    orientation_params: dict | None = None,
+    spring_name: str = "",
+    spring_params: dict | None = None,
+    include_pose: bool = False,
+    pose_name: str = "",
+    pose_params: dict | None = None,
+    joint_spring_name: str = "",
+    joint_spring_params: dict | None = None,
+    extra_params: dict | None = None,
 ) -> None:
     """
     Write one condition's springs.yaml, matching the schema
     virtual_spring_node._load_springs_from_params expects (see
-    gen3_springs.yaml / gen3_orientation_spring_test.yaml). `spring_params`
+    gen3_springs.yaml / gen3_pose_spring_test.yaml). `spring_params`
     keys: link_name, local_point, target, stiffness, damping, rest_length,
-    inner_radius, outer_radius. `orientation_params` keys (condition 2
+    inner_radius, outer_radius. `pose_params` keys (pose condition
     only): link_name, local_point, local_face_normal, target, stiffness,
-    damping.
+    damping, position_center, position_radius -- the last two
+    (EXPERIMENTAL, see PoseSpring in virtual_spring.py) are required by
+    the loader just like the others, no safe default. `joint_spring_params`
+    keys: joint_name, stiffness, damping (target_angle omitted -- with
+    stiffness 0 it's never used, see JointSpring in virtual_spring.py).
+
+    spring_name/spring_params are optional -- the pose condition writes no
+    base spring at all, since position_center/position_radius (inside
+    pose_params) already define where a tip spring would have gone; the
+    pose spring's own dead zone stands in for a real accompanying spring,
+    not a supplement to one.
+
+    joint_spring_name/joint_spring_params are optional too -- only the
+    position condition gets one (a damping-only joint_7 spring, see
+    orchestration_node.py's _finalize_study_conditions_cb). The pose
+    condition's own PoseSpring already has authority over joint_7 (its
+    local_face_normal isn't collinear with joint_7's axis), so adding a
+    joint spring there -- even damping-only -- would resist the same
+    wrist rotation the look-at correction is actively trying to drive,
+    fighting it instead of just damping unwanted drift.
+
+    extra_params is merged in unconditionally, independent of whatever
+    spring content is or isn't present -- used to embed participant_id/
+    condition_name so gen3_spring.launch.py can route the rosbag into the
+    right study folder straight from `config:=` alone (see
+    _make_record_rosbag_action), without also needing a separate
+    participant_id:=/condition_name:= on the launch command line. This is
+    the only content the KT condition's YAML carries at all (no springs,
+    no pose_springs -- KT is "no torque controller").
     """
-    params: dict = {
-        "spring_names": [spring_name],
-        "springs": {spring_name: dict(spring_params)},
-    }
-    if include_orientation:
-        params["orientation_spring_names"] = [orientation_name]
-        params["orientation_springs"] = {orientation_name: dict(orientation_params)}
+    params: dict = {}
+    if spring_name:
+        params["spring_names"] = [spring_name]
+        params["springs"] = {spring_name: dict(spring_params)}
+    if include_pose:
+        params["pose_spring_names"] = [pose_name]
+        params["pose_springs"] = {pose_name: dict(pose_params)}
+    if joint_spring_name:
+        params["joint_spring_names"] = [joint_spring_name]
+        params["joint_springs"] = {joint_spring_name: dict(joint_spring_params)}
+    if extra_params:
+        params.update(extra_params)
 
     data = {"/**": {"ros__parameters": params}}
     _atomic_write_yaml(path, data)
@@ -203,9 +281,9 @@ def log_measurement(
     arm_length_cm: float,
     center: dict,
     condition_params: dict,
-    orientation_target: dict,
-    condition1_path: str,
-    condition2_path: str,
+    pose_target: dict,
+    position_path: str,
+    pose_path: str,
 ) -> None:
     """
     Append one row to the shared measurement log, for later comparison
@@ -228,12 +306,12 @@ def log_measurement(
         "inner_radius": condition_params["inner_radius"],
         "outer_radius": condition_params["outer_radius"],
         "rest_length": condition_params["rest_length"],
-        "orientation_target_x": orientation_target["x"],
-        "orientation_target_y": orientation_target["y"],
-        "orientation_target_z": orientation_target["z"],
+        "pose_target_x": pose_target["x"],
+        "pose_target_y": pose_target["y"],
+        "pose_target_z": pose_target["z"],
         "warnings": "; ".join(condition_params["warnings"]),
-        "condition1_path": condition1_path,
-        "condition2_path": condition2_path,
+        "position_path": position_path,
+        "pose_path": pose_path,
     }
 
     with open(csv_path, "a", newline="") as f:
@@ -244,15 +322,33 @@ def log_measurement(
         f.flush()
 
 
-def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[str, bool]:
+# All 6 distinct orderings of the 3 study conditions -- see
+# assign_condition_order's docstring for why the whole order (not just
+# which one runs first) is block-randomized against this set.
+ALL_CONDITION_ORDERS = list(itertools.permutations(["KT", "position", "pose"]))
+
+
+def assign_condition_order(
+    assignments_path: str, participant_id: str, rng: Optional[random.Random] = None,
+) -> tuple[str, str, str, bool]:
     """
-    Counterbalances which condition (condition1 vs condition2) a
-    participant should run first: alternates based on how many
-    participants have already been assigned, so roughly half the study
-    runs condition1-first and half condition2-first regardless of
-    enrollment order. Idempotent -- looking up a participant_id that's
-    already been assigned returns that same order again (never
-    re-randomizes/flip-flops on a repeat visit to the panel).
+    Block-randomizes the FULL order (not just which condition runs first)
+    a participant should run the three conditions (KT/position/pose) in.
+    With 3 conditions there are 3! = 6 distinct orderings
+    (ALL_CONDITION_ORDERS); every consecutive block of 6 participants gets
+    each of those 6 orderings exactly once, in random order within the
+    block -- picked by narrowing to whichever orderings haven't been used
+    yet in the current (possibly partial) block and choosing uniformly at
+    random among those, so a block that's just starting can land on any of
+    the 6, and the block's last slot is whatever's left over.
+
+    Purely advisory to the experimenter -- Kat runs the conditions
+    herself, this just tells her the order, it doesn't drive any robot
+    behavior.
+
+    Idempotent -- looking up a participant_id that's already been
+    assigned returns that same order again (never re-randomizes/
+    flip-flops on a repeat visit to the panel).
 
     Kept in its own small append-only CSV rather than reusing
     measurements.csv (see log_measurement) since assignment needs to
@@ -261,7 +357,10 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
     a participant's assigned order well before (or without ever)
     finalizing that participant's condition files that session.
 
-    Returns (first_condition, already_assigned).
+    rng is normally left as None (a fresh random.Random() per call) --
+    only tests inject a seeded one for determinism.
+
+    Returns (first_condition, second_condition, third_condition, already_assigned).
     """
     assignments_path = os.path.expanduser(assignments_path)
     os.makedirs(os.path.dirname(assignments_path), exist_ok=True)
@@ -271,15 +370,31 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         with open(assignments_path, newline="") as f:
             rows = list(csv.DictReader(f))
 
+    required_columns = {"participant_id", "first_condition", "second_condition", "third_condition"}
     for row in rows:
+        if not required_columns.issubset(row.keys()):
+            raise ValueError(
+                f"Malformed row in {assignments_path}: expected "
+                f"{sorted(required_columns)} columns."
+            )
         if row["participant_id"] == participant_id:
-            return row["first_condition"], True
+            return row["first_condition"], row["second_condition"], row["third_condition"], True
 
-    first_condition = "condition1" if len(rows) % 2 == 0 else "condition2"
+    block_start = (len(rows) // 6) * 6
+    used_in_block = {
+        (row["first_condition"], row["second_condition"], row["third_condition"])
+        for row in rows[block_start:]
+    }
+    remaining = [order for order in ALL_CONDITION_ORDERS if order not in used_in_block]
+    rng = rng or random.Random()
+    first_condition, second_condition, third_condition = rng.choice(remaining)
+
     new_row = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "participant_id": participant_id,
         "first_condition": first_condition,
+        "second_condition": second_condition,
+        "third_condition": third_condition,
     }
     is_new = not os.path.isfile(assignments_path)
     with open(assignments_path, "a", newline="") as f:
@@ -289,4 +404,38 @@ def assign_condition_order(assignments_path: str, participant_id: str) -> tuple[
         writer.writerow(new_row)
         f.flush()
 
-    return first_condition, False
+    return first_condition, second_condition, third_condition, False
+
+
+def log_event(csv_path: str, event_text: str, condition: str, notes: str = "") -> str:
+    """
+    Append one timestamped row to the per-participant session event log
+    (the "Session timer & event log" panel's Log button) -- the
+    timestamp is this server's clock, not whatever the browser's clock
+    reads, so it stays comparable across the operator's other
+    machine-local recordings (e.g. video). Same append-only,
+    header-written-once-on-first-use pattern as log_measurement -- never
+    truncates or rewrites prior rows.
+
+    notes is always its own CSV column, independent of event_text/
+    condition -- not folded into either of them, and not gated behind
+    picking an "Other" option in either dropdown; it's free text the
+    operator can attach to any row.
+
+    Returns the ISO timestamp actually logged.
+    """
+    csv_path = os.path.expanduser(csv_path)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    is_new = not os.path.isfile(csv_path)
+
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    row = {"timestamp": timestamp, "event": event_text, "condition": condition, "notes": notes}
+
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+        f.flush()
+
+    return timestamp

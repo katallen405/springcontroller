@@ -11,10 +11,10 @@ Subscriptions
     Current joint positions and velocities from the arm.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Move a Cartesian or orientation spring's target at runtime.
+    Move a Cartesian or pose spring's target at runtime.
 
 ~/attachment/<spring_name>  (geometry_msgs/PointStamped)
-    Move a Cartesian or orientation spring's attachment point at runtime.
+    Move a Cartesian or pose spring's attachment point at runtime.
 
 ~/joint_target/<joint_spring_name>  (std_msgs/Float64)
     Move a JointSpring's target angle (rad) at runtime.
@@ -40,17 +40,51 @@ Publications
     Effort field carries the summed virtual-spring torques.
 
 ~/target/<spring_name>  (geometry_msgs/PointStamped)
-    Broadcasts a Cartesian or orientation spring's current target -- once
+    Broadcasts a Cartesian or pose spring's current target -- once
     at load (if configured), on resolving a deferred one against the arm's
-    real pose (see springs.<n>.target / orientation_springs.<n>.target
+    real pose (see springs.<n>.target / pose_springs.<n>.target
     below) on the first /joint_states callback, and on add_spring/
-    add_orientation_spring -- and again on every runtime update via the
+    add_pose_spring -- and again on every runtime update via the
     subscription above.
 
 ~/springs_updated (std_msgs/String)
     Publishes the current spring name list (JSON, any type) whenever it
-    changes via add_spring/add_joint_spring/add_orientation_spring/
+    changes via add_spring/add_joint_spring/add_pose_spring/
     remove_spring (supports spring_viz, maybe later UI).
+
+~/joint_limit_repulsion_torques (sensor_msgs/JointState)
+    Effort field carries the joint-limit repulsion field's own
+    contribution (zeros when disabled or nothing's within
+    joint_limit_margin_rad) -- always published, same "continuous signal
+    to plot against" reasoning as ~/repulsion_torques.
+
+~/joint_limit_repulsion_enabled_status (std_msgs/Bool, TRANSIENT_LOCAL)
+    Live joint_limit_repulsion_enabled state -- same "believed on but
+    wasn't" reasoning as ~/repulsion_enabled_status.
+
+~/spring_forces (springcontroller_interfaces/SpringForces)
+    Every active spring's current force/moment, throttled to
+    spring_force_publish_interval_sec (default 0.1s -- independent of the
+    control loop's own rate, see _publish_spring_forces()): a SpringForce[]
+    of {name, kind: "force"|"moment"|"torque", magnitude, force, distance,
+    angle_offset_rad, position_force_magnitude, position_force}. A
+    VirtualSpring reports a real 3D "force" (N); a PoseSpring reports a 3D
+    "moment" (N*m); a JointSpring reports a scalar "torque" about its own
+    joint axis with force always [0, 0, 0]. distance is a linear distance
+    in meters -- for a VirtualSpring, the current error from
+    target_world_point; for a PoseSpring, the attachment point's distance
+    from position_center; for a JointSpring, still radians (angular
+    error), since a single joint has no linear distance. angle_offset_rad
+    is only meaningful for a PoseSpring -- the angular error (rad) between
+    its current face normal and the desired look-at direction -- and is 0
+    for every other kind. position_force_magnitude/position_force are
+    also PoseSpring-only: the position_stiffness restoring force (N,
+    magnitude and 3D vector) pulling the attachment point back toward
+    position_center once outside position_radius -- distinct from
+    force/magnitude above (the rotational moment) -- both 0/[0,0,0] for
+    every other kind, and for a PoseSpring with no restoring force active
+    right now. A spring not currently contributing (disabled, or hasn't
+    computed a state yet) is omitted rather than reported as zero.
 
 ~/safety_status (std_msgs/String)
     Current self/scene-collision state, prefixed "SAFE"/"DANGER"/
@@ -72,6 +106,11 @@ Services
     runtime -- ros2 param set has no effect on it, same as every other
     parameter here; this is the only way to flip it without restarting.
 
+~/set_joint_limit_repulsion_enabled  (std_srvs/SetBool)
+    Toggle the joint_limit_repulsion_enabled field (see
+    get_joint_limit_repulsion_torques) at runtime -- same "ros2 param set
+    has no effect" reasoning as set_repulsion_enabled above.
+
 ~/update_collision_thresholds  (springcontroller_interfaces/UpdateCollisionThresholds)
     Live-tune danger_threshold and caution_threshold together (rejects the
     request if caution_threshold isn't strictly greater than
@@ -84,8 +123,9 @@ Services
 ~/add_joint_spring  (springcontroller_interfaces/AddJointSpring)
     Add a joint spring.
 
-~/add_orientation_spring  (springcontroller_interfaces/AddOrientationSpring)
-    Add an orientation spring.
+~/add_pose_spring  (springcontroller_interfaces/AddPoseSpring)
+    Add a pose spring (position-and-orientation hybrid -- see PoseSpring
+    in virtual_spring.py).
 
 ~/remove_spring (springcontroller_interfaces/RemoveSpring)
     Remove a spring (any type, name-based) from the torque calculations.
@@ -102,7 +142,7 @@ urdf_path : str
     arrive within a few seconds of startup.
 config_path : str
     Path to the springs YAML file (checked at startup; populates the
-    springs.<n>.* / joint_springs.<n>.* / orientation_springs.<n>.*
+    springs.<n>.* / joint_springs.<n>.* / pose_springs.<n>.*
     parameters below).
 publish_rate_hz : double
     Declared but currently unused -- torques publish once per
@@ -154,14 +194,41 @@ spring_names, springs.<n>.* : per-VirtualSpring config (see
 joint_spring_names, joint_springs.<n>.* : per-JointSpring config --
     joint_name, target_angle, stiffness, damping. `target_angle` left
     unconfigured defers the same way, to the joint's real current angle.
-orientation_spring_names, orientation_springs.<n>.* : per-OrientationSpring
-    config -- link_name, local_point, local_face_normal, target, stiffness,
-    damping. `target` has no safe default (it's an external point, e.g. a
-    person's face, not inferable from the arm's pose) and must be set
-    explicitly.
+pose_spring_names, pose_springs.<n>.* : per-PoseSpring config (position-
+    and-orientation hybrid, see virtual_spring.py) -- link_name,
+    local_point, local_face_normal, target, stiffness, damping,
+    position_center, position_radius. `target` has no safe default (it's
+    an external point, e.g. a person's face, not inferable from the arm's
+    pose) and must be set explicitly. `position_center`/`position_radius`
+    are likewise required -- no safe default that doesn't let the arm
+    drift unconstrained; see PoseSpring's docstring.
+joint_limit_repulsion_enabled : bool
+    Low-strength per-joint field that pushes a joint back toward center as
+    it nears its own position limit (see
+    URDFArmConfiguration.get_joint_limit_repulsion_torques) -- a cheap
+    proxy for the self-collision risk carried by joints 2/4/6 nearing
+    their limits. Defaults to True: with it off, nothing opposes the
+    springs at all near a self-collision (its own 2 N*m per-joint cap is
+    deliberately just "a gentle nudge, not a hard wall", never meant to
+    out-muscle a strong spring by itself). ~/set_joint_limit_repulsion_enabled
+    still overrides it either way.
+joint_limit_margin_rad : double
+    Distance (rad) from a joint's position limit at which this field starts
+    ramping up from zero.
+joint_limit_max_torque_nm : double
+    Torque (N*m) this field saturates at exactly on (or past) a limit.
+    Chosen small relative to torque_limit_nm on every limited joint (2, 4,
+    6) so it stays a gentle nudge, not a hard wall.
+max_pose_spring_stiffness_nm_per_rad : double
+    Sanity ceiling on a PoseSpring's rotational stiffness, enforced in
+    ~/add_pose_spring and ~/update_spring -- rejects a value this
+    high as a likely position-spring-units (N/m) mistake rather than a
+    genuine N*m/rad value. See its declare_parameter call for the live
+    incident this guards against.
 """
 
 import csv
+import json
 import math
 import os
 
@@ -182,15 +249,16 @@ from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
 
 from springcontroller.virtual_spring import (
-    VirtualSpring, JointSpring, OrientationSpring, SpringCollection,
+    VirtualSpring, JointSpring, PoseSpring, SpringCollection,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 import yaml
 from springcontroller_interfaces.srv import (
-    AddSpring, RemoveSpring, AddJointSpring, AddOrientationSpring,
+    AddSpring, RemoveSpring, AddJointSpring, AddPoseSpring,
     LoadCollisionScene, CheckCollisionAtAngles, UpdateSpring,
     UpdateCollisionThresholds,
 )
+from springcontroller_interfaces.msg import SpringForce, SpringForces
 
 
 import collections
@@ -250,26 +318,18 @@ class VirtualSpringNode(Node):
         self.declare_parameter("plot_on_shutdown", False)
         self.declare_parameter("add_gravity_compensation", False)
         self.declare_parameter("srdf_path", "")
-        # 1cm, not 5cm: 5cm was confirmed too conservative for close-quarters
-        # work 2026-08-14/2026-08-19 (see gen3_collision_clamp_debug project
-        # memory) -- scaling starting a full 5cm out interfered with normal
-        # spring operation well before anything was actually at risk.
+        # 1cm, not 5cm: a wider margin interferes with normal spring
+        # operation well before anything is actually at risk.
         self.declare_parameter("danger_threshold", 0.01)
         # Low-strength repulsion field around scene collision objects --
         # separate from (and additive on top of) the danger_threshold clamp
-        # above, which only ever removes spring torque. Was off by default
-        # pending hardware verification (per collision_recovery_torque_ramp
-        # project memory's explicit-opt-in policy for new autonomous
-        # collision-adjacent behavior) -- verified live 2026-08-20, now on
-        # by default. ~/set_repulsion_enabled still overrides it either way.
+        # above, which only ever removes spring torque.
+        # ~/set_repulsion_enabled still overrides it either way.
         self.declare_parameter("repulsion_enabled", True)
         # Must be > danger_threshold -- the ramp runs from caution_threshold
         # (force starts at 0) down to danger_threshold (force saturates at
-        # repulsion_max_force_n). 5cm was the project's old danger_threshold
-        # default before it was tightened to 1cm for close-quarters spring
-        # work (see gen3_collision_clamp_debug project memory) -- reused here
-        # as a reasonable "starting to notice an obstacle" radius for a much
-        # gentler force than the clamp ever applied.
+        # repulsion_max_force_n). A reasonable "starting to notice an
+        # obstacle" radius for a much gentler force than the clamp applies.
         self.declare_parameter("caution_threshold", 0.05)
         # Small Cartesian force (N) applied at the near-collision point,
         # mapped to joint torques via Jacobian-transpose -- see
@@ -282,16 +342,38 @@ class VirtualSpringNode(Node):
         # not the resulting joint torque -- a contact far out on the
         # gripper already has a large lever arm, and several simultaneous
         # contacts (e.g. a multi-geometry gripper wrapping a curved
-        # obstacle) sum on top of that. Confirmed live 2026-08-19: a
-        # gripper closing around a cylinder scene object produced summed
-        # |tau| of 20-36 N*m, well past "low-strength" and close to the
-        # wrist joints' torque_limit_nm=9. 5.0 sits a bit above what a
-        # single max-force contact alone typically produces near the
-        # shoulder (so a normal single-contact case isn't neutered) while
-        # strongly bounding the multi-contact pileup that caused that --
-        # tune down further if it still feels strong with several
-        # simultaneous contacts.
+        # obstacle) sum on top of that and can approach the wrist joints'
+        # torque_limit_nm. This caps the summed vector; tune down further
+        # if multi-contact repulsion still feels strong.
         self.declare_parameter("repulsion_max_total_torque_nm", 5.0)
+        # Cheap, joint-angle-only proxy for self-collision risk (see
+        # get_joint_limit_repulsion_torques) -- distinct from the Cartesian
+        # repulsion field above, which needs live scene objects and can't
+        # anticipate self-collision from arm posture alone. Still just a
+        # soft per-joint nudge (2 N*m cap), not a substitute for the hard
+        # self-collision clamp -- flip off via
+        # ~/set_joint_limit_repulsion_enabled if it ever needs to come out
+        # for a session.
+        self.declare_parameter("joint_limit_repulsion_enabled", True)
+        # ~10 degrees -- small enough to stay out of the way during normal
+        # spring operation, large enough to start pushing back before the
+        # joint is actually at its hard limit.
+        self.declare_parameter("joint_limit_margin_rad", 0.175)
+        # Well under torque_limit_nm on every limited joint (2, 4, 6) --
+        # joint_6's effort limit is 9 N*m (see
+        # flat_urdf_files/gen3_kinova_flat.urdf), the tightest of the
+        # three, so 2.0 stays a clear fraction of even that.
+        self.declare_parameter("joint_limit_max_torque_nm", 2.0)
+        # Sanity ceiling on a PoseSpring's rotational stiffness (N*m/rad),
+        # enforced in _add_pose_spring_cb and _update_spring_cb -- 5x the
+        # 2.0 N*m/rad used throughout this repo's own configs
+        # (workspace_pose_stiffness, face_participant), generous headroom
+        # for real tuning while still catching a units mix-up with a
+        # *position* spring's stiffness (N/m, typically 50-300), which
+        # can produce a large torque spike faster than the repulsion
+        # field's check interval can catch. Defense-in-depth independent
+        # of any client-side (e.g. UI form) validation.
+        self.declare_parameter("max_pose_spring_stiffness_nm_per_rad", 10.0)
         self.declare_parameter("locked_joint_names", [""])
         self.declare_parameter("torque_disable_service", "")
         # If springs stay auto-disabled by the collision clamp this long
@@ -316,14 +398,12 @@ class VirtualSpringNode(Node):
         # such status topic).
         self.declare_parameter("torque_status_topic", "")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
-        # get_collision_status() offline-profiled at ~126ms/call
-        # (2026-08-07) -- called every _joint_state_cb, it was blocking the
-        # control loop down to ~8-21Hz instead of the intended ~100Hz,
-        # the likely dominant cause of the day's command-staleness/fault
-        # incidents (far more than the network-flakiness theory chased
-        # earlier). Self-collision doesn't need 100Hz freshness to still
-        # catch a developing collision well before contact, so it's
-        # throttled to collision_check_interval_sec instead of running
+        # get_collision_status() profiled at ~126ms/call -- called every
+        # _joint_state_cb, that would block the control loop down to
+        # ~8-21Hz instead of the intended ~100Hz. Self-collision doesn't
+        # need 100Hz freshness to still catch a developing collision well
+        # before contact, so it's throttled to collision_check_interval_sec
+        # instead of running
         # every cycle; the torque-scaling decision still applies on every
         # cycle, just using the most recent check (up to that interval
         # stale) rather than skipping the safety logic between checks.
@@ -333,11 +413,36 @@ class VirtualSpringNode(Node):
         )
         self._last_collision_check_time = None
         self._last_collision_status = None
+        # Same throttling reasoning as collision_check_interval_sec above:
+        # ~/spring_forces publishes every active spring's force/moment
+        # (already computed as part of compute_torques() -- no extra
+        # physics work, just message-encoding cached state), but building
+        # and publishing a SpringForces message every control-loop cycle is
+        # still unnecessary overhead a UI/rosbag consumer doesn't need at
+        # 100Hz.
+        self.declare_parameter("spring_force_publish_interval_sec", 0.1)
+        self._spring_force_publish_interval = (
+            self.get_parameter("spring_force_publish_interval_sec").get_parameter_value().double_value
+        )
+        self._last_spring_force_publish_time = None
         self._repulsion_enabled = self.get_parameter("repulsion_enabled").get_parameter_value().bool_value
         self._caution_threshold = self.get_parameter("caution_threshold").get_parameter_value().double_value
         self._repulsion_max_force_n = self.get_parameter("repulsion_max_force_n").get_parameter_value().double_value
         self._repulsion_max_total_torque_nm = (
             self.get_parameter("repulsion_max_total_torque_nm").get_parameter_value().double_value
+        )
+        self._joint_limit_repulsion_enabled = (
+            self.get_parameter("joint_limit_repulsion_enabled").get_parameter_value().bool_value
+        )
+        self._joint_limit_margin_rad = (
+            self.get_parameter("joint_limit_margin_rad").get_parameter_value().double_value
+        )
+        self._joint_limit_max_torque_nm = (
+            self.get_parameter("joint_limit_max_torque_nm").get_parameter_value().double_value
+        )
+        self._max_pose_spring_stiffness = (
+            self.get_parameter("max_pose_spring_stiffness_nm_per_rad")
+            .get_parameter_value().double_value
         )
         # Cached alongside _last_collision_status -- recomputed at the same
         # throttled cadence (collision_check_interval_sec) since it reuses
@@ -351,16 +456,11 @@ class VirtualSpringNode(Node):
         # in_collision branch below only calls _set_springs_enabled(False)
         # once per collision episode, not every cycle. Deliberately requires
         # an explicit ~/enable(true) to clear (see _enable_cb) -- no
-        # automatic recovery. A same-day-earlier version of this ramped
-        # spring torque back in automatically over spring_ramp_duration_sec
-        # as soon as the pair cleared the danger zone; confirmed live
-        # 2026-08-19 that this let an orientation spring left ~180deg off
-        # (arm manually walked out of a collision while its own torque was
-        # suppressed) re-engage at full strength the instant the pair
-        # cleared, producing a large, axis-sensitive correction torque that
-        # drove joint 4 into a fault trying to close on link 5 -- automatic
-        # recovery from a hard collision clamp is exactly the failure mode
-        # to avoid; re-enabling is now a deliberate operator action.
+        # automatic recovery: re-engaging a suppressed spring's torque the
+        # instant a collision pair clears can produce a large,
+        # axis-sensitive correction torque if the arm was left far
+        # off-target while suppressed, which is exactly the failure mode
+        # to avoid.
         self._springs_auto_disabled = False
         # Timestamp of when the collision clamp most recently auto-disabled
         # springs (None while not auto-disabled) -- drives the grace-period
@@ -400,20 +500,16 @@ class VirtualSpringNode(Node):
         # Collision-event log: written incrementally (flushed every row, not
         # just on clean shutdown) so the real closest_pair/in_collision/
         # in_danger sequence survives even a hard crash or e-stop power
-        # loss -- needed to root-cause the rclpy throttled-logger ValueError
-        # seen live 2026-08-05 (couldn't be reproduced from a guessed
-        # sequence; need the real one). Empty string disables it.
+        # loss. Empty string disables it.
         self.declare_parameter(
             "collision_log_path", os.path.expanduser("~/springcontroller_collision_log.csv")
         )
-        # Opened in append mode across every launch with no cap -- confirmed
-        # live 2026-08-20 this had grown to 251MB / 2.5M rows over a couple
-        # days of repulsion-field testing. Single-generation rotation (like
-        # the simplest logrotate config): once the file would exceed this
-        # size, the current one becomes <path>.1 (overwriting any previous
-        # <path>.1) and a fresh one starts. 50MB is a few hundred thousand
-        # rows at this row width -- generous for a day's testing, nowhere
-        # near what caused the problem.
+        # Opened in append mode across every launch with no cap, so it can
+        # grow unbounded over repeated testing. Single-generation rotation
+        # (like the simplest logrotate config): once the file would exceed
+        # this size, the current one becomes <path>.1 (overwriting any
+        # previous <path>.1) and a fresh one starts. 50MB is a few hundred
+        # thousand rows at this row width -- generous for a day's testing.
         self.declare_parameter("collision_log_max_bytes", 50_000_000)
         self._collision_log_path = os.path.expanduser(
             self.get_parameter("collision_log_path").get_parameter_value().string_value
@@ -426,15 +522,14 @@ class VirtualSpringNode(Node):
         self._collision_log_last_flush = -1.0
         # Manual time-gates for the collision/danger log lines below, in
         # place of rclpy's throttle_duration_sec= kwarg -- that mechanism's
-        # per-call-site filter cache has been observed live (2026-08-05,
-        # 2026-08-13) to raise "Requested logging filters cannot be changed
-        # between calls" on effectively every call at this control-loop
-        # rate, defeating the throttle entirely and logging at full ~100Hz
-        # instead of the intended rate. A simple elapsed-time comparison
-        # (same pattern as _collision_log_last_flush above) sidesteps that
-        # cache altogether.
+        # per-call-site filter cache raises "Requested logging filters
+        # cannot be changed between calls" at this control-loop rate,
+        # defeating the throttle and logging at full ~100Hz instead. A
+        # simple elapsed-time comparison (same pattern as
+        # _collision_log_last_flush above) sidesteps that cache.
         self._collision_warn_log_last = -1.0
         self._repulsion_warn_log_last = -1.0
+        self._joint_limit_repulsion_warn_log_last = -1.0
         if self._collision_log_path:
             self._open_collision_log()
 
@@ -530,13 +625,7 @@ class VirtualSpringNode(Node):
         # this is current state, not a stream, so a UI that connects (or
         # reconnects/reloads) after the last enable/disable event should see
         # the real current value immediately rather than showing "unknown"
-        # until the next state change happens to occur. Confirmed live
-        # 2026-08-20: the study UI's springs-state had no authoritative
-        # source at all before this -- it only ever showed whatever the
-        # browser's own last ~/enable call optimistically claimed, so a
-        # fresh page load (or one where that call was never made this
-        # session) just stayed "unknown" forever, even though the real
-        # springs were actively enabled or disabled the whole time.
+        # until the next state change happens to occur.
         self._springs_enabled_pub = self.create_publisher(
             Bool, "~/springs_enabled", springs_updated_qos
         )
@@ -559,8 +648,8 @@ class VirtualSpringNode(Node):
             JointState, "~/joint_torques", 10
         )
         # Repulsion-only component, separate from the combined ~/joint_torques
-        # output -- there was previously no way to see this in a rosbag, only
-        # a throttled (0.5s) terminal WARN with just the total norm. Same
+        # output, so it can be recorded to a rosbag rather than only ever
+        # appearing as a throttled terminal WARN with the total norm. Same
         # JointState/effort shape as ~/joint_torques so existing tooling
         # (PlotJuggler, etc.) handles it the same way. Always published
         # (zeros when repulsion_enabled is off or nothing's within
@@ -568,6 +657,20 @@ class VirtualSpringNode(Node):
         # than a sparse one that only appears while nonzero.
         self._repulsion_torque_pub = self.create_publisher(
             JointState, "~/repulsion_torques", 10
+        )
+        # Joint-limit repulsion field's own contribution -- same
+        # continuous-signal reasoning as ~/repulsion_torques above.
+        self._joint_limit_repulsion_torque_pub = self.create_publisher(
+            JointState, "~/joint_limit_repulsion_torques", 10
+        )
+        # Per-spring force/moment (magnitude + world-frame force vector +
+        # distance-to-target), throttled via spring_force_publish_interval_sec
+        # -- see _publish_spring_forces(). Structured SpringForces.msg rather
+        # than JSON-in-String -- a plain-text echo of the old payload could
+        # get silently truncated by CLI tools (e.g. `ros2 topic echo`'s
+        # default string-length cap) with no indication anything was cut.
+        self._spring_forces_pub = self.create_publisher(
+            SpringForces, "~/spring_forces", 10
         )
 
         # (~/springs_updated publisher created earlier, above the
@@ -582,11 +685,9 @@ class VirtualSpringNode(Node):
         # World-frame witness points [ax,ay,az,bx,by,bz] for the same
         # closest_pair ~/safety_status describes, for visualizing the actual
         # detected closest distance/location (e.g. a line in armviz) instead
-        # of inferring it from geometry alone -- confirmed live 2026-08-20
-        # this was a real gap when a stale caution-halo size made a
-        # perfectly correct CAUTION reading look wrong at a glance. Empty
-        # data means no collision model loaded / nothing to report, same
-        # convention as ~/safety_status's "no collision pairs reported".
+        # of inferring it from geometry alone. Empty data means no
+        # collision model loaded / nothing to report, same convention as
+        # ~/safety_status's "no collision pairs reported".
         self._closest_points_pub = self.create_publisher(
             Float64MultiArray, "~/closest_collision_points", 10
         )
@@ -612,15 +713,15 @@ class VirtualSpringNode(Node):
             RemoveSpring, "~/remove_spring", self._remove_spring_cb
 )
         # Removal/update are shared: both are name-based and don't care
-        # about spring type, so they work for joint/orientation springs too.
+        # about spring type, so they work for joint/pose springs too.
         self._update_spring_srv = self.create_service(
             UpdateSpring, "~/update_spring", self._update_spring_cb
         )
         self._add_joint_spring_srv = self.create_service(
             AddJointSpring, "~/add_joint_spring", self._add_joint_spring_cb
         )
-        self._add_orientation_spring_srv = self.create_service(
-            AddOrientationSpring, "~/add_orientation_spring", self._add_orientation_spring_cb
+        self._add_pose_spring_srv = self.create_service(
+            AddPoseSpring, "~/add_pose_spring", self._add_pose_spring_cb
         )
 
         # Scene collision objects (safety hard-clamp): same wire format
@@ -692,11 +793,8 @@ class VirtualSpringNode(Node):
         # (republished under its own -r joint_states:=... remap), so
         # _joint_state_cb stops firing the instant that node dies -- a
         # check placed there would need the dead node's own messages to
-        # notice it's dead. Confirmed live 2026-08-19: with the check
-        # inline in _joint_state_cb, killing kinova_torque_control froze
-        # virtual_spring_node's whole control loop (including
-        # _publish_safety_status) along with it, so neither the liveness
-        # flag nor safety_status ever updated again.
+        # notice it's dead, freezing this node's whole control loop
+        # (including _publish_safety_status) along with it instead.
         self._torque_control_connected = None  # None until first checked
         if torque_status_topic:
             self.create_subscription(
@@ -708,7 +806,7 @@ class VirtualSpringNode(Node):
                 f"torque-enable, keyed off {torque_status_topic}."
             )
         # Stored on self, not just a local -- _add_spring_cb/
-        # _add_orientation_spring_cb need this same profile for springs
+        # _add_pose_spring_cb need this same profile for springs
         # added at runtime (see their own create_publisher calls), not
         # just the ones loaded here at startup.
         self._target_qos = target_qos = QoSProfile(
@@ -740,11 +838,10 @@ class VirtualSpringNode(Node):
 
                 # TRANSIENT_LOCAL: current target is state, not a stream --
                 # published once on resolve/update, same reasoning as
-                # ~/springs_updated above. Without this, armviz.py only
-                # learns the real target if its subscription happened to
-                # already exist at the moment _joint_state_cb resolved it;
-                # confirmed 2026-08-19 as the direct cause of armviz's
-                # perpetual "no target yet" spam on late startup.
+                # ~/springs_updated above. Without this, a late-starting
+                # subscriber (e.g. armviz.py) only learns the real target
+                # if it happened to already be subscribed at the moment
+                # _joint_state_cb resolved it.
                 self._target_pubs[spring.name] = self.create_publisher(
                     PointStamped, f"~/target/{spring.name}", target_qos
                 )
@@ -765,10 +862,10 @@ class VirtualSpringNode(Node):
                     10,
                 )
                 self.get_logger().info(f"Listening for target updates on {topic}")
-            elif isinstance(spring, OrientationSpring):
+            elif isinstance(spring, PoseSpring):
                 # Reuses VirtualSpring's target/attachment topics and
                 # callbacks -- both duck-type on target_world_point /
-                # local_attachment_point, which OrientationSpring has too.
+                # local_attachment_point, which PoseSpring has too.
                 topic = f"~/target/{spring.name}"
                 self.create_subscription(
                     PointStamped,
@@ -786,8 +883,8 @@ class VirtualSpringNode(Node):
                     10,
                 )
 
-                # Unlike VirtualSpring, an OrientationSpring's target is
-                # never pending (_load_one_orientation_spring requires it
+                # Unlike VirtualSpring, a PoseSpring's target is
+                # never pending (_load_one_pose_spring requires it
                 # explicitly) -- always safe to broadcast immediately.
                 # TRANSIENT_LOCAL for the same reason as VirtualSpring's
                 # publisher above -- a late subscriber (e.g. armviz.py)
@@ -809,28 +906,24 @@ class VirtualSpringNode(Node):
         self.get_logger().info(f"nq={self._arm.n_q}, nv={self._arm.n_dof}")
         self.get_logger().info(f"Joint names: {self._arm.joint_names}")
 
-
-
         # Storage: {spring_name: {'times': [], 'extensions': []}}
         self.spring_data = collections.defaultdict(lambda: {'times': [], 'extensions': [], 'torques':[]})
         self.start_time = None
 
         # Diagnostic: /joint_states is meant to arrive ~every 10ms
         # (feedback_rate_hz=100 on the gen3_torque_control side). Matches
-        # kinova_torque_control_node's cmd_stale_warn_sec instrumentation
-        # (2026-08-07) -- lets us tell whether a command-staleness episode
-        # traces back to /joint_states itself arriving late, vs. this
-        # node's own processing/publish being slow, instead of guessing.
+        # kinova_torque_control_node's cmd_stale_warn_sec instrumentation --
+        # lets us tell whether a command-staleness episode traces back to
+        # /joint_states itself arriving late, vs. this node's own
+        # processing/publish being slow, instead of guessing.
         self._last_js_recv_time = None
         self._js_gap_warned = False
         self._js_gap_warn_sec = 0.02
         # Warn-once-until-clears latch (same pattern as _js_gap_warned above)
         # for the /joint_states-too-short check below -- a flat per-message
-        # warn there filled the terminal buffer solid within ~1s the one
-        # time it fired for real (2026-08-19, gripper controller's state
-        # interface not yet up during startup's first few messages).
+        # warn there can fill the terminal buffer solid within ~1s if it
+        # fires (e.g. a state interface not yet up during startup).
         self._js_short_warned = False
-
 
         # Expose a service to toggle at runtime without restarting
         self._grav_comp_srv = self.create_service(
@@ -842,32 +935,38 @@ class VirtualSpringNode(Node):
         # add_on_set_parameters_callback anywhere, so a live
         # `ros2 param set /virtual_spring_node repulsion_enabled true`
         # reports success (the parameter server accepts it) but the running
-        # control loop never re-reads it -- confirmed live 2026-08-19 as the
-        # cause of repulsion silently never activating. A dedicated service
-        # is the only way to flip it without a full node restart.
+        # control loop never re-reads it. A dedicated service is the only
+        # way to flip it without a full node restart.
         self._repulsion_enable_srv = self.create_service(
             SetBool, "~/set_repulsion_enabled", self._set_repulsion_enabled_cb
         )
-        # Live status, same reasoning/QoS as ~/springs_enabled -- confirmed
-        # live 2026-08-20 that without this, there's no way for a UI (or
-        # anyone else) to tell whether repulsion is actually on short of
-        # remembering their own last ~/set_repulsion_enabled call. Directly
-        # caused a whole confused debugging session: repulsion was believed
-        # enabled (from an earlier session) but had never actually been
-        # turned on this run, and nothing surfaced that mismatch anywhere.
+        # Live status, same reasoning/QoS as ~/springs_enabled -- without
+        # this, there's no way for a UI (or anyone else) to tell whether
+        # repulsion is actually on short of remembering their own last
+        # ~/set_repulsion_enabled call.
         self._repulsion_enabled_pub = self.create_publisher(
             Bool, "~/repulsion_enabled_status", springs_updated_qos
         )
         self._repulsion_enabled_pub.publish(Bool(data=self._repulsion_enabled))
+        # Same enable-service/status-publisher pattern as repulsion above,
+        # for the same "ros2 param set has no effect" / "believed on but
+        # wasn't" reasons.
+        self._joint_limit_repulsion_enable_srv = self.create_service(
+            SetBool, "~/set_joint_limit_repulsion_enabled",
+            self._set_joint_limit_repulsion_enabled_cb,
+        )
+        self._joint_limit_repulsion_enabled_pub = self.create_publisher(
+            Bool, "~/joint_limit_repulsion_enabled_status", springs_updated_qos
+        )
+        self._joint_limit_repulsion_enabled_pub.publish(
+            Bool(data=self._joint_limit_repulsion_enabled)
+        )
         # Live [danger_threshold, caution_threshold, repulsion_max_force_n],
         # same TRANSIENT_LOCAL reasoning as the two publishers above --
-        # confirmed live 2026-08-20 that without this, armviz's caution-halo
-        # padding is set once from the --caution-threshold launch arg and
-        # never updates again, so live-tuning caution_threshold via the UI
-        # (e.g. to 0.73m) silently left the drawn halo at its stale launch
-        # value while the actual triggering distance was the new one --
-        # very confusing to look at (halo looked ~7cm larger than the
-        # object, but CAUTION was firing at 73cm).
+        # without this, a viewer's caution-halo padding is set once from
+        # the launch args and never reflects a live-tuned threshold, which
+        # is confusing to look at (halo doesn't match where CAUTION
+        # actually fires).
         self._collision_thresholds_pub = self.create_publisher(
             Float64MultiArray, "~/collision_thresholds_status", springs_updated_qos
         )
@@ -939,6 +1038,16 @@ class VirtualSpringNode(Node):
         )
         response.success = True
         response.message = f"repulsion_enabled = {request.data}"
+        return response
+
+    def _set_joint_limit_repulsion_enabled_cb(self, request, response):
+        self._joint_limit_repulsion_enabled = request.data
+        self._joint_limit_repulsion_enabled_pub.publish(Bool(data=request.data))
+        self.get_logger().info(
+            f"Joint-limit repulsion field {'enabled' if request.data else 'disabled'}"
+        )
+        response.success = True
+        response.message = f"joint_limit_repulsion_enabled = {request.data}"
         return response
 
     def _update_collision_thresholds_cb(self, request, response):
@@ -1041,20 +1150,16 @@ class VirtualSpringNode(Node):
             # same deferred-resolve mechanism, for the same reason) so the
             # spring starts at zero extension/force instead of pulling
             # toward a stale fixed point that may be far from wherever the
-            # arm actually is this session. A fixed [0.5, 0, 0.5] target
-            # sitting 29cm from the real starting pose contributed to a
-            # live incident 2026-08-07.
+            # arm actually is this session.
             #
-            # Can't resolve it here yet, though: _load_one_spring() runs
-            # during __init__, before any real /joint_states message has
-            # ever arrived, so self._arm is still at the URDF's zero/neutral
-            # configuration -- not the arm's actual pose. Resolving "current
-            # position" against that stale zero pose is what caused a
-            # second live incident the same day (arm lurched toward the
-            # near-vertical "candlestick" position, which is where the
-            # zero configuration happens to put end_effector_link).
-            # Use a zero placeholder and resolve for real on the first
-            # _joint_state_cb, once self._arm reflects reality.
+            # Can't resolve it here yet, though: this method runs during
+            # __init__, before any real /joint_states message has ever
+            # arrived, so self._arm is still at the URDF's zero/neutral
+            # configuration, not the arm's actual pose -- resolving
+            # "current position" against that would send the arm lurching
+            # toward wherever the zero configuration happens to put this
+            # link. Use a zero placeholder and resolve for real on the
+            # first _joint_state_cb, once self._arm reflects reality.
             target = np.zeros(3)
 
         spring = VirtualSpring(
@@ -1079,13 +1184,12 @@ class VirtualSpringNode(Node):
         # joint's actual current angle (a soft hold-here spring) rather
         # than requiring every joint spring to specify a target. Can't
         # resolve that here, though -- same reason as VirtualSpring's
-        # target below (see _load_one_spring): this method runs during
+        # target above (see _load_one_spring): this method runs during
         # __init__, before any real /joint_states message has arrived, so
         # self._arm is still at the URDF's zero/neutral configuration, not
         # the arm's actual pose. Use a zero placeholder and resolve for
         # real on the first _joint_state_cb, once self._arm reflects
-        # reality -- resolving against the stale zero pose here is what
-        # caused a live incident for VirtualSpring, 2026-08-07.
+        # reality.
         self._declare_or_ignore(f"{prefix}.target_angle", float("nan"))
         self._declare_or_ignore(f"{prefix}.stiffness",    0.0)
         self._declare_or_ignore(f"{prefix}.damping",      0.0)
@@ -1120,9 +1224,9 @@ class VirtualSpringNode(Node):
         spring._target_pending = target_pending
         return spring
 
-    def _load_one_orientation_spring(self, name: str) -> OrientationSpring:
-        """Load a single orientation spring by name from current parameters. Raises on error."""
-        prefix = f"orientation_springs.{name}"
+    def _load_one_pose_spring(self, name: str) -> PoseSpring:
+        """Load a single pose spring by name from current parameters. Raises on error."""
+        prefix = f"pose_springs.{name}"
         self._declare_or_ignore(f"{prefix}.link_name", "")
         self._declare_or_ignore(f"{prefix}.local_point", [0.0, 0.0, 0.0])
         self._declare_or_ignore(f"{prefix}.local_face_normal", [0.0, 0.0, 1.0])
@@ -1138,6 +1242,20 @@ class VirtualSpringNode(Node):
         )
         self._declare_or_ignore(f"{prefix}.stiffness", 0.0)
         self._declare_or_ignore(f"{prefix}.damping", 0.0)
+        # position_center/position_radius are just as required as target,
+        # for the same reason: no safe default that doesn't let the arm
+        # drift unconstrained -- see PoseSpring's docstring in
+        # virtual_spring.py for what this bounds and why.
+        self._declare_or_ignore(
+            f"{prefix}.position_center", [float("nan"), float("nan"), float("nan")]
+        )
+        self._declare_or_ignore(f"{prefix}.position_radius", float("nan"))
+        # position_stiffness is optional (default 0.0 -- no restoring pull,
+        # matching this spring's original behavior). See PoseSpring's
+        # docstring: needed whenever no paired VirtualSpring is anchoring
+        # the arm, or the attachment point has nothing pulling it back
+        # once it drifts past position_radius.
+        self._declare_or_ignore(f"{prefix}.position_stiffness", 0.0)
 
         def _get(key, default=None, _prefix=prefix):
             val = self.get_parameter(f"{_prefix}.{key}").value
@@ -1149,17 +1267,31 @@ class VirtualSpringNode(Node):
         target = np.array(_get("target", [float("nan")] * 3), dtype=float)
         if np.any(np.isnan(target)):
             raise ValueError(
-                f"Orientation spring '{name}': 'target' must be set "
+                f"Pose spring '{name}': 'target' must be set "
                 f"explicitly (e.g. the participant's measured face "
                 f"position) -- there's no safe default to infer it from."
             )
 
-        spring = OrientationSpring(
+        position_center = np.array(_get("position_center", [float("nan")] * 3), dtype=float)
+        position_radius = float(_get("position_radius", float("nan")))
+        if np.any(np.isnan(position_center)) or math.isnan(position_radius):
+            raise ValueError(
+                f"Pose spring '{name}': 'position_center' and "
+                f"'position_radius' must both be set explicitly -- "
+                f"typically the same target/outer_radius a paired "
+                f"position spring is already using. No safe default "
+                f"reproduces the old unconstrained-drift behavior."
+            )
+
+        spring = PoseSpring(
             link_name=link_name,
             local_attachment_point=np.array(_get("local_point", [0, 0, 0]), dtype=float),
             local_face_normal=np.array(_get("local_face_normal", [0, 0, 1]), dtype=float),
             target_world_point=target,
             stiffness=float(_get("stiffness", 0.0)),
+            position_center=position_center,
+            position_radius=position_radius,
+            position_stiffness=float(_get("position_stiffness", 0.0)),
             damping=float(_get("damping", 0.0)),
             name=name,
         )
@@ -1249,9 +1381,9 @@ class VirtualSpringNode(Node):
         # e.g. a locked gripper joint reported on /joint_states -- is fine;
         # only a message too short to cover every index in self._joint_order
         # is actually unusable. Latched (see _js_short_warned) instead of
-        # warning every callback -- this fired at full topic rate 2026-08-19
-        # (gripper controller's state interface not up yet for the first
-        # message, present by the next one) and filled the terminal buffer.
+        # warning every callback -- a transient case (e.g. a state
+        # interface not up yet for the first message or two) would
+        # otherwise fill the terminal buffer at full topic rate.
         if len(msg.position) <= max(self._joint_order):
             if not self._js_short_warned:
                 self.get_logger().warn(
@@ -1289,7 +1421,7 @@ class VirtualSpringNode(Node):
             # _load_one_spring / _load_one_joint_spring), set target =
             # current position/angle so the spring starts at zero
             # extension/force instead of pulling toward wherever the zero
-            # pose happens to put it. OrientationSpring never sets
+            # pose happens to put it. PoseSpring never sets
             # _target_pending (its target has no safe default and is
             # required at load time), so it never matches either branch
             # here.
@@ -1311,15 +1443,12 @@ class VirtualSpringNode(Node):
                     # broadcast at load time.
                     self._publish_target(spring)
                     # The topic publish above only reaches whoever's already
-                    # subscribed at this exact moment (armviz.py, for one,
-                    # isn't -- it's still busy loading its own URDF/meshcat
-                    # this early). The springs.<name>.target *parameter*
-                    # still holds the NaN-sentinel placeholder otherwise --
-                    # confirmed 2026-08-14: armviz's `ros2 param get`-based
-                    # bootstrap retried for the full 20s and never saw
-                    # anything but NaN, since nothing here ever wrote the
-                    # resolved value back to it. Late subscribers/pollers
-                    # need this to reflect ground truth same as the topic.
+                    # subscribed at this exact moment (a late bootstrapper,
+                    # e.g. armviz.py still loading its own URDF/meshcat,
+                    # isn't). The springs.<name>.target *parameter* still
+                    # holds the NaN-sentinel placeholder otherwise, so a
+                    # `ros2 param get`-based bootstrap or other late
+                    # poller would never see the resolved value.
                     self.set_parameters([
                         rclpy.parameter.Parameter(
                             f"springs.{spring.name}.target",
@@ -1369,12 +1498,11 @@ class VirtualSpringNode(Node):
             )
 
             # Gravity comp must never be scaled by anything except the
-            # add_gravity_compensation on/off switch itself -- see
-            # torque_ramp_gravity_comp_lesson (a real arm drop toward the
-            # table, 2026-08-05). compute_total_torques() already keeps it
-            # out of spring_scale for that reason; split it out here too so
-            # the collision clamp below can't reintroduce the same bug by
-            # scaling/zeroing it along with the spring torque.
+            # add_gravity_compensation on/off switch itself -- scaling it
+            # toward zero drops the arm. compute_total_torques() already
+            # keeps it out of spring_scale for that reason; split it out
+            # here too so the collision clamp below can't reintroduce the
+            # same bug by scaling/zeroing it along with the spring torque.
             gravity_torques = (
                 self._arm.get_gravity_torques() if self._add_grav_comp
                 else np.zeros_like(torques)
@@ -1456,13 +1584,9 @@ class VirtualSpringNode(Node):
                         a, b, f"{collision.min_distance:.4f}", f"{collision.scale_factor:.4f}",
                         log_call_failed,
                     ])
-                    # Flushing every cycle (was: every single row, up to
-                    # 100Hz) is a plausible direct cause of the periodic
-                    # ~50-90ms torque-command latency seen live 2026-08-07
-                    # -- throttled to 2x/sec instead. Crash-safety cost is
-                    # capped at <0.5s of data loss, an acceptable tradeoff
-                    # against not stalling the control loop on disk I/O
-                    # every cycle.
+                    # Flushing every row at up to 100Hz stalls the control
+                    # loop on disk I/O -- throttled to 2x/sec instead.
+                    # Crash-safety cost is capped at <0.5s of data loss.
                     if elapsed - self._collision_log_last_flush >= 0.5:
                         self._collision_log_file.flush()
                         self._collision_log_last_flush = elapsed
@@ -1480,8 +1604,19 @@ class VirtualSpringNode(Node):
                 repulsion_norm = float(np.linalg.norm(self._last_repulsion_torques))
                 if (repulsion_norm > 1e-6 and self._last_torque_status == "ENABLED"
                         and elapsed - self._repulsion_warn_log_last >= 0.5):
+                    # get_repulsion_torques() can sum contributions from
+                    # every pair within caution_threshold, but the globally
+                    # closest pair (collision, already computed this cycle
+                    # above) is almost always what's actually driving it --
+                    # naming it turns "something is pushing back" into
+                    # "X is near Y", without a second geometry pass just for
+                    # this log line.
+                    pair_note = ""
+                    if collision is not None:
+                        a, b = collision.closest_pair
+                        pair_note = f" (closest: {a}/{b} dist={collision.min_distance:.3f}m)"
                     self.get_logger().warn(
-                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m"
+                        f"Repulsion field active: |tau|={repulsion_norm:.3f} N*m{pair_note}"
                     )
                     self._repulsion_warn_log_last = elapsed
             else:
@@ -1491,6 +1626,45 @@ class VirtualSpringNode(Node):
             repulsion_msg.name = self._arm.joint_names
             repulsion_msg.effort = repulsion_out.tolist()
             self._repulsion_torque_pub.publish(repulsion_msg)
+
+            # Joint-limit repulsion field: same unconditionally-additive,
+            # independent-of-spring-enable-state treatment as the Cartesian
+            # repulsion field above -- cheap enough (no Jacobian/distance
+            # query) to compute every cycle rather than throttling it.
+            if self._joint_limit_repulsion_enabled:
+                joint_limit_out = self._arm.get_joint_limit_repulsion_torques(
+                    self._joint_limit_margin_rad, self._joint_limit_max_torque_nm,
+                )
+                torques = torques + joint_limit_out
+                joint_limit_norm = float(np.linalg.norm(joint_limit_out))
+                if (joint_limit_norm > 1e-6 and self._last_torque_status == "ENABLED"
+                        and elapsed - self._joint_limit_repulsion_warn_log_last >= 0.5):
+                    active_joints = ", ".join(
+                        f"{name}={val:.3f}"
+                        for name, val in zip(self._arm.joint_names, joint_limit_out)
+                        if abs(val) > 1e-6
+                    )
+                    self.get_logger().warn(
+                        f"Joint-limit repulsion field active: |tau|={joint_limit_norm:.3f} N*m "
+                        f"({active_joints})"
+                    )
+                    self._joint_limit_repulsion_warn_log_last = elapsed
+            else:
+                joint_limit_out = np.zeros(self._arm.n_dof)
+            joint_limit_msg = JointState()
+            joint_limit_msg.header.stamp = self.get_clock().now().to_msg()
+            joint_limit_msg.name = self._arm.joint_names
+            joint_limit_msg.effort = joint_limit_out.tolist()
+            self._joint_limit_repulsion_torque_pub.publish(joint_limit_msg)
+
+            # ~/spring_forces: throttled independently of the control loop
+            # itself (same reasoning as collision_check_interval_sec above)
+            # -- see _publish_spring_forces().
+            if (self._last_spring_force_publish_time is None or
+                    (now - self._last_spring_force_publish_time).nanoseconds / 1e9
+                    >= self._spring_force_publish_interval):
+                self._publish_spring_forces()
+                self._last_spring_force_publish_time = now
 
             # Grace-period escalation: springs auto-disabled by the
             # collision clamp, still not manually re-enabled, and it's been
@@ -1630,24 +1804,26 @@ class VirtualSpringNode(Node):
             f"Updated target for '{spring.name}': "
             f"[{p.x:.3f}, {p.y:.3f}, {p.z:.3f}]"
         )
-        # Re-broadcast on the same topic so a subscriber whose QoS the
-        # ORIGINAL publisher doesn't satisfy still sees the update --
-        # confirmed live 2026-08-19: retargeting a spring from the UI
-        # (rosbridge-created publisher, default/VOLATILE durability) never
-        # reached armviz, whose ~/target/<name> subscription is
-        # TRANSIENT_LOCAL (needed separately so a late-joining armviz sees
-        # an already-resolved target -- see _publish_target's call sites).
-        # This node's own publisher on this same topic IS TRANSIENT_LOCAL,
-        # so re-publishing here is what actually reaches it. This was
-        # previously "deliberately not republished" on the assumption that
-        # every subscriber -- including armviz -- already sees the
-        # original message directly; that assumption held before armviz's
-        # subscription needed to be TRANSIENT_LOCAL.
+        # Re-broadcast on this node's own (TRANSIENT_LOCAL) publisher so a
+        # late/QoS-mismatched subscriber like armviz still sees the update,
+        # even though the UI's rosbridge publisher already sent one.
         self._publish_target(spring)
+        # Also mirror into the parameter, not just the topic -- Finalize
+        # and the spring-list display both read the target via
+        # GetParameters, not the topic, so without this a retarget looks
+        # like it took (topic/meshcat update fine) but silently doesn't
+        # stick for anything reading the parameter.
+        self.set_parameters([
+            rclpy.parameter.Parameter(
+                f"springs.{spring.name}.target",
+                rclpy.parameter.Parameter.Type.DOUBLE_ARRAY,
+                spring.target_world_point.tolist(),
+            )
+        ])
 
     def _publish_target(self, spring) -> None:
         """Broadcast a Cartesian-target spring's (VirtualSpring or
-        OrientationSpring) current target on ~/target/<name>.
+        PoseSpring) current target on ~/target/<name>.
 
         Only call this for a target this node set on its own initiative
         (load-time, or resolving a pending one against the arm's real
@@ -1871,8 +2047,30 @@ class VirtualSpringNode(Node):
     def _declare_or_ignore(self, name, default):
         try:
             self.declare_parameter(name, default)
+            return
         except rclpy.exceptions.ParameterAlreadyDeclaredException:
             pass
+        # Self-heal a stale type mismatch instead of silently leaving it in
+        # place forever. A YAML config that writes a numeric spring field
+        # as a bare integer (e.g. "rest_length: 0" instead of "0.0") gets
+        # that parameter's very first declaration -- from the generic
+        # config-file loader in __init__, which runs before any spring is
+        # loaded -- locked in as an INTEGER parameter rather than DOUBLE.
+        # Every caller here (spring loading, add_spring/add_pose_spring/
+        # add_joint_spring, update_spring) always passes a properly
+        # -typed `default`, so it's the correct source of truth to compare
+        # against. ROS parameters are statically typed once declared, so a
+        # later set_parameters() call with the right type but against the
+        # wrong-typed existing declaration silently fails
+        # (SetParametersResult.successful=False, never checked anywhere
+        # this pattern is used) -- the live spring object's own attribute
+        # still updates correctly (set directly in Python, not through
+        # this parameter mirror), but the parameter mirror itself doesn't,
+        # so anything reading the parameter (e.g. a UI display) goes stale.
+        current_value = self.get_parameter(name).value
+        if type(current_value) is not type(default):
+            self.undeclare_parameter(name)
+            self.declare_parameter(name, default)
 
     def _set_springs_enabled(self, enabled: bool, reason: str = "", auto: bool = False) -> None:
         """
@@ -1921,10 +2119,8 @@ class VirtualSpringNode(Node):
         # (see _set_springs_enabled's auto=True path), so this call would
         # otherwise report success and "All springs enabled." while the
         # UI's live springs-state immediately flips back to disabled a
-        # moment later -- confusing/misleading (confirmed live 2026-08-20:
-        # the msg-box's stale "enabled" text sat there green while the
-        # status row correctly showed disabled-by-collision). Report the
-        # truth up front instead of a success that won't hold.
+        # moment later -- confusing/misleading. Report the truth up front
+        # instead of a success that won't hold.
         if request.data and self._last_collision_status is not None \
                 and self._last_collision_status.in_collision:
             a, b = self._last_collision_status.closest_pair
@@ -2015,6 +2211,8 @@ class VirtualSpringNode(Node):
             stiffness=request.stiffness,
             damping=request.damping,
             rest_length=request.rest_length,
+            inner_radius=request.inner_radius,
+            outer_radius=request.outer_radius,
         )
 
         self._springs.add(spring)
@@ -2024,11 +2222,10 @@ class VirtualSpringNode(Node):
     ]:
             self.create_subscription(PointStamped, topic, cb, 10)
         # TRANSIENT_LOCAL (self._target_qos), matching the startup-time
-        # publishers above -- a plain depth=10 default here silently gave
+        # publishers above -- a plain depth=10 default here would give
         # springs added at runtime a VOLATILE publisher, mismatching
-        # armviz's TRANSIENT_LOCAL subscription. Confirmed live 2026-08-19:
-        # "New publisher discovered ... offering incompatible QoS ...
-        # DURABILITY" the moment a spring was added from the UI.
+        # armviz's TRANSIENT_LOCAL subscription ("offering incompatible
+        # QoS ... DURABILITY").
         self._target_pubs[name] = self.create_publisher(
             PointStamped, f"~/target/{name}", self._target_qos
         )
@@ -2106,13 +2303,13 @@ class VirtualSpringNode(Node):
         self._publish_springs_updated()
         return response
 
-    def _add_orientation_spring_cb(
-        self, request: AddOrientationSpring.Request, response: AddOrientationSpring.Response
-    ) -> AddOrientationSpring.Response:
+    def _add_pose_spring_cb(
+        self, request: AddPoseSpring.Request, response: AddPoseSpring.Response
+    ) -> AddPoseSpring.Response:
         name = request.name.strip()
         if not name:
             response.success = False
-            response.message = "Orientation spring name must not be empty."
+            response.message = "Pose spring name must not be empty."
             return response
 
         if any(s.name == name for s in self._springs):
@@ -2120,15 +2317,30 @@ class VirtualSpringNode(Node):
             response.message = f"Spring '{name}' already exists."
             return response
 
+        if request.stiffness > self._max_pose_spring_stiffness:
+            response.success = False
+            response.message = (
+                f"stiffness={request.stiffness} N*m/rad exceeds "
+                f"max_pose_spring_stiffness_nm_per_rad="
+                f"{self._max_pose_spring_stiffness} -- this looks "
+                f"like a position-spring value (N/m) sent by mistake. "
+                f"Pose springs are typically ~0.5-5 N*m/rad; raise "
+                f"the parameter if a larger value is genuinely intended."
+            )
+            return response
+
         try:
             self._arm.validate_link_name(request.link_name)
-            spring = OrientationSpring(
+            spring = PoseSpring(
                 name=name,
                 link_name=request.link_name,
                 local_attachment_point=np.array(request.local_point),
                 local_face_normal=np.array(request.local_face_normal),
                 target_world_point=np.array(request.target),
                 stiffness=request.stiffness,
+                position_center=np.array(request.position_center),
+                position_radius=request.position_radius,
+                position_stiffness=request.position_stiffness,
                 damping=request.damping,
             )
         except ValueError as e:
@@ -2138,7 +2350,7 @@ class VirtualSpringNode(Node):
 
         # Mirror the parameter namespace so external tools (e.g. visualisation)
         # can see this spring the same way as one loaded from YAML
-        prefix = f"orientation_springs.{name}"
+        prefix = f"pose_springs.{name}"
         params = {
             f"{prefix}.link_name":         (rclpy.parameter.Parameter.Type.STRING,       request.link_name),
             f"{prefix}.local_point":       (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
@@ -2146,18 +2358,21 @@ class VirtualSpringNode(Node):
             f"{prefix}.target":            (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
             f"{prefix}.stiffness":         (rclpy.parameter.Parameter.Type.DOUBLE,       request.stiffness),
             f"{prefix}.damping":           (rclpy.parameter.Parameter.Type.DOUBLE,       request.damping),
+            f"{prefix}.position_center":   (rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
+            f"{prefix}.position_radius":   (rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
+            f"{prefix}.position_stiffness": (rclpy.parameter.Parameter.Type.DOUBLE,      request.position_stiffness),
         }
         for key, (ptype, value) in params.items():
             self._declare_or_ignore(key, value)
             self.set_parameters([rclpy.parameter.Parameter(key, ptype, value)])
 
-        # Also add the name to orientation_spring_names so it shows up if someone lists params
+        # Also add the name to pose_spring_names so it shows up if someone lists params
         current_names = list(
-            self.get_parameter("orientation_spring_names").get_parameter_value().string_array_value
+            self.get_parameter("pose_spring_names").get_parameter_value().string_array_value
         )
         if name not in current_names:
             self.set_parameters([
-                rclpy.parameter.Parameter("orientation_spring_names",
+                rclpy.parameter.Parameter("pose_spring_names",
                                           rclpy.Parameter.Type.STRING_ARRAY,
                                           current_names + [name])
             ])
@@ -2169,18 +2384,17 @@ class VirtualSpringNode(Node):
         ]:
             self.create_subscription(PointStamped, topic, cb, 10)
         # TRANSIENT_LOCAL (self._target_qos), matching the startup-time
-        # publishers above -- a plain depth=10 default here silently gave
+        # publishers above -- a plain depth=10 default here would give
         # springs added at runtime a VOLATILE publisher, mismatching
-        # armviz's TRANSIENT_LOCAL subscription. Confirmed live 2026-08-19:
-        # "New publisher discovered ... offering incompatible QoS ...
-        # DURABILITY" the moment a spring was added from the UI.
+        # armviz's TRANSIENT_LOCAL subscription ("offering incompatible
+        # QoS ... DURABILITY").
         self._target_pubs[name] = self.create_publisher(
             PointStamped, f"~/target/{name}", self._target_qos
         )
         self._publish_target(spring)
 
         response.success = True
-        response.message = f"Orientation spring '{name}' added."
+        response.message = f"Pose spring '{name}' added."
         response.id = len(self._springs) - 1
         self.get_logger().info(response.message)
         self._publish_springs_updated()
@@ -2223,23 +2437,23 @@ class VirtualSpringNode(Node):
             self._springs.add(joint_spring)
             self.get_logger().info(f"Loaded joint spring: {joint_spring}")
 
-        self._declare_or_ignore("orientation_spring_names", [""])
-        orientation_spring_names = (
-            self.get_parameter("orientation_spring_names")
+        self._declare_or_ignore("pose_spring_names", [""])
+        pose_spring_names = (
+            self.get_parameter("pose_spring_names")
             .get_parameter_value()
             .string_array_value
         )
-        self.get_logger().info(f"Orientation spring names from params: {list(orientation_spring_names)}")
-        for name in orientation_spring_names:
+        self.get_logger().info(f"Pose spring names from params: {list(pose_spring_names)}")
+        for name in pose_spring_names:
             if not name:
                 continue
             try:
-                orientation_spring = self._load_one_orientation_spring(name)
+                pose_spring = self._load_one_pose_spring(name)
             except (ValueError, RuntimeError) as e:
-                self.get_logger().fatal(f"Orientation spring '{name}' failed to load: {e}")
+                self.get_logger().fatal(f"Pose spring '{name}' failed to load: {e}")
                 raise
-            self._springs.add(orientation_spring)
-            self.get_logger().info(f"Loaded orientation spring: {orientation_spring}")
+            self._springs.add(pose_spring)
+            self.get_logger().info(f"Loaded pose spring: {pose_spring}")
 
     def _remove_spring_cb(
         self, request: RemoveSpring.Request, response: RemoveSpring.Response
@@ -2257,12 +2471,12 @@ class VirtualSpringNode(Node):
         # Which names-list parameter and per-spring parameter keys to clean
         # up depends on the spring's type -- each type lives under its own
         # prefix and its own <type>_names list (spring_names / joint_spring_
-        # names / orientation_spring_names). Previously this always assumed
+        # names / pose_spring_names). Previously this always assumed
         # VirtualSpring's springs.<name>.* prefix and only ever edited
         # spring_names, so removing a JointSpring left it in
         # joint_spring_names (it would reload on restart) and its
         # joint_springs.<name>.* parameters undeclared -- never actually
-        # exercised until OrientationSpring made the type-specific cleanup
+        # exercised until PoseSpring made the type-specific cleanup
         # unavoidable to get right for a third type too.
         if isinstance(spring, VirtualSpring):
             names_param = "spring_names"
@@ -2279,13 +2493,14 @@ class VirtualSpringNode(Node):
                 f"{prefix}.joint_name", f"{prefix}.target_angle",
                 f"{prefix}.stiffness", f"{prefix}.damping",
             ]
-        else:  # OrientationSpring
-            names_param = "orientation_spring_names"
-            prefix = f"orientation_springs.{name}"
+        else:  # PoseSpring
+            names_param = "pose_spring_names"
+            prefix = f"pose_springs.{name}"
             keys = [
                 f"{prefix}.link_name", f"{prefix}.local_point",
                 f"{prefix}.local_face_normal", f"{prefix}.target",
                 f"{prefix}.stiffness", f"{prefix}.damping",
+                f"{prefix}.position_center", f"{prefix}.position_radius",
             ]
 
         current_names = list(
@@ -2315,11 +2530,30 @@ class VirtualSpringNode(Node):
         self, request: UpdateSpring.Request, response: UpdateSpring.Response
     ) -> UpdateSpring.Response:
         """
-        Adjust an existing spring's stiffness/damping in place -- unlike
-        add_spring, which refuses if the name already exists, so this is
-        the only way to change these without remove-then-re-add (which
-        would also momentarily drop the spring's force entirely). Doesn't
-        change the spring's target/attachment/geometry, just k and b.
+        Adjust an existing spring's stiffness/damping (and, for a position
+        spring, rest_length/inner_radius/outer_radius; for a pose spring,
+        position_center/position_radius/position_stiffness) in place --
+        unlike add_spring, which refuses if the name already exists, so
+        this is the only way to change these without remove-then-re-add
+        (which would also momentarily drop the spring's force entirely).
+
+        link_name/local_point/target/local_face_normal (position/pose
+        springs only -- ignored for a joint spring) ARE geometry, unlike
+        every other field here, but since link_name/local_attachment_point/
+        target_world_point/local_face_normal are all plain mutable
+        attributes on VirtualSpring/PoseSpring (not read-only), this is
+        still a direct in-place mutation of the already-live spring
+        object -- not a remove-then-re-add, so no momentary force drop
+        here either.
+
+        rest_length/inner_radius/outer_radius are VirtualSpring-only
+        (JointSpring/PoseSpring have no such attributes -- see
+        virtual_spring.py) -- silently ignored for those types rather than
+        rejected, same "fields that don't apply are ignored, not an error"
+        convention as AddSpring's request carrying the same three fields
+        for every spring type. position_center/position_radius/
+        position_stiffness/local_face_normal are PoseSpring-only, same
+        convention.
         """
         name = request.name.strip()
         spring = next((s for s in self._springs if s.name == name), None)
@@ -2336,34 +2570,128 @@ class VirtualSpringNode(Node):
             response.success = False
             response.message = f"damping must be >= 0, got {request.damping}."
             return response
+        if (isinstance(spring, PoseSpring)
+                and request.stiffness > self._max_pose_spring_stiffness):
+            response.success = False
+            response.message = (
+                f"stiffness={request.stiffness} N*m/rad exceeds "
+                f"max_pose_spring_stiffness_nm_per_rad="
+                f"{self._max_pose_spring_stiffness} for pose "
+                f"spring '{name}'. See _add_pose_spring_cb for why."
+            )
+            return response
+        is_virtual = isinstance(spring, VirtualSpring)
+        is_pose = isinstance(spring, PoseSpring)
+        if is_virtual and request.rest_length < 0:
+            response.success = False
+            response.message = f"rest_length must be >= 0, got {request.rest_length}."
+            return response
+        if is_pose and request.position_radius <= 0:
+            response.success = False
+            response.message = f"position_radius must be > 0, got {request.position_radius}."
+            return response
+        if is_pose and request.position_stiffness < 0:
+            response.success = False
+            response.message = f"position_stiffness must be >= 0, got {request.position_stiffness}."
+            return response
+
+        if is_virtual or is_pose:
+            try:
+                self._arm.validate_link_name(request.link_name)
+            except ValueError as e:
+                response.success = False
+                response.message = str(e)
+                return response
+        new_face_normal = None
+        if is_pose:
+            new_face_normal = np.array(request.local_face_normal, dtype=float)
+            face_normal_norm = np.linalg.norm(new_face_normal)
+            if face_normal_norm < 1e-9:
+                response.success = False
+                response.message = "local_face_normal must be nonzero."
+                return response
+            new_face_normal = new_face_normal / face_normal_norm
 
         spring.stiffness = request.stiffness
         spring.damping = request.damping
+        if is_virtual:
+            spring.rest_length = request.rest_length
+            spring.inner_radius = request.inner_radius
+            spring.outer_radius = request.outer_radius
+        if is_pose:
+            spring.position_center = np.array(request.position_center)
+            spring.position_radius = request.position_radius
+            spring.position_stiffness = request.position_stiffness
+            spring.local_face_normal = new_face_normal
+        if is_virtual or is_pose:
+            spring.link_name = request.link_name
+            spring.local_attachment_point = np.array(request.local_point)
+            spring.target_world_point = np.array(request.target)
 
         # Mirror into the parameter namespace, same as add_spring -- keeps
         # it in sync with the live spring instead of going stale. Prefix
         # depends on spring type (same dispatch as _remove_spring_cb) --
         # hardcoding springs.<name> here would silently write a bogus
         # parameter under the wrong prefix for a JointSpring/
-        # OrientationSpring while leaving its real one stale.
-        if isinstance(spring, VirtualSpring):
+        # PoseSpring while leaving its real one stale.
+        if is_virtual:
             prefix = f"springs.{name}"
         elif isinstance(spring, JointSpring):
             prefix = f"joint_springs.{name}"
-        else:  # OrientationSpring
-            prefix = f"orientation_springs.{name}"
-        for key, value in [
-                (f"{prefix}.stiffness", request.stiffness),
-                (f"{prefix}.damping", request.damping),
-        ]:
+        else:  # PoseSpring
+            prefix = f"pose_springs.{name}"
+        # (ptype, value) pairs, not just value -- position_center is a
+        # DOUBLE_ARRAY, not a DOUBLE like every other field mirrored here,
+        # so the type can't be hardcoded the way a single-type loop would.
+        params_to_mirror = [
+            (f"{prefix}.stiffness", rclpy.parameter.Parameter.Type.DOUBLE, request.stiffness),
+            (f"{prefix}.damping",   rclpy.parameter.Parameter.Type.DOUBLE, request.damping),
+        ]
+        if is_virtual:
+            params_to_mirror += [
+                (f"{prefix}.rest_length",  rclpy.parameter.Parameter.Type.DOUBLE, request.rest_length),
+                (f"{prefix}.inner_radius", rclpy.parameter.Parameter.Type.DOUBLE, request.inner_radius),
+                (f"{prefix}.outer_radius", rclpy.parameter.Parameter.Type.DOUBLE, request.outer_radius),
+            ]
+        if is_pose:
+            params_to_mirror += [
+                (f"{prefix}.position_center", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.position_center)),
+                (f"{prefix}.position_radius", rclpy.parameter.Parameter.Type.DOUBLE,       request.position_radius),
+                (f"{prefix}.position_stiffness", rclpy.parameter.Parameter.Type.DOUBLE,    request.position_stiffness),
+                (f"{prefix}.local_face_normal", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, spring.local_face_normal.tolist()),
+            ]
+        if is_virtual or is_pose:
+            params_to_mirror += [
+                (f"{prefix}.link_name",   rclpy.parameter.Parameter.Type.STRING,       request.link_name),
+                (f"{prefix}.local_point", rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.local_point)),
+                (f"{prefix}.target",      rclpy.parameter.Parameter.Type.DOUBLE_ARRAY, list(request.target)),
+            ]
+        for key, ptype, value in params_to_mirror:
             self._declare_or_ignore(key, value)
             self.set_parameters([
-                rclpy.parameter.Parameter(key, rclpy.parameter.Parameter.Type.DOUBLE, value)
+                rclpy.parameter.Parameter(key, ptype, value)
             ])
 
         response.success = True
         response.message = (
-            f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}."
+            f"Spring '{name}' updated: stiffness={request.stiffness}, damping={request.damping}"
+            + (
+                f", rest_length={request.rest_length}, inner_radius={request.inner_radius}, "
+                f"outer_radius={request.outer_radius}"
+                if is_virtual else ""
+            )
+            + (
+                f", position_center={list(request.position_center)}, "
+                f"position_radius={request.position_radius}, "
+                f"position_stiffness={request.position_stiffness}, "
+                f"local_face_normal={spring.local_face_normal.tolist()}"
+                if is_pose else ""
+            )
+            + (
+                f", link_name={request.link_name}, local_point={list(request.local_point)}, "
+                f"target={list(request.target)}."
+                if (is_virtual or is_pose) else "."
+            )
         )
         self.get_logger().info(response.message)
         self._publish_springs_updated()
@@ -2380,11 +2708,86 @@ class VirtualSpringNode(Node):
         # _set_springs_enabled) -- any one of them reflects the aggregate
         # state, defaulting True if there are no springs loaded at all yet.
         # SpringCollection supports iteration/len but not indexing (no
-        # __getitem__) -- confirmed live 2026-08-20, self._springs[0]
-        # crashed the node on startup with "not subscriptable".
+        # __getitem__), so self._springs[0] would crash with "not
+        # subscriptable" -- use next(iter(...)) instead.
         first = next(iter(self._springs), None)
         enabled = first.enabled if first is not None else True
         self._springs_enabled_pub.publish(Bool(data=enabled))
+
+    def _publish_spring_forces(self) -> None:
+        """
+        Publish every active spring's current force/moment as a
+        SpringForces (SpringForce[]) message on ~/spring_forces. Reuses
+        each spring's already-cached _last_state (set this cycle by
+        compute_torques(), called earlier in _joint_state_cb) -- this is
+        pure message formatting, not new physics, so throttling the *call
+        site* (see spring_force_publish_interval_sec) is what actually
+        saves control-loop time, not anything in here. A spring with no
+        _last_state (disabled, or not computed yet) is omitted rather than
+        reported as zero, so a consumer can tell "not contributing right
+        now" apart from "not loaded yet".
+
+        kind is "force" for a VirtualSpring (real 3D force, N), "moment"
+        for a PoseSpring (real 3D moment, N*m -- distinguished
+        from "force" so a consumer doesn't mix up units), or "torque" for
+        a JointSpring (a scalar about a single joint axis, not a Cartesian
+        vector -- force is [0, 0, 0] rather than inventing a 3D vector for
+        something that doesn't have one).
+
+        distance is a linear distance in meters: each state's duck-typed
+        `.extension` field (see SpringState/JointSpringState in
+        virtual_spring.py) for a VirtualSpring/JointSpring, but
+        `.position_distance` (attachment point to position_center) for a
+        PoseSpring -- `.extension` there is an angle (rad), not a
+        distance, and goes in angle_offset_rad instead (0 for every other
+        kind, which has no such angle).
+
+        position_force_magnitude/position_force are only meaningful for a
+        PoseSpring: the position_stiffness restoring force (N, distinct
+        from force/magnitude above, which are the rotational moment) --
+        see PoseSpringState.position_force. Zero for every other kind, and
+        for a PoseSpring with no restoring force active right now
+        (position_stiffness=0, or still inside position_radius).
+        """
+        entries = []
+        for spring in self._springs:
+            state = spring._last_state
+            if state is None:
+                continue
+            if isinstance(spring, VirtualSpring):
+                vec, kind = state.force_world, "force"
+            elif isinstance(spring, PoseSpring):
+                vec, kind = state.moment_world, "moment"
+            elif isinstance(spring, JointSpring):
+                entries.append(SpringForce(
+                    name=spring.name, kind="torque",
+                    magnitude=float(state.torque), force=[0.0, 0.0, 0.0],
+                    distance=float(state.extension),
+                ))
+                continue
+            else:
+                continue
+            magnitude = float(np.linalg.norm(vec))
+            if isinstance(spring, PoseSpring):
+                distance = float(state.position_distance)
+                angle_offset_rad = float(state.extension)
+                position_force = state.position_force
+                position_force_magnitude = float(np.linalg.norm(position_force))
+            else:
+                distance = float(state.extension)
+                angle_offset_rad = 0.0
+                position_force = np.zeros(3)
+                position_force_magnitude = 0.0
+            entries.append(SpringForce(
+                name=spring.name, kind=kind,
+                magnitude=magnitude, force=vec.tolist(),
+                distance=distance, angle_offset_rad=angle_offset_rad,
+                position_force_magnitude=position_force_magnitude,
+                position_force=position_force.tolist(),
+            ))
+        msg = SpringForces()
+        msg.springs = entries
+        self._spring_forces_pub.publish(msg)
 
     def _publish_collision_thresholds(self) -> None:
         # [danger_threshold, caution_threshold, repulsion_max_force_n], in
@@ -2537,10 +2940,8 @@ class VirtualSpringNode(Node):
         # Deliberately no plt.show(): this runs in main()'s shutdown path on
         # a headless background node -- a blocking GUI call with no timeout
         # there would hang shutdown indefinitely (no display, or a window
-        # that never gets closed) needing a SIGQUIT to escape, the same
-        # class of bug fixed in gen3_torque_control's shutdown path
-        # 2026-08-19. savefig() above is enough to inspect the plot after
-        # the fact.
+        # that never gets closed), needing a SIGQUIT to escape. savefig()
+        # above is enough to inspect the plot after the fact.
 
 def main(args=None):
     rclpy.init(args=args)

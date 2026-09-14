@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/FinalizeStudyConditions.srv"
   "srv/GetLinkPose.srv"
   "srv/ListLinkNames.srv"
+  "srv/LogEvent.srv"
   "srv/MoveToJointAngles.srv"
   "srv/PreviewWorkspaceCenter.srv"
 )

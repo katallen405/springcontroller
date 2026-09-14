@@ -1,12 +1,29 @@
-Start the gen3 controller node:
-ros2 run gen3_torque_control gen3_torque_node --ros-args -r joint_states:=/kinova/joint_states_lowlevel
+--- Pre-flight: confirm both cameras before launching ---
+Before launching, run:
+  ls /dev/v4l/by-id/
+...and confirm you see symlinks for BOTH:
+  usb-USB_CAMERA_USB_CAMERA_240725172848-video-index0
+  usb-046d_HD_Pro_Webcam_C920_91E4D430-video-index0
+If either is missing, plug that camera in (or swap USB ports/hubs) and
+re-run the ls until both show up -- then launch as normal.
+
+To check that they are aimed correctly:
+ffplay -f v4l2 -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_91E4D430-video-index0
+ ffplay -f v4l2 -i /dev/v4l/by-id/usb-USB_CAMERA_USB_CAMERA_240725172848-video-index0
+=========================
+all of these three ros launches can be
+auto-populated into terminals ready to start with
+~/config/ros-layout.sh
+=========================
+Start the gen3 controller node: ros2 launch gen3_torque_control
+gen3_torque_control.launch.py
 
 Start the springcontroller:
-ros2 launch springcontroller gen3_spring.launch.py armviz:=true load_collision_scene:=true 
+ros2 launch springcontroller 2026_study.launch.py
 
 Start the webserver:
 ros2 launch springcontroller_ui study_control_panel.launch.py
-
+=======================
 Open the study controller webserver:
 http://localhost:8090/
 
@@ -25,21 +42,66 @@ http://localhost:8090/
 6. Push the arm around and/or retarget "workspace_demo" in the "Add /
    remove springs" list below until the location is approved.
 7. Click "Finalize study conditions" -- writes
-   ~/gen3_study_data/<participant ID>/condition1.yaml and condition2.yaml,
+   ~/gen3_study_data/<participant ID>/position.yaml and pose.yaml,
    logs the session to ~/gen3_study_data/measurements.csv, and removes the
    demo spring.
 
 --- The participant's 3 conditions, in whatever random order they draw ---
 each of these requires a relaunch
 
-Baseline (no torque controller):
-  Don't enable torque control for this condition -- gravity comp/springs
-  never engage. (Or relaunch step 2 above with
-  config:=.../springcontroller/config/gen3_springs_none.yaml if the panel
-  is currently pointed at a different config.)
+KT (no torque controller):
+  config:=~/gen3_study_data/<participant ID>/KT.yaml
 
-Condition 1 (relaunch step 2 above with):
-  config:=~/gen3_study_data/<participant ID>/condition1.yaml
+Position (relaunch springcontroller above with):
+  config:=~/gen3_study_data/<participant ID>/position.yaml
 
-Condition 2 (relaunch step 2 above with):
-  config:=~/gen3_study_data/<participant ID>/condition2.yaml
+Pose (relaunch springcontroller above with):
+  config:=~/gen3_study_data/<participant ID>/pose.yaml
+
+-------------------------
+study instructions
+
+- sit at the line on the table
+
+- when you hand the block to the robot, hold it from the sides opposite
+  where the robot's gripper is to avoid getting pinched.
+
+- I am going to measure your eye height and arm length to determine
+  your ergonomic workspace.  Then we can look at a preview of the
+  workspace to figure out if you want any adjustments, and set it for
+  the study.
+
+- I am going to put the robot in three different modes to try to help
+  you in different ways. In each of them you will get to paint two
+  sides of the block.  
+
+paint pens - show how the paint can flow out if you press the tip 
+
+Condition KT:
+- two buttons on the wrist
+  - indented moves by joint
+  - outdented moves just to move the gripper
+  - both freezes the gripper and moves the latent joints
+- no buttons = position hold
+
+Condition position:
+ 
+- torque controller plus one spring pulling the gripper towards a
+point in space
+- tell me if you want position hold
+- can add imaginary springs pulling any part of the arm to its current
+  location
+
+Condition pose:
+
+- torque controller plus
+  - one spring pulling towards your workspace
+  - and trying to orient the face of the block towards you
+- can add imaginary springs pulling any part of the arm to its current
+  location
+
+
+All conditions:
+- 2 minutes
+- ask me if you want the robot to drop the block
+- ask if you need help

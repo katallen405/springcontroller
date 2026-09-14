@@ -102,7 +102,7 @@ button.action.estop:hover { background: #a02020; }
 .msg-box { margin-top: 8px; padding: 7px 10px; border-radius: 7px; font-size: 12.5px; font-family: monospace; white-space: pre-wrap; }
 .msg-box.ok  { background: #f0faf0; color: #1e5a1e; border: 1px solid #cfe9cf; }
 .msg-box.err { background: #fdf0f0; color: #a02020; border: 1px solid #f0c8c8; }
-.msg-box.hidden { display: none; }
+.hidden { display: none; }
 
 label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #555; }
 
@@ -117,6 +117,7 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 .hint-steps { margin: 4px 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
 .hint-steps li { font-size: 11px; color: #6b6b6b; }
 .hint-steps b { font-size: 12.5px; color: #333; }
+.hint-substeps { margin: 4px 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 
 .field-glossary { margin-bottom: 10px; }
 .field-glossary > summary {
@@ -135,7 +136,9 @@ label.chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; col
 
 .spring-form { display: flex; flex-direction: column; gap: 8px; }
 .spring-form .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.spring-form label { font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px; }
+.spring-form label, ul.spring-list .adjust label, ul.spring-list .retarget label {
+  font-size: 12px; color: #666; display: flex; flex-direction: column; gap: 2px;
+}
 .spring-form input, .spring-form select {
   padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 12.5px; font-family: monospace;
 }
@@ -154,20 +157,31 @@ ul.spring-list li {
   padding: 5px 9px; background: #fafafa; border: 1px solid #eee; border-radius: 7px;
   font-family: monospace; font-size: 12.5px;
 }
+ul.spring-list .spring-anchor { color: #666; font-size: 12px; }
+/* Same color convention as the meshcat markers (armviz.py's draw_springs):
+   blue attachment sphere for a position spring, purple for pose (position
+   + orientation) -- joint springs have no meshcat marker of their own,
+   so a neutral grey. */
+ul.spring-list .spring-kind { font-weight: 800; font-size: 16px; width: 1em; text-align: center; flex-shrink: 0; }
+ul.spring-list .spring-kind-springs { color: #0088ff; }
+ul.spring-list .spring-kind-pose_springs { color: #9c27b0; }
+ul.spring-list .spring-kind-joint_springs { color: #666; }
 ul.spring-list button { border: 1px solid #C83232; color: #a02020; background: #fff; border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
 ul.spring-list button:hover { background: #fdf0f0; }
 ul.spring-list .adjust { display: flex; align-items: center; gap: 4px; }
-ul.spring-list .adjust input { width: 52px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
+/* Same width as the "Add spring" form's boxes (.spring-form input, above)
+   -- 52px used to clip a value like "-0.1234" unreadable. */
+ul.spring-list .adjust input { width: 88px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; font-family: monospace; }
 ul.spring-list .adjust button { border-color: #999; color: #333; }
 ul.spring-list .adjust button:hover { background: #f0f0f0; }
-/* x/y/z retarget boxes need to fit e.g. "-0.1234" (7 chars) -- 52px (the
-   k/b boxes' width) clipped it unreadable. */
-ul.spring-list .adjust.retarget input { width: 78px; }
 
 iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; border-radius: 8px; margin-top: 10px; background: #fafafa; }
 .meshcat-row { display: flex; justify-content: space-between; align-items: center; }
 
 .main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+.timer-display { font-size: 4.4em; font-family: monospace; text-align: center; margin: 8px 0; }
+.timer-display.expired { color: #c0392b; }
 </style>
 </head>
 <body>
@@ -188,6 +202,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <span>move status: <span class="val" id="move-state">unknown</span></span>
     <span>safety status: <span class="val" id="safety-state">unknown</span></span>
     <span>springs: <span class="val" id="springs-state">unknown</span></span>
+    <span style="margin-left:auto">config: <span class="val" id="config-path-state">unknown</span></span>
   </div>
   <div class="msg-box hidden" id="estop-msg" role="status" aria-live="polite" style="margin-top:0;flex-basis:100%"></div>
 </header>
@@ -197,8 +212,8 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
   <div class="layout">
     <!-- ── Sidebar: mode, e-stop, study start, reset springs ── -->
     <aside class="sidebar" aria-label="Quick controls">
-      <div class="panel">
-        <h2>Torque control</h2>
+      <details class="panel" open>
+        <summary>Torque control</summary>
         <div class="btn-row" style="gap:24px">
           <div class="toggle-row">
             <span class="toggle-label">Torque control</span>
@@ -218,14 +233,80 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
-          <button class="action off" onclick="callTrigger(svcClearFaults, 'Clear faults')">Clear faults</button>
+          <button class="action off" onclick="clearFaults()">Clear faults</button>
         </div>
         <label class="chk" style="margin-top:8px">
           <input type="checkbox" id="allow-danger" autocomplete="off"> Override safety interlock
         </label>
         <p class="hint">Allows torque control to start even if the collision checker is "DANGER" or "COLLISION". Does not change the behavior of the torque clamps in those two states (see README:224).</p>
         <div class="msg-box hidden" id="mode-msg" role="status" aria-live="polite"></div>
-      </div>
+      </details>
+
+      <details class="panel" open>
+        <summary>Gripper control</summary>
+        <p class="hint" id="gripper-hint">If torque control is on, it's automatically disabled to move the gripper and re-enabled afterward (see GRIPPER_MOVE_WAIT_MS below for the re-enable delay).</p>
+        <div class="btn-row">
+          <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
+          <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
+        </div>
+        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
+      </details>
+
+      <details class="panel" open>
+        <summary>Session timer &amp; event log</summary>
+
+        <div class="row">
+          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
+        </div>
+        <p class="status-line">Study order: <span class="val" id="timer-order-display">unknown</span>
+          <button class="copy-btn" onclick="refreshStudyOrder()">Get/Refresh</button></p>
+
+        <div class="row" style="align-items:center">
+          <label>Duration (min) <input type="number" step="0.25" min="0.25" id="timer-duration-min" value="2" onchange="timerReset()"></label>
+        </div>
+        <div class="timer-display" id="timer-display">02:00</div>
+        <div class="btn-row">
+          <button class="action on" id="btn-timer-start" onclick="timerStart()">Start</button>
+          <button class="action off" id="btn-timer-pause" onclick="timerPause()">Pause</button>
+          <button class="action off" onclick="timerReset()">Reset</button>
+        </div>
+
+        <div class="spring-form" style="margin-top:12px">
+          <div class="row">
+            <label>Event
+              <select id="log-event-select">
+                <option>Trial start</option>
+                <option>Trial end</option>
+                <option>Adjustment start</option>
+                <option>Adjustment end</option>
+                <option>Participant comment</option>
+                <option>Issue or anomaly</option>
+                <option>Other</option>
+              </select>
+            </label>
+            <label>Condition
+              <select id="log-condition-select">
+                <option>KT side 1</option>
+                <option>KT side 2</option>
+                <option>Position side 1</option>
+                <option>Position side 2</option>
+                <option>Pose side 1</option>
+                <option>Pose side 2</option>
+                <option>Other</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label style="flex:1">Notes (optional)
+              <input type="text" id="log-notes" style="width:100%">
+            </label>
+          </div>
+          <div class="btn-row">
+            <button class="action on" onclick="logEvent()">Log</button>
+          </div>
+        </div>
+        <div class="msg-box hidden" id="timer-log-msg" role="status" aria-live="polite"></div>
+      </details>
 
       <details class="panel" open>
         <summary>Collision thresholds</summary>
@@ -237,7 +318,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </label>
           <span class="toggle-state val unknown" id="repulsion-toggle-state">?</span>
         </div>
-        <p class="hint">Distance (m) from an obstacle where the hard clamp/repulsion field kick in, and how hard the repulsion field pushes at danger_threshold. caution_threshold must stay greater than danger_threshold. Per-object tuning is future work (after 2026-09-18).</p>
         <div class="spring-form">
           <div class="row">
             <label>danger_threshold <input type="number" step="0.01" id="ct-danger" value="0.01"></label>
@@ -278,50 +358,58 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           </div>
         </div>
         <div class="msg-box hidden" id="move-to-angles-msg" role="status" aria-live="polite"></div>
-
-        <p class="hint" style="margin-top:12px" id="gripper-hint">Gripper can't move while torque control is on.</p>
-        <div class="btn-row" style="margin-top:4px">
-          <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
-          <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
-        </div>
-        <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </details>
 
     </aside>
 
-    <!-- ── Main column: add/remove springs + meshcat view ── -->
+    <!-- ── Main column: meshcat view + add/remove springs ── -->
     <div class="main-col">
+    <details class="panel" open>
+      <summary>Meshcat view</summary>
+      <div class="meshcat-row">
+        <span class="status-line" id="meshcat-label">Needs <code>gen3_spring.launch.py armviz:=true</code>:</span>
+        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
+      </div>
+      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
+    </details>
+
     <details class="panel">
       <summary>Study workspace calibration</summary>
       <ul class="hint-steps">
-        <li><b>Get condition order</b> -- enter participant ID, click. Sets which condition (1 or 2) runs first, alternating per new ID; re-checking the same ID just shows the existing assignment.</li>
-        <li><b>Preview workspace center</b> -- enter the two measurements, click. Places a live <code>workspace_demo</code> spring; enable torque control, then push the arm or retarget <code>workspace_demo</code> below to adjust it.</li>
-        <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where condition 2's orientation spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
-        <li><b>Finalize</b> -- writes condition1.yaml/condition2.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
+        <li><b>Preview workspace center</b>
+          <ul class="hint-substeps">
+            <li>enter the two measurements, check that torque control is disabled, and then click.</li>
+            <li>Visually check the displayed location is correct and warn the participant before enabling torque.</li>
+          </ul>
+        </li>
+        <li><b>Capture current location as workspace target</b> -- after pushing the arm to where you want it, click to lock <code>workspace_demo</code>'s target onto wherever the link/local point above currently is, instead of typing numbers into the retarget boxes below.</li>
+        <li><b>Preview eye location</b> -- click (any time, doesn't need the center previewed first). Shows the force-free <code>workspace_demo_eye</code> marker in front of the participant's face -- where the pose condition's pose spring will aim. This is fixed by chair position and eye height, not the reach-center.</li>
+        <li><b>Finalize</b> -- writes position.yaml/pose.yaml from wherever <code>workspace_demo</code> currently is, removes both demo springs.</li>
       </ul>
       <div class="spring-form">
         <div class="row">
-          <label>Participant ID <input type="text" id="wc-pid" value=""></label>
           <label>Eye height, cm (from table) <input type="number" step="0.5" id="wc-eye" value="71"></label>
           <label>Arm length, cm (elbow&rarr;fingertip) <input type="number" step="0.5" id="wc-arm" value="46"></label>
           <label>Ramp margin (cm) <input type="number" step="0.5" id="wc-ramp" value="2.54"></label>
         </div>
         <div class="row">
           <label>Link
-            <select id="wc-link"></select>
+            <select id="wc-link" onchange="applyLinkPresetIfSelected('wc-link','wc-lx','wc-ly','wc-lz')"></select>
           </label>
           <label>local x <input type="number" step="0.01" id="wc-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="wc-ly" value="0"></label>
-          <label>local z <input type="number" step="0.01" id="wc-lz" value="0.1"></label>
+          <label>local z <input type="number" step="0.01" id="wc-lz" value="0.15"></label>
         </div>
         <div class="row">
           <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
         </div>
         <div class="btn-row">
-          <button class="action on" onclick="getConditionOrder()">Get condition order</button>
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
+          <button class="action off" onclick="captureCurrentAsWorkspaceTarget()">Capture current location as workspace target</button>
           <button class="action on" onclick="previewEyeLocation()">Preview eye location</button>
           <button class="action off" onclick="finalizeStudyConditions()">Finalize study conditions</button>
+          <button class="action danger hidden" id="btn-finalize-overwrite" onclick="finalizeOverwriteParticipant()">Overwrite participant</button>
+          <button class="action on hidden" id="btn-finalize-new-id" onclick="finalizeWithNewParticipantId()">Save with new participant ID</button>
         </div>
       </div>
       <div class="msg-box hidden" id="workspace-msg" role="status" aria-live="polite"></div>
@@ -341,7 +429,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <dt>damping</dt><dd>Damping coefficient b (N&middot;s/m). Resists velocity, independent of distance.</dd>
           <dt>rest length</dt><dd>Distance (m) from target at which the spring exerts zero force (position springs only).</dd>
           <dt>inner/outer radius</dt><dd>Dead-zone/ramp band (m) around rest length -- no force inside inner radius, full stiffness beyond outer radius, ramped in between (position springs only).</dd>
-          <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (orientation springs only).</dd>
+          <dt>normal x/y/z</dt><dd>Unit direction fixed in the link's local frame (e.g. a tool's face normal) that gets pulled to point at the world-frame target -- a "look at" constraint, not a position pull (pose springs only).</dd>
+          <dt>position center x/y/z</dt><dd>World-frame point (m) this spring's position-radius constraint is centered on -- typically the same target a paired position spring is using. Required (pose springs only). EXPERIMENTAL, see position radius.</dd>
+          <dt>position radius</dt><dd>Radius (m) around position center within which this spring has full authority to move the attachment point while correcting orientation; beyond it, the torque that would move the point further is ramped toward zero. Required, must be &gt; 0 (pose springs only). EXPERIMENTAL -- added 2026-09-02 after a live incident where an unconstrained pose spring pulled the tip well outside a paired position spring's own workspace.</dd>
+          <dt>position stiffness</dt><dd>Restoring pull (N/m) back toward position center, active only beyond position radius (zero inside it -- a true dead zone). 0 (the default) means no pull at all, which was this spring's only behavior before this field existed. EXPERIMENTAL -- added 2026-09-03 after a live incident where a pose spring with no such pull wandered off and settled in an arbitrary orientation-satisfying pose once past position radius.</dd>
+          <dt>Preview (zero force)</dt><dd>Adds the spring for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping so it can't exert any force -- check it looks right, then click "Add spring" again with the real values to replace it.</dd>
+          <dt>Adjust (in the spring list below)</dt><dd>Loads that spring's full current values into this form for editing (target/local point/link/face normal included, not just stiffness/damping) -- the button here becomes "Update spring", applied in place with no interruption to the spring's force. Click "New spring" to leave adjust mode without creating or changing anything.</dd>
         </dl>
       </details>
 
@@ -349,41 +442,70 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         <div class="row">
           <span role="radiogroup" aria-label="Spring type" style="display:flex;gap:12px;align-items:center">
             <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-position" value="position" checked onchange="updateSpringTypeFields()"> Position</label>
-            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-orientation" value="orientation" onchange="updateSpringTypeFields()"> Orientation</label>
+            <label style="flex-direction:row;gap:4px"><input type="radio" name="sp-type" id="sp-type-pose" value="pose" onchange="updateSpringTypeFields()"> Pose</label>
           </span>
         </div>
         <div class="row">
           <label>Link
-            <select id="sp-link"></select>
+            <select id="sp-link" onchange="applyLinkPresetIfSelected('sp-link','sp-lx','sp-ly','sp-lz')"></select>
           </label>
           <button class="action off" onclick="fetchCurrentPosition()" style="padding:6px 10px;font-size:12.5px">Use current position of link</button>
         </div>
+        <p class="status-line hidden" id="sp-adjusting-label">Adjusting existing spring: <span class="val" id="sp-adjusting-name"></span></p>
         <div class="row">
-          <label>name <input type="text" id="sp-name" value="my_spring"></label>
-          <label id="sp-target-x-label">target x <input type="number" step="0.01" id="sp-tx" value="0"></label>
-          <label id="sp-target-y-label">target y <input type="number" step="0.01" id="sp-ty" value="0"></label>
-          <label id="sp-target-z-label">target z <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
+          <label>name <input type="text" id="sp-name" placeholder="my_spring"></label>
+          <label id="sp-target-x-label">target x (m) <input type="number" step="0.01" id="sp-tx" value="0"></label>
+          <label id="sp-target-y-label">target y (m) <input type="number" step="0.01" id="sp-ty" value="0"></label>
+          <label id="sp-target-z-label">target z (m) <input type="number" step="0.01" id="sp-tz" value="0.5"></label>
         </div>
         <div class="row">
           <label>local x <input type="number" step="0.01" id="sp-lx" value="0"></label>
           <label>local y <input type="number" step="0.01" id="sp-ly" value="0"></label>
           <label>local z <input type="number" step="0.01" id="sp-lz" value="0"></label>
-          <label>stiffness <input type="number" step="1" id="sp-k" value="50"></label>
-          <label>damping <input type="number" step="0.5" id="sp-b" value="5"></label>
         </div>
+        <!-- Stiffness/damping live in these type-gated rows, not the shared
+             row above -- position (N/m) and pose (N*m/rad) springs
+             are 25x apart in what a sane value looks like (see
+             gen3_study_data configs' stiffness: 50 vs. 2.0), and sharing
+             one box with one label meant selecting "Pose" (then
+             "Orientation") and leaving the field at its position-spring
+             default of 50 sent stiffness: 50 N*m/rad -- confirmed live
+             2026-09-02 as the direct cause of a collision/fault within
+             ~1.2s of adding an orientation spring: 25x the normal
+             2.0 N*m/rad produced a 71 N*m torque spike the instant the
+             spring was added. -->
         <div class="row" id="sp-position-only">
-          <label>rest length <input type="number" step="0.01" id="sp-rest" value="0"></label>
-          <label>inner radius <input type="number" step="0.01" id="sp-rin" value="0"></label>
-          <label>outer radius <input type="number" step="0.01" id="sp-rout" value="0"></label>
+          <label>stiffness (N/m) <input type="number" step="1" id="sp-k-position" value="50"></label>
+          <label>damping (N&middot;s/m) <input type="number" step="0.5" id="sp-b-position" value="5"></label>
+          <label>rest length (m) <input type="number" step="0.01" id="sp-rest" value="0"></label>
+          <label>inner radius (m) <input type="number" step="0.01" id="sp-rin" value="0"></label>
+          <label>outer radius (m) <input type="number" step="0.01" id="sp-rout" value="0"></label>
         </div>
-        <div class="row" id="sp-orientation-only" style="display:none">
+        <div class="row" id="sp-pose-only" style="display:none">
+          <label>stiffness (N&middot;m/rad) <input type="number" step="0.1" id="sp-k-pose" value="10"></label>
+          <label>damping (N&middot;m&middot;s/rad) <input type="number" step="0.1" id="sp-b-pose" value="0.2"></label>
           <label>normal x <input type="number" step="0.01" id="sp-nx" value="0"></label>
           <label>normal y <input type="number" step="0.01" id="sp-ny" value="0"></label>
           <label>normal z <input type="number" step="0.01" id="sp-nz" value="1"></label>
         </div>
-        <p class="hint" id="sp-orientation-hint" style="display:none">Orientation spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector.</p>
+        <!-- EXPERIMENTAL (2026-09-02): position_center/position_radius are
+             required, no safe default -- see PoseSpring's docstring
+             (virtual_spring.py) for why. No auto-fill from an existing
+             position spring yet (a "match an existing spring" convenience
+             was considered and deferred) -- type them in directly, same
+             as every other field here. -->
+        <div class="row" id="sp-pose-position-only" style="display:none">
+          <label>position center x (m) <input type="number" step="0.01" id="sp-pcx" value="0"></label>
+          <label>position center y (m) <input type="number" step="0.01" id="sp-pcy" value="0"></label>
+          <label>position center z (m) <input type="number" step="0.01" id="sp-pcz" value="0"></label>
+          <label>position radius (m) <input type="number" step="0.01" id="sp-pradius" value="0.07"></label>
+          <label>position stiffness (N/m) <input type="number" step="0.5" id="sp-pstiffness" value="50"></label>
+        </div>
+        <p class="hint" id="sp-pose-hint" style="display:none">Pose spring: "local normal" is a direction fixed in the link's local frame (e.g. a tool's face normal), and "target" is the world point that direction gets pulled to point at -- a "look at" constraint, not a position pull. Normal should be a unit vector. "position center"/"position radius" bound how far this spring can move the attachment point while correcting orientation -- typically the same target/outer_radius a paired position spring is using.</p>
         <div class="btn-row">
-          <button class="action on" onclick="addSpring()">Add spring</button>
+          <button class="action off" id="btn-spring-preview" onclick="addSpring(true)" title="Adds it for real (correct attachment/target geometry, visible in meshcat) but at zero stiffness/damping, so it can't exert any force -- check it looks right, then click Add spring again with the real values to replace it.">Preview (zero force)</button>
+          <button class="action on" id="btn-spring-submit" onclick="submitSpringForm()">Add spring</button>
+          <button class="action off hidden" id="btn-spring-cancel-adjust" onclick="endAdjustSpring()">New spring</button>
         </div>
       </div>
       <div class="msg-box hidden" id="spring-msg" role="status" aria-live="polite"></div>
@@ -396,14 +518,6 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       </div>
       <div class="msg-box hidden" id="reset-msg" role="status" aria-live="polite"></div>
     </details>
-
-    <div class="panel">
-      <div class="meshcat-row">
-        <span class="status-line" id="meshcat-label">Meshcat view (needs <code>gen3_spring.launch.py armviz:=true</code>):</span>
-        <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
-      </div>
-      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
-    </div>
     </div>
   </div>
 
@@ -426,6 +540,13 @@ const svcListLinkNames    = { name: NODE + '/list_link_names',              type
 const svcPreviewWorkspaceCenter  = { name: NODE + '/preview_workspace_center',  type: 'springcontroller_ui_interfaces/srv/PreviewWorkspaceCenter' };
 const svcFinalizeStudyConditions = { name: NODE + '/finalize_study_conditions', type: 'springcontroller_ui_interfaces/srv/FinalizeStudyConditions' };
 const svcAssignConditionOrder    = { name: NODE + '/assign_condition_order',    type: 'springcontroller_ui_interfaces/srv/AssignConditionOrder' };
+const svcLogEvent                = { name: NODE + '/log_event',                 type: 'springcontroller_ui_interfaces/srv/LogEvent' };
+// Explicit per-value map, not a binary ternary -- assign_condition_order
+// deals in three values (KT/position/pose, see study_workspace_config.py),
+// and a two-way ternary would silently mislabel "KT" as whatever wasn't
+// 'position' 1 time in 3. Used by refreshStudyOrder() below to render all
+// three of a participant's assigned first/second/third_condition fields.
+const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
 // Straight to gen3_torque_control, like svcAddSpring below goes straight to
 // virtual_spring_node -- no orchestration_node involvement needed.
 const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
@@ -435,7 +556,7 @@ const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type
 const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
 const svcGetSpringParams  = { name: '/virtual_spring_node/get_parameters',  type: 'rcl_interfaces/srv/GetParameters' };
 const svcAddSpring        = { name: '/virtual_spring_node/add_spring',      type: 'springcontroller_interfaces/srv/AddSpring' };
-const svcAddOrientationSpring = { name: '/virtual_spring_node/add_orientation_spring', type: 'springcontroller_interfaces/srv/AddOrientationSpring' };
+const svcAddPoseSpring = { name: '/virtual_spring_node/add_pose_spring', type: 'springcontroller_interfaces/srv/AddPoseSpring' };
 const svcRemoveSpring     = { name: '/virtual_spring_node/remove_spring',   type: 'springcontroller_interfaces/srv/RemoveSpring' };
 const svcUpdateSpring     = { name: '/virtual_spring_node/update_spring',   type: 'springcontroller_interfaces/srv/UpdateSpring' };
 const svcUpdateCollisionThresholds = { name: '/virtual_spring_node/update_collision_thresholds', type: 'springcontroller_interfaces/srv/UpdateCollisionThresholds' };
@@ -457,11 +578,24 @@ const WORKSPACE_DEMO_EYE_SPRING_NAME = 'workspace_demo_eye';
 // allow-danger has no live server-side state to reflect, so plain false is
 // correct; the two toggle switches instead go to an explicit "unknown"
 // state (not a false "OFF" claim) until a real status arrives post-connect.
+//
+// Same restore behavior hits plain number inputs, not just checkboxes --
+// confirmed live 2026-09-02: the collision-thresholds panel showed a
+// stale danger_threshold of 16 (from some earlier typed value) on load,
+// nowhere close to either the HTML default (0.01) or anything the node
+// would ever report -- this panel never had a live subscription to
+// correct it either (see the collision_thresholds_status subscription in
+// connectRos, added the same day). Reset these to the HTML defaults here
+// too so a stale browser-restored value can't sit in the box ready to be
+// silently Applied before that subscription's first message arrives.
 function resetPersistedFormState() {
   document.getElementById('allow-danger').checked = false;
   document.getElementById('torque-toggle-switch').checked = false;
   document.getElementById('springs-toggle-switch').checked = false;
   document.getElementById('repulsion-toggle-switch').checked = false;
+  document.getElementById('ct-danger').value = '0.01';
+  document.getElementById('ct-caution').value = '0.05';
+  document.getElementById('ct-max-force').value = '5.0';
 }
 resetPersistedFormState();
 // A bfcache restore (browser back/forward, some tab-freeze/resume cases)
@@ -497,6 +631,23 @@ function callTrigger(desc, label, targetMsgId) {
     showMsg(el, resp.success, (label ? label + ': ' : '') + resp.message);
   }, function(err) {
     showMsg(el, false, (label ? label + ' failed: ' : '') + err);
+  });
+}
+
+// gen3_torque_control's own /gen3_torque_control/move_status topic
+// move_status is a one-shot notification with no clear-on-fix signal
+// from the fault controller, so a stale "FAILED: ..." would otherwise
+// sit here forever -- reset the display ourselves on a successful clear.
+function clearFaults() {
+  callService(svcClearFaults, {}, function(resp) {
+    showMsg('mode-msg', resp.success, 'Clear faults: ' + resp.message);
+    if (resp.success) {
+      const el = document.getElementById('move-state');
+      el.textContent = 'cleared';
+      el.className = 'val inactive';
+    }
+  }, function(err) {
+    showMsg('mode-msg', false, 'Clear faults failed: ' + err);
   });
 }
 
@@ -645,13 +796,117 @@ function fetchCurrentJointAngles() {
 }
 
 // ---- gripper -----------------------------------------------------
-// close=true closes the gripper, close=false opens it -- fire-and-forget,
-// same as gen3_torque_control's own gripper_command service (no completion
-// feedback, just an ack that Kortex accepted the command).
+// close=true closes the gripper, close=false opens it. Kortex's gripper
+// can't move while torque control is on, so this is a one-click cycle
+// rather than requiring the operator to flip torque control off, click
+// open/close, then remember to flip it back on: drop out of torque
+// control first (if it's currently on), send the gripper command, wait
+// for the physical motion to finish, then restore torque control to
+// whatever it was before.
+//
+// The gripper command itself is fire-and-forget, same as
+// gen3_torque_control's own gripper_command service -- no completion
+// feedback, just an ack that Kortex accepted the command -- so
+// GRIPPER_MOVE_WAIT_MS is a trial-and-error guess at how long the
+// physical open/close takes. Tune it up if torque control re-engages
+// mid-motion, or down if the cycle feels sluggish.
+const GRIPPER_MOVE_WAIT_MS = 2000;
+
+// Guards against a second click firing mid-cycle -- handleTorqueStatus no
+// longer disables these buttons based on torque state (see its own
+// comment), so this is the only thing preventing overlap.
+let gripperCycleInProgress = false;
+
+function setGripperButtonsEnabled(enabled) {
+  document.getElementById('btn-gripper-open').disabled = !enabled;
+  document.getElementById('btn-gripper-close').disabled = !enabled;
+}
+
 function gripperCommand(close) {
-  callService(svcGripperCommand, { data: close },
-    function(resp) { showMsg('gripper-msg', resp.success, resp.message); },
-    function(err) { showMsg('gripper-msg', false, 'Gripper command failed: ' + err); });
+  if (gripperCycleInProgress) return;
+  gripperCycleInProgress = true;
+  setGripperButtonsEnabled(false);
+
+  const wasTorqueEnabled = document.getElementById('torque-toggle-switch').checked;
+  if (!wasTorqueEnabled) {
+    sendGripperCommand(close, false);
+    return;
+  }
+
+  showMsg('gripper-msg', true, 'Disabling torque control to move the gripper...');
+  callService(svcEnablePosition, {}, function(resp) {
+    if (!resp.success) {
+      showMsg('gripper-msg', false, 'Could not disable torque control: ' + resp.message);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+      return;
+    }
+    sendGripperCommand(close, true);
+  }, function(err) {
+    showMsg('gripper-msg', false, 'Could not disable torque control: ' + err);
+    gripperCycleInProgress = false;
+    setGripperButtonsEnabled(true);
+  });
+}
+
+function sendGripperCommand(close, reenableTorqueAfter) {
+  callService(svcGripperCommand, { data: close }, function(resp) {
+    showMsg('gripper-msg', resp.success, resp.message);
+    finishGripperCycle(reenableTorqueAfter);
+  }, function(err) {
+    showMsg('gripper-msg', false, 'Gripper command failed: ' + err);
+    // Still restore torque control even if the gripper command itself
+    // failed -- an operator shouldn't get stuck in position mode just
+    // because Kortex rejected the command.
+    finishGripperCycle(reenableTorqueAfter);
+  });
+}
+
+function finishGripperCycle(reenableTorqueAfter) {
+  if (!reenableTorqueAfter) {
+    gripperCycleInProgress = false;
+    setGripperButtonsEnabled(true);
+    return;
+  }
+  setTimeout(function() {
+    const allowDanger = document.getElementById('allow-danger').checked;
+    callService(svcEnableTorque, { allow_danger: allowDanger }, function(resp) {
+      showMsg('mode-msg', resp.success, resp.message);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+      if (resp.success) maybeRecoverSpringsAfterGripperCycle();
+    }, function(err) {
+      showMsg('mode-msg', false, 'Torque control on failed: ' + err);
+      gripperCycleInProgress = false;
+      setGripperButtonsEnabled(true);
+    });
+  }, GRIPPER_MOVE_WAIT_MS);
+}
+
+// Re-enabling torque control after a gripper cycle can let the arm settle
+// a tiny bit -- confirmed live 2026-09-02: a small drop on torque
+// re-engage tripped the self-collision hard clamp, auto-disabling springs
+// (see virtual_spring_node's _springs_auto_disabled) even though nothing
+// was actually near a collision moments before. This does NOT change
+// virtual_spring_node's own no-automatic-recovery policy for collisions
+// in general (see its _springs_auto_disabled comment -- that incident is
+// exactly why it requires a deliberate operator action) -- this helper is
+// scoped narrowly to right after a gripper cycle, where the trip is an
+// expected, momentary side effect of re-engaging torque rather than a
+// real hazard, and it only re-enables once the live safety status
+// confirms the arm has actually cleared the collision zone again, not on
+// a blind timer.
+const SPRINGS_RECOVERY_CHECK_DELAY_MS = 1000;
+
+function maybeRecoverSpringsAfterGripperCycle() {
+  if (!(lastSafetyStatusRaw || '').includes('springs disabled by collision')) return;
+  setTimeout(function() {
+    if ((lastSafetyStatusRaw || '').startsWith('COLLISION')) {
+      showMsg('gripper-msg', false, 'Springs still disabled -- arm is still in the collision zone.');
+      return;
+    }
+    setSpringsEnabled(true);
+  }, SPRINGS_RECOVERY_CHECK_DELAY_MS);
 }
 
 // ---- reset springs -----------------------------------------------------
@@ -659,18 +914,181 @@ function resetSprings() { callTrigger(svcResetSprings, 'Reset springs', 'reset-m
 
 // ---- spring panel -----------------------------------------------------
 function currentSpringType() {
-  return document.getElementById('sp-type-orientation').checked ? 'orientation' : 'position';
+  return document.getElementById('sp-type-pose').checked ? 'pose' : 'position';
 }
 
 function updateSpringTypeFields() {
-  const orientation = currentSpringType() === 'orientation';
-  document.getElementById('sp-position-only').style.display = orientation ? 'none' : '';
-  document.getElementById('sp-orientation-only').style.display = orientation ? '' : 'none';
-  document.getElementById('sp-orientation-hint').style.display = orientation ? '' : 'none';
-  const targetLabel = orientation ? 'look-at ' : 'target ';
-  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x ';
-  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y ';
-  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z ';
+  const pose = currentSpringType() === 'pose';
+  document.getElementById('sp-position-only').style.display = pose ? 'none' : '';
+  document.getElementById('sp-pose-only').style.display = pose ? '' : 'none';
+  document.getElementById('sp-pose-position-only').style.display = pose ? '' : 'none';
+  document.getElementById('sp-pose-hint').style.display = pose ? '' : 'none';
+  const targetLabel = pose ? 'look-at ' : 'target ';
+  document.getElementById('sp-target-x-label').firstChild.textContent = targetLabel + 'x (m) ';
+  document.getElementById('sp-target-y-label').firstChild.textContent = targetLabel + 'y (m) ';
+  document.getElementById('sp-target-z-label').firstChild.textContent = targetLabel + 'z (m) ';
+}
+
+// Non-null while the Add-spring form is being used to edit an EXISTING
+// spring instead of create a new one (see startAdjustSpring/
+// endAdjustSpring) -- the single "Add spring"/"Update spring" button
+// (submitSpringForm) dispatches on this rather than being two separate
+// forms with duplicated fields.
+let editingSpringName = null;
+
+// Pulls one spring's full current parameter set into the Add-spring
+// form's own fields and switches it into "editing existing spring" mode
+// -- called by each position/pose row's "Adjust" button (see
+// renderSpringList). kind is 'springs' or 'pose_springs' (see
+// SPRING_PARAM_PREFIXES) -- joint springs keep their own minimal inline
+// stiffness/damping controls, never routed through here.
+function startAdjustSpring(name, kind) {
+  const isPose = kind === 'pose_springs';
+  document.getElementById(isPose ? 'sp-type-pose' : 'sp-type-position').checked = true;
+  updateSpringTypeFields();
+
+  const prefix = kind;
+  const names = [
+    prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping',
+    prefix + '.' + name + '.link_name', prefix + '.' + name + '.local_point',
+    prefix + '.' + name + '.target',
+  ];
+  if (isPose) {
+    names.push(
+      prefix + '.' + name + '.local_face_normal',
+      prefix + '.' + name + '.position_center', prefix + '.' + name + '.position_radius',
+      prefix + '.' + name + '.position_stiffness'
+    );
+  } else {
+    names.push(
+      prefix + '.' + name + '.rest_length', prefix + '.' + name + '.inner_radius',
+      prefix + '.' + name + '.outer_radius'
+    );
+  }
+  callService(svcGetSpringParams, { names: names }, function(resp) {
+    const v = resp.values;
+    const num = numericParamValue;
+    const arr = function(pv) { return (pv && pv.type === PARAM_TYPE_DOUBLE_ARRAY) ? pv.double_array_value : null; };
+
+    document.getElementById(isPose ? 'sp-k-pose' : 'sp-k-position').value = num(v[0]);
+    document.getElementById(isPose ? 'sp-b-pose' : 'sp-b-position').value = num(v[1]);
+    if (v[2] && v[2].type === PARAM_TYPE_STRING) document.getElementById('sp-link').value = v[2].string_value;
+    const lp = arr(v[3]);
+    if (lp) { document.getElementById('sp-lx').value = lp[0]; document.getElementById('sp-ly').value = lp[1]; document.getElementById('sp-lz').value = lp[2]; }
+    const t = arr(v[4]);
+    if (t) { document.getElementById('sp-tx').value = t[0]; document.getElementById('sp-ty').value = t[1]; document.getElementById('sp-tz').value = t[2]; }
+    if (isPose) {
+      const fn = arr(v[5]);
+      if (fn) { document.getElementById('sp-nx').value = fn[0]; document.getElementById('sp-ny').value = fn[1]; document.getElementById('sp-nz').value = fn[2]; }
+      const pc = arr(v[6]);
+      if (pc) { document.getElementById('sp-pcx').value = pc[0]; document.getElementById('sp-pcy').value = pc[1]; document.getElementById('sp-pcz').value = pc[2]; }
+      document.getElementById('sp-pradius').value = num(v[7]);
+      document.getElementById('sp-pstiffness').value = num(v[8]);
+    } else {
+      document.getElementById('sp-rest').value = num(v[5]);
+      document.getElementById('sp-rin').value = num(v[6]);
+      document.getElementById('sp-rout').value = num(v[7]);
+    }
+
+    editingSpringName = name;
+    const nameInput = document.getElementById('sp-name');
+    nameInput.value = name;
+    nameInput.disabled = true;
+    document.getElementById('sp-adjusting-label').classList.remove('hidden');
+    document.getElementById('sp-adjusting-name').textContent = name;
+    document.getElementById('btn-spring-preview').classList.add('hidden');
+    document.getElementById('btn-spring-cancel-adjust').classList.remove('hidden');
+    document.getElementById('btn-spring-submit').textContent = 'Update spring';
+  }, function(err) { showMsg('spring-msg', false, 'Could not load spring params for adjust: ' + err); });
+}
+
+// Original "add a new spring" defaults for every Add-spring form field --
+// matches this form's own HTML value="..." attributes. Applied by
+// endAdjustSpring so leaving adjust mode actually clears out whatever
+// spring's values were loaded into the form, not just the name/buttons --
+// otherwise the fields kept showing the just-adjusted spring's numbers,
+// which is exactly what you'd type over by hand if you then wanted to add
+// a genuinely new spring.
+const SPRING_FORM_DEFAULTS = {
+  'sp-tx': '0', 'sp-ty': '0', 'sp-tz': '0.5',
+  'sp-lx': '0', 'sp-ly': '0', 'sp-lz': '0',
+  'sp-k-position': '50', 'sp-b-position': '5',
+  'sp-rest': '0', 'sp-rin': '0', 'sp-rout': '0',
+  'sp-k-pose': '10', 'sp-b-pose': '0.2',
+  'sp-nx': '0', 'sp-ny': '0', 'sp-nz': '1',
+  'sp-pcx': '0', 'sp-pcy': '0', 'sp-pcz': '0',
+  'sp-pradius': '0.07', 'sp-pstiffness': '50',
+};
+
+// Leaves "editing existing spring" mode and resets the Add-spring form
+// back to its create-a-new-spring state -- called both by the "New
+// spring" button and after a successful update, so the form never keeps
+// pointing at whatever was just adjusted.
+function endAdjustSpring() {
+  editingSpringName = null;
+  const nameInput = document.getElementById('sp-name');
+  nameInput.value = '';
+  nameInput.disabled = false;
+  document.getElementById('sp-adjusting-label').classList.add('hidden');
+  document.getElementById('btn-spring-preview').classList.remove('hidden');
+  document.getElementById('btn-spring-cancel-adjust').classList.add('hidden');
+  document.getElementById('btn-spring-submit').textContent = 'Add spring';
+
+  Object.keys(SPRING_FORM_DEFAULTS).forEach(function(id) {
+    document.getElementById(id).value = SPRING_FORM_DEFAULTS[id];
+  });
+  document.getElementById('sp-link').selectedIndex = 0;
+  document.getElementById('sp-type-position').checked = true;
+  updateSpringTypeFields();
+}
+
+// The single "Add spring"/"Update spring" button's handler -- dispatches
+// on editingSpringName instead of being two separate buttons, so there's
+// only ever one place in the form that can be mid-edit at a time.
+function submitSpringForm() {
+  if (editingSpringName !== null) { submitSpringUpdate(); return; }
+  addSpring();
+}
+
+function submitSpringUpdate() {
+  const name = editingSpringName;
+  const isPose = currentSpringType() === 'pose';
+  const req = {
+    name: name,
+    link_name: resolveLinkName(document.getElementById('sp-link').value),
+    local_point: [parseFloat(document.getElementById('sp-lx').value),
+                  parseFloat(document.getElementById('sp-ly').value),
+                  parseFloat(document.getElementById('sp-lz').value)],
+    target: [parseFloat(document.getElementById('sp-tx').value),
+             parseFloat(document.getElementById('sp-ty').value),
+             parseFloat(document.getElementById('sp-tz').value)],
+    stiffness: 0, damping: 0,
+    rest_length: 0, inner_radius: 0, outer_radius: 0,
+    local_face_normal: [0, 0, 1], position_center: [0, 0, 0],
+    position_radius: 0, position_stiffness: 0,
+  };
+  if (isPose) {
+    req.stiffness = parseFloat(document.getElementById('sp-k-pose').value);
+    req.damping = parseFloat(document.getElementById('sp-b-pose').value);
+    req.local_face_normal = [parseFloat(document.getElementById('sp-nx').value),
+                              parseFloat(document.getElementById('sp-ny').value),
+                              parseFloat(document.getElementById('sp-nz').value)];
+    req.position_center = [parseFloat(document.getElementById('sp-pcx').value),
+                            parseFloat(document.getElementById('sp-pcy').value),
+                            parseFloat(document.getElementById('sp-pcz').value)];
+    req.position_radius = parseFloat(document.getElementById('sp-pradius').value);
+    req.position_stiffness = parseFloat(document.getElementById('sp-pstiffness').value);
+  } else {
+    req.stiffness = parseFloat(document.getElementById('sp-k-position').value);
+    req.damping = parseFloat(document.getElementById('sp-b-position').value);
+    req.rest_length = parseFloat(document.getElementById('sp-rest').value);
+    req.inner_radius = parseFloat(document.getElementById('sp-rin').value);
+    req.outer_radius = parseFloat(document.getElementById('sp-rout').value);
+  }
+  callService(svcUpdateSpring, req, function(resp) {
+    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
+    if (resp.success) endAdjustSpring();
+  }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
 }
 
 // Arm-agnostic heuristic for the tool/end-effector-ish link every arm has
@@ -679,19 +1097,70 @@ function updateSpringTypeFields() {
 // robot's link names.
 const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
 
+// Presets for the link dropdowns: a synthetic entry that's really a real
+// link name plus a fixed *local*-frame attachment offset -- i.e. it
+// defines the arm-side end of a spring (rotates with the link, like any
+// other local_point), not a target/point in world space. No UI to create
+// more of these yet -- just this one, hardcoded, since that's all that's
+// needed right now (world-space named locations were considered and
+// pushed past this study's 2026-09-18 deadline).
+const LINK_PRESETS = {
+  block: { link_name: 'end_effector_link', local_point: [0, 0, 0.15] },
+  wrist_3: { link_name: 'half_arm_2_link', local_point: [0, 0, 0] },
+  elbow_4: { link_name: 'forearm_link', local_point: [0, 0, 0] },
+  elbow_6: { link_name: 'spherical_wrist_2_link', local_point: [0, 0, 0] },
+  wrist_7: { link_name: 'bracelet_link', local_point: [0, 0, 0] },
+};
+
+// Every backend call needs a real URDF frame name -- resolves a dropdown's
+// selected value through LINK_PRESETS if it's a preset, otherwise passes a
+// real link name through unchanged.
+function resolveLinkName(value) {
+  return LINK_PRESETS[value] ? LINK_PRESETS[value].link_name : value;
+}
+
+// When a preset is selected, fill in the local x/y/z fields that go with
+// it (still just a starting point -- editable like any other value here).
+function applyLinkPresetIfSelected(linkSelId, lxId, lyId, lzId) {
+  const preset = LINK_PRESETS[document.getElementById(linkSelId).value];
+  if (!preset) return;
+  document.getElementById(lxId).value = preset.local_point[0];
+  document.getElementById(lyId).value = preset.local_point[1];
+  document.getElementById(lzId).value = preset.local_point[2];
+}
+
+// No spring attachments on the gripper for this project -- filtered out
+// entirely (not just deprioritized out of "favorites") so a robotiq_*
+// link can't be selected via either dropdown group.
+const EXCLUDED_LINK_PATTERN = /robotiq/i;
+
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
-    const names = resp.link_names || [];
+    // A prior call (e.g. the first attempt right after rosbridge connects,
+    // racing study_control_panel_node's own startup -- see
+    // ros.on('connection', ...) below) can have left a stale "Could not
+    // list link names" error here; a later successful retry (e.g. after a
+    // rosbridge reconnect re-fires this same handler) should clear it
+    // rather than leave it sitting on screen forever.
+    document.getElementById('spring-msg').classList.add('hidden');
+    const names = (resp.link_names || []).filter(function(n) { return !EXCLUDED_LINK_PATTERN.test(n); });
     const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
     const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
-    const addOption = function(parent, name) {
+    const addOption = function(parent, name, label) {
       const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
+      opt.value = name; opt.textContent = label || name;
       parent.appendChild(opt);
     };
     ['sp-link', 'wc-link'].forEach(function(selId) {
       const sel = document.getElementById(selId);
       sel.innerHTML = '';
+      const presetGroup = document.createElement('optgroup');
+      presetGroup.label = 'Presets';
+      Object.keys(LINK_PRESETS).forEach(function(name) {
+        const p = LINK_PRESETS[name];
+        addOption(presetGroup, name, name + ' (' + p.link_name + ' + ' + p.local_point.join(',') + ')');
+      });
+      sel.appendChild(presetGroup);
       if (favorites.length > 0 && rest.length > 0) {
         const favGroup = document.createElement('optgroup');
         favGroup.label = 'Likely tool/end-effector links';
@@ -714,7 +1183,7 @@ function populateLinkDropdown() {
 }
 
 function fetchCurrentPosition() {
-  const link = document.getElementById('sp-link').value;
+  const link = resolveLinkName(document.getElementById('sp-link').value);
   callService(svcGetLinkPose, { link_name: link }, function(resp) {
     if (!resp.success) { showMsg('spring-msg', false, resp.message); return; }
     document.getElementById('sp-tx').value = resp.point[0].toFixed(4);
@@ -724,15 +1193,71 @@ function fetchCurrentPosition() {
   }, function(err) { showMsg('spring-msg', false, 'get_link_pose failed: ' + err); });
 }
 
-function addSpring() {
+// Locks workspace_demo's target onto wherever its attachment point (Link +
+// local x/y/z above) currently is, e.g. after pushing the arm there by hand.
+function captureCurrentAsWorkspaceTarget() {
+  if (!currentSprings.includes(WORKSPACE_DEMO_SPRING_NAME)) {
+    showMsg('workspace-msg', false, 'Preview workspace center first -- "' + WORKSPACE_DEMO_SPRING_NAME + '" doesn\'t exist yet.');
+    return;
+  }
+  const link = resolveLinkName(document.getElementById('wc-link').value);
+  const localPoint = [parseFloat(document.getElementById('wc-lx').value),
+                       parseFloat(document.getElementById('wc-ly').value),
+                       parseFloat(document.getElementById('wc-lz').value)];
+  if (!localPoint.every(isFinite)) { showMsg('workspace-msg', false, 'local x/y/z must all be numbers.'); return; }
+  callService(svcGetLinkPose, { link_name: link, local_point: localPoint }, function(resp) {
+    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
+    const ok = publishRetarget(WORKSPACE_DEMO_SPRING_NAME, resp.point);
+    showMsg('workspace-msg', ok, ok
+      ? ('Workspace target captured at [' + resp.point.map(function(v) { return v.toFixed(4); }).join(', ') + '].')
+      : 'Not connected to rosbridge.');
+  }, function(err) { showMsg('workspace-msg', false, 'get_link_pose failed: ' + err); });
+}
+
+// preview=true adds the spring for real (so it shows up in meshcat via
+// armviz's normal draw_springs -- correct attachment/target geometry,
+// and for a pose spring the RGB triad) but with stiffness and
+// damping forced to 0, so it can't exert any force regardless of what's
+// typed in those boxes -- lets you check the attachment point, target,
+// and (for pose) the actual link orientation *before* committing
+// to real stiffness. Confirmed live 2026-09-02: an orientation spring
+// (pre-rename -- see PoseSpring in virtual_spring.py) added directly at
+// its real (mistakenly large) stiffness pulled the arm into the table
+// and faulted within ~1.2s, far too fast to react to -- previewing first
+// would have shown the problem with zero risk. Once it looks right,
+// click "Add spring" again with the real values -- see below for how
+// that supersedes the zero-force preview -- or "Remove" it in the list
+// to discard.
+function addSpring(preview) {
   const name = document.getElementById('sp-name').value.trim();
   if (!name) { showMsg('spring-msg', false, 'Spring name is required.'); return; }
 
+  // A real ("Add spring", not preview) add on a name that already exists
+  // replaces it instead of failing with "already exists" -- most commonly
+  // this is a zero-force Preview under the same name, and going from
+  // Preview to a real spring should just be "Add spring" again, not a
+  // separate manual Remove step first. Not gated to the preview case
+  // specifically: redefining any existing spring's full geometry (not
+  // just stiffness/damping, which Update already handles without this
+  // remove-then-add) is a reasonable thing "Add spring" should just do.
+  if (!preview && currentSprings.includes(name)) {
+    callService(svcRemoveSpring, { name: name }, function() {
+      performAddSpring(name, preview);
+    }, function() {
+      // Remove failed (stale currentSprings, transient rosbridge error) --
+      // still attempt the add; its own response/error will surface
+      // whatever's actually wrong instead of silently doing nothing.
+      performAddSpring(name, preview);
+    });
+    return;
+  }
+  performAddSpring(name, preview);
+}
+
+function performAddSpring(name, preview) {
   const common = {
     name: name,
-    link_name: document.getElementById('sp-link').value,
-    stiffness: parseFloat(document.getElementById('sp-k').value),
-    damping: parseFloat(document.getElementById('sp-b').value),
+    link_name: resolveLinkName(document.getElementById('sp-link').value),
     local_point: [parseFloat(document.getElementById('sp-lx').value),
                   parseFloat(document.getElementById('sp-ly').value),
                   parseFloat(document.getElementById('sp-lz').value)],
@@ -741,25 +1266,54 @@ function addSpring() {
              parseFloat(document.getElementById('sp-tz').value)],
   };
 
-  if (currentSpringType() === 'orientation') {
+  function addedMsg(resp) {
+    if (!resp.success) return resp.message || 'Failed.';
+    return preview
+      ? 'Preview added at zero stiffness/damping -- check meshcat, then click "Add spring" again with the real values to replace it (or "Remove" it in the list to discard).'
+      : (resp.message || 'Added.');
+  }
+
+  // Stiffness/damping are read from separate, type-specific boxes (see
+  // sp-position-only/sp-pose-only) -- NOT a shared field. Position
+  // (N/m) and pose (N*m/rad) stiffness live on completely
+  // different scales; a shared box previously carried whatever value was
+  // left over from the other type. See sp-pose-only's HTML comment
+  // for the live incident this caused.
+  if (currentSpringType() === 'pose') {
+    // position_center/position_radius are required (no default in the
+    // UI, unlike stiffness/damping) -- see sp-pose-position-only's HTML
+    // comment. Not coerced to 0 for preview like stiffness/damping are:
+    // they don't affect force at all (only where the risky torque
+    // component gets gated), so there's no safety reason to zero them,
+    // and doing so would just make an invalid (radius<=0) preview
+    // request fail for a reason unrelated to what's being previewed.
     const req = Object.assign({}, common, {
+      stiffness: preview ? 0 : parseFloat(document.getElementById('sp-k-pose').value),
+      damping: preview ? 0 : parseFloat(document.getElementById('sp-b-pose').value),
       local_face_normal: [parseFloat(document.getElementById('sp-nx').value),
                            parseFloat(document.getElementById('sp-ny').value),
                            parseFloat(document.getElementById('sp-nz').value)],
+      position_center: [parseFloat(document.getElementById('sp-pcx').value),
+                         parseFloat(document.getElementById('sp-pcy').value),
+                         parseFloat(document.getElementById('sp-pcz').value)],
+      position_radius: parseFloat(document.getElementById('sp-pradius').value),
+      position_stiffness: parseFloat(document.getElementById('sp-pstiffness').value),
     });
-    callService(svcAddOrientationSpring, req, function(resp) {
-      showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
-    }, function(err) { showMsg('spring-msg', false, 'add_orientation_spring failed: ' + err); });
+    callService(svcAddPoseSpring, req, function(resp) {
+      showMsg('spring-msg', resp.success, addedMsg(resp));
+    }, function(err) { showMsg('spring-msg', false, 'add_pose_spring failed: ' + err); });
     return;
   }
 
   const req = Object.assign({}, common, {
+    stiffness: preview ? 0 : parseFloat(document.getElementById('sp-k-position').value),
+    damping: preview ? 0 : parseFloat(document.getElementById('sp-b-position').value),
     rest_length: parseFloat(document.getElementById('sp-rest').value),
     inner_radius: parseFloat(document.getElementById('sp-rin').value),
     outer_radius: parseFloat(document.getElementById('sp-rout').value),
   });
   callService(svcAddSpring, req, function(resp) {
-    showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Added.' : 'Failed.'));
+    showMsg('spring-msg', resp.success, addedMsg(resp));
   }, function(err) { showMsg('spring-msg', false, 'add_spring failed: ' + err); });
 }
 
@@ -773,14 +1327,49 @@ function removeSpring(name) {
 // (pre-filled by fetchSpringValues, see handleSpringsUpdated) and the "set
 // to" field for the buttons below -- editing one doesn't touch the other
 // until Update/Retarget is actually clicked.
-function updateSpring(name, kInput, bInput) {
+// restInput/innerInput/outerInput are null for a spring that isn't a
+// position spring (see renderSpringList) -- rest_length/inner_radius/
+// outer_radius are then sent as 0, which the backend ignores entirely for
+// a non-VirtualSpring (see _update_spring_cb's is_virtual gate).
+// positionCenterInputs ([x,y,z] input elements)/positionRadiusInput/
+// positionStiffnessInput are null for a spring that isn't a pose spring,
+// same "sent as a harmless placeholder, ignored server-side" convention
+// (is_pose gate) -- EXPERIMENTAL, see PoseSpring in virtual_spring.py.
+function updateSpring(name, kInput, bInput, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput, positionStiffnessInput) {
   const stiffness = parseFloat(kInput.value);
   const damping = parseFloat(bInput.value);
   if (!isFinite(stiffness) || !isFinite(damping)) {
     showMsg('spring-msg', false, 'Stiffness and damping must both be numbers.');
     return;
   }
-  callService(svcUpdateSpring, { name: name, stiffness: stiffness, damping: damping }, function(resp) {
+  const req = { name: name, stiffness: stiffness, damping: damping,
+                rest_length: 0, inner_radius: 0, outer_radius: 0,
+                position_center: [0, 0, 0], position_radius: 0, position_stiffness: 0 };
+  if (restInput) {
+    const restLength = parseFloat(restInput.value);
+    const innerRadius = parseFloat(innerInput.value);
+    const outerRadius = parseFloat(outerInput.value);
+    if (!isFinite(restLength) || !isFinite(innerRadius) || !isFinite(outerRadius)) {
+      showMsg('spring-msg', false, 'Rest length, inner radius, and outer radius must all be numbers.');
+      return;
+    }
+    req.rest_length = restLength;
+    req.inner_radius = innerRadius;
+    req.outer_radius = outerRadius;
+  }
+  if (positionCenterInputs) {
+    const positionCenter = positionCenterInputs.map(function(el) { return parseFloat(el.value); });
+    const positionRadius = parseFloat(positionRadiusInput.value);
+    const positionStiffness = parseFloat(positionStiffnessInput.value);
+    if (!positionCenter.every(isFinite) || !isFinite(positionRadius) || !isFinite(positionStiffness)) {
+      showMsg('spring-msg', false, 'Position center x/y/z, position radius, and position stiffness must all be numbers.');
+      return;
+    }
+    req.position_center = positionCenter;
+    req.position_radius = positionRadius;
+    req.position_stiffness = positionStiffness;
+  }
+  callService(svcUpdateSpring, req, function(resp) {
     showMsg('spring-msg', resp.success, resp.message || (resp.success ? 'Updated.' : 'Failed.'));
   }, function(err) { showMsg('spring-msg', false, 'update_spring failed: ' + err); });
 }
@@ -800,7 +1389,7 @@ function updateCollisionThresholds() {
   }, function(err) { showMsg('thresholds-msg', false, 'update_collision_thresholds failed: ' + err); });
 }
 
-// Tries each spring-type prefix (position/orientation/joint) in turn with
+// Tries each spring-type prefix (position/pose/joint) in turn with
 // its OWN GetParameters call, rather than one batched call across all
 // three. rclpy's ParameterService._get_parameters_callback does NOT return
 // PARAMETER_NOT_SET per-name for an undeclared parameter -- it aborts the
@@ -812,49 +1401,175 @@ function updateCollisionThresholds() {
 // populated for any spring, ever. Splitting into one call per prefix means
 // an empty response just means "wrong prefix, try the next one" instead of
 // silently emptying out every time.
-const PARAM_TYPE_DOUBLE = 3, PARAM_TYPE_DOUBLE_ARRAY = 8;
+const PARAM_TYPE_INTEGER = 2, PARAM_TYPE_STRING = 4, PARAM_TYPE_DOUBLE = 3,
+      PARAM_TYPE_DOUBLE_ARRAY = 8, PARAM_TYPE_STRING_ARRAY = 9;
+
+// A YAML config that writes a spring's numeric field as a bare integer
+// (e.g. "rest_length: 0" instead of "0.0") gets that ROS parameter
+// declared as INTEGER rather than DOUBLE -- confirmed live 2026-09-02:
+// several gen3_study_data condition configs do exactly this
+// (rest_length: 0, and plenty of "stiffness: 50"-style values with no
+// decimal too). Every check below used to require an exact DOUBLE type,
+// so an affected field just came back blank -- and stayed blank after
+// Update, since the server-side mirror silently failed the same way
+// (see _declare_or_ignore's self-heal fix on the node side). This reads
+// either numeric type so the box shows the real value regardless of
+// which one the parameter happens to be.
+function numericParamValue(v) {
+  if (!v) return undefined;
+  if (v.type === PARAM_TYPE_DOUBLE) return v.double_value;
+  if (v.type === PARAM_TYPE_INTEGER) return v.integer_value;
+  return undefined;
+}
+// anchorField: joint_springs anchor to a joint (joint_name), not a link --
+// springs/pose_springs both anchor to link_name.
 const SPRING_PARAM_PREFIXES = [
-  { prefix: 'springs', hasTarget: true },
-  { prefix: 'orientation_springs', hasTarget: true },
-  { prefix: 'joint_springs', hasTarget: false },  // real field is target_angle, not a 3-vector
+  // hasRadius: only a position spring (VirtualSpring) has rest_length/
+  // inner_radius/outer_radius -- see AddSpring.srv/UpdateSpring.srv, both
+  // of which carry those fields for VirtualSpring alone.
+  { prefix: 'springs', hasTarget: true, anchorField: 'link_name', hasRadius: true },
+  // hasPoseRadius: only a pose spring (PoseSpring) has position_center/
+  // position_radius -- EXPERIMENTAL, see AddPoseSpring.srv/UpdateSpring.srv.
+  { prefix: 'pose_springs', hasTarget: true, anchorField: 'link_name', hasPoseRadius: true },
+  { prefix: 'joint_springs', hasTarget: false, anchorField: 'joint_name' },  // real target field is target_angle, not a 3-vector
 ];
-function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput) {
+
+// Maps every currently-known spring name to its parameter-name prefix (see
+// SPRING_PARAM_PREFIXES), by reading spring_names/pose_spring_names/
+// joint_spring_names -- these three are always declared (with an empty-ish
+// default) regardless of whether any springs exist, so batching them into
+// one GetParameters call is safe, unlike the per-spring prefix guessing
+// below. Used so fetchSpringValues can go straight to the right prefix
+// instead of guessing "springs" first for every spring and eating a
+// guaranteed "Invalid access to undeclared parameter(s)" WARN on the node
+// side for every pose/joint spring, every refresh.
+function fetchSpringTypeMap(callback) {
+  callService(svcGetSpringParams,
+    { names: ['spring_names', 'pose_spring_names', 'joint_spring_names'] },
+    function(resp) {
+      const v = resp.values;
+      const prefixByIndex = ['springs', 'pose_springs', 'joint_springs'];
+      const map = {};
+      prefixByIndex.forEach(function(prefix, i) {
+        const val = v[i];
+        if (val && val.type === PARAM_TYPE_STRING_ARRAY) {
+          (val.string_array_value || []).forEach(function(n) { if (n) map[n] = prefix; });
+        }
+      });
+      callback(map);
+    },
+    function(err) { callback({}); });
+}
+
+// `knownPrefix`, when given (see fetchSpringTypeMap), skips straight to that
+// prefix instead of starting the guess-and-fallback loop at 'springs' --
+// falls through to later prefixes on failure exactly as the no-prefix path
+// does, so a stale/missing type-map entry still degrades to the old
+// behavior rather than leaving the fields blank.
+// anchorEl, when given, gets filled with "link: <name>" / "joint: <name>"
+// from the matched prefix's anchorField -- shows what a spring is actually
+// attached to without having to reopen Add/remove springs and re-derive it.
+// restInput/innerInput/outerInput are only filled for a position spring
+// (see SPRING_PARAM_PREFIXES' hasRadius) -- callers pass null for a
+// pose/joint spring, where they don't apply. positionCenterInputs
+// ([x,y,z] elements)/positionRadiusInput/positionStiffnessInput are the
+// pose-spring equivalent (see hasPoseRadius) -- callers pass null for a
+// position/joint spring.
+function fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, knownPrefix, anchorEl, restInput, innerInput, outerInput, positionCenterInputs, positionRadiusInput, positionStiffnessInput) {
   function tryPrefix(i) {
     if (i >= SPRING_PARAM_PREFIXES.length) return;  // no prefix matched -- leave fields blank
-    const { prefix, hasTarget } = SPRING_PARAM_PREFIXES[i];
-    const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping'];
+    const { prefix, hasTarget, anchorField, hasRadius, hasPoseRadius } = SPRING_PARAM_PREFIXES[i];
+    const names = [prefix + '.' + name + '.stiffness', prefix + '.' + name + '.damping', prefix + '.' + name + '.' + anchorField];
     if (hasTarget) names.push(prefix + '.' + name + '.target');
+    if (hasRadius) names.push(prefix + '.' + name + '.rest_length', prefix + '.' + name + '.inner_radius', prefix + '.' + name + '.outer_radius');
+    if (hasPoseRadius) names.push(prefix + '.' + name + '.position_center', prefix + '.' + name + '.position_radius', prefix + '.' + name + '.position_stiffness');
     callService(svcGetSpringParams, { names: names }, function(resp) {
       const v = resp.values;
-      if (!(v.length >= 2 && v[0].type === PARAM_TYPE_DOUBLE)) { tryPrefix(i + 1); return; }
-      kInput.value = v[0].double_value;
-      if (v[1].type === PARAM_TYPE_DOUBLE) bInput.value = v[1].double_value;
-      const t = v[2];
+      const k = numericParamValue(v[0]);
+      if (!(v.length >= 3 && k !== undefined)) { tryPrefix(i + 1); return; }
+      kInput.value = k;
+      const b = numericParamValue(v[1]);
+      if (b !== undefined) bInput.value = b;
+      if (anchorEl && v[2] && v[2].type === PARAM_TYPE_STRING) {
+        anchorEl.textContent = (anchorField === 'joint_name' ? 'joint: ' : 'link: ') + v[2].string_value;
+      }
+      let idx = 3;
+      const t = hasTarget ? v[idx++] : undefined;
       if (hasTarget && t && t.type === PARAM_TYPE_DOUBLE_ARRAY && t.double_array_value.length === 3) {
         txInput.value = t.double_array_value[0].toFixed(4);
         tyInput.value = t.double_array_value[1].toFixed(4);
         tzInput.value = t.double_array_value[2].toFixed(4);
       }
+      if (hasRadius && restInput) {
+        const rl = numericParamValue(v[idx++]);
+        const ir = numericParamValue(v[idx++]);
+        const orad = numericParamValue(v[idx++]);
+        if (rl !== undefined) restInput.value = rl;
+        if (ir !== undefined) innerInput.value = ir;
+        if (orad !== undefined) outerInput.value = orad;
+      }
+      if (hasPoseRadius && positionCenterInputs) {
+        const pc = v[idx++];
+        const pr = numericParamValue(v[idx++]);
+        if (pc && pc.type === PARAM_TYPE_DOUBLE_ARRAY && pc.double_array_value.length === 3) {
+          positionCenterInputs[0].value = pc.double_array_value[0].toFixed(4);
+          positionCenterInputs[1].value = pc.double_array_value[1].toFixed(4);
+          positionCenterInputs[2].value = pc.double_array_value[2].toFixed(4);
+        }
+        if (pr !== undefined) positionRadiusInput.value = pr;
+        const ps = numericParamValue(v[idx++]);
+        if (ps !== undefined && positionStiffnessInput) positionStiffnessInput.value = ps;
+      }
     }, function(err) { tryPrefix(i + 1); });
   }
-  tryPrefix(0);
+  const startIdx = knownPrefix
+    ? SPRING_PARAM_PREFIXES.findIndex(function(e) { return e.prefix === knownPrefix; })
+    : -1;
+  tryPrefix(startIdx >= 0 ? startIdx : 0);
 }
 
-// Retargets any spring (position or orientation -- both listen on the same
+// config_path is a load-time-only parameter (set once when virtual_spring_node
+// starts, never changed afterward) -- one fetch on connect is enough, no
+// live subscription needed.
+function fetchLoadedConfigPath() {
+  callService(svcGetSpringParams, { names: ['config_path'] }, function(resp) {
+    const v = resp.values[0];
+    const el = document.getElementById('config-path-state');
+    el.textContent = (v && v.type === PARAM_TYPE_STRING && v.string_value) ? v.string_value : '(none)';
+  }, function(err) {
+    document.getElementById('config-path-state').textContent = 'unknown';
+  });
+}
+
+// Retargets any spring (position or pose -- both listen on the same
 // ~/target/<name> topic, see virtual_spring_node.py's per-spring loop) by
 // publishing a PointStamped. Not a service call like updateSpring -- there's
 // no synchronous ack, so this just reports "sent" rather than success/failure.
+function publishRetarget(name, point) {
+  return pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
+    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
+    point: { x: point[0], y: point[1], z: point[2] },
+  });
+}
+
 function retargetSpring(name, xInput, yInput, zInput) {
   const x = parseFloat(xInput.value), y = parseFloat(yInput.value), z = parseFloat(zInput.value);
   if (![x, y, z].every(isFinite)) {
     showMsg('spring-msg', false, 'Target x/y/z must all be numbers.');
     return;
   }
-  const ok = pub(targetTopicPrefix + name, 'geometry_msgs/msg/PointStamped', {
-    header: { frame_id: 'world', stamp: { sec: 0, nanosec: 0 } },
-    point: { x: x, y: y, z: z },
-  });
+  const ok = publishRetarget(name, [x, y, z]);
   showMsg('spring-msg', ok, ok ? ('Retarget sent for ' + name + '.') : 'Not connected to rosbridge.');
+}
+
+// Wraps an input in a small grey <label> (same look as the "Add spring"
+// form's field labels) so the live spring-list boxes show what they are
+// instead of relying solely on a title= tooltip and a one-letter placeholder.
+function labeledInput(labelText, input) {
+  const label = document.createElement('label');
+  label.appendChild(document.createTextNode(labelText));
+  label.appendChild(input);
+  return label;
 }
 
 function handleSpringsUpdated(msg) {
@@ -864,31 +1579,92 @@ function handleSpringsUpdated(msg) {
   document.getElementById('springs-list-inline').textContent =
     currentSprings.length ? currentSprings.join(', ') : '(none)';
 
+  fetchSpringTypeMap(function(typeMap) { renderSpringList(typeMap); });
+}
+
+// Letter kept as 'O' (not relabeled to e.g. 'H' for "hybrid") for visual
+// continuity with the shipped P/O/J markers -- PoseSpring is still
+// fundamentally the "look at" spring, just with an added position bound.
+const SPRING_KIND_LETTER = { springs: 'P', pose_springs: 'O', joint_springs: 'J' };
+const SPRING_KIND_LABEL = { springs: 'Position spring', pose_springs: 'Pose spring', joint_springs: 'Joint spring' };
+
+function renderSpringList(typeMap) {
   const ul = document.getElementById('spring-list');
   ul.innerHTML = '';
   currentSprings.forEach(function(name) {
     const li = document.createElement('li');
+    const kind = typeMap[name];
+    const kindSpan = document.createElement('span');
+    kindSpan.className = 'spring-kind spring-kind-' + (kind || 'unknown');
+    kindSpan.textContent = SPRING_KIND_LETTER[kind] || '?';
+    kindSpan.title = SPRING_KIND_LABEL[kind] || 'Unknown spring type';
     const span = document.createElement('span');
     span.textContent = name;
 
+    const anchorSpan = document.createElement('span');
+    anchorSpan.className = 'spring-anchor';
+    anchorSpan.textContent = 'link: ?';
+
     const adjust = document.createElement('span');
     adjust.className = 'adjust';
-    const kInput = document.createElement('input');
-    kInput.type = 'number'; kInput.step = '1'; kInput.placeholder = 'k';
-    kInput.title = 'New stiffness (N/m)';
-    const bInput = document.createElement('input');
-    bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
-    bInput.title = 'New damping (N·s/m)';
-    const updateBtn = document.createElement('button');
-    updateBtn.textContent = 'Update';
-    updateBtn.onclick = function() { updateSpring(name, kInput, bInput); };
-    adjust.appendChild(kInput); adjust.appendChild(bInput); adjust.appendChild(updateBtn);
+    const isPose = typeMap[name] === 'pose_springs';
+    const isJoint = typeMap[name] === 'joint_springs';
+
+    // Position/pose rows: a single "Adjust" button opens the Add-spring
+    // form pre-filled with this spring's full current values (target,
+    // local point, link, face normal included, not just the scalars
+    // below) -- see startAdjustSpring. Replaces the old per-row
+    // stiffness/damping/radius inputs + "Update" button, which only ever
+    // covered a subset of what UpdateSpring.srv can change and duplicated
+    // the Add-spring form's own fields.
+    //
+    // Joint springs keep their own minimal k/b + Update controls exactly
+    // as before -- the Add-spring form has never supported creating a
+    // joint spring (no type option for it), so there's no unified form to
+    // route them through.
+    let kInput = null, bInput = null;
+    if (isJoint) {
+      kInput = document.createElement('input');
+      kInput.type = 'number'; kInput.step = '1'; kInput.placeholder = 'k';
+      kInput.title = 'New stiffness (N*m/rad)';
+      bInput = document.createElement('input');
+      bInput.type = 'number'; bInput.step = '0.5'; bInput.placeholder = 'b';
+      bInput.title = 'New damping (N*m*s/rad)';
+      adjust.appendChild(labeledInput('stiffness (N·m/rad)', kInput));
+      adjust.appendChild(labeledInput('damping (N·m·s/rad)', bInput));
+      const updateBtn = document.createElement('button');
+      updateBtn.textContent = 'Update';
+      updateBtn.onclick = function() {
+        updateSpring(name, kInput, bInput, null, null, null, null, null, null);
+      };
+      adjust.appendChild(updateBtn);
+    } else {
+      // Throwaway, never-appended inputs -- fetchSpringValues below still
+      // needs somewhere to write stiffness/damping/radius fields to
+      // determine which param prefix matched (it bails out early if it
+      // can't read a stiffness value back), even though this row no
+      // longer displays them. The real editable copies of these live in
+      // the Add-spring form once "Adjust" is clicked.
+      kInput = document.createElement('input');
+      bInput = document.createElement('input');
+      const adjustBtn = document.createElement('button');
+      adjustBtn.textContent = 'Adjust';
+      adjustBtn.title = 'Load this spring\'s full current values into the Add-spring form above for editing.';
+      adjustBtn.onclick = function() { startAdjustSpring(name, typeMap[name]); };
+      adjust.appendChild(adjustBtn);
+    }
+    const restInput = isJoint ? null : document.createElement('input');
+    const innerInput = isJoint ? null : document.createElement('input');
+    const outerInput = isJoint ? null : document.createElement('input');
+    const positionCenterInputs = isPose ? [document.createElement('input'), document.createElement('input'), document.createElement('input')] : null;
+    const pradiusInput = isPose ? document.createElement('input') : null;
+    const pstiffnessInput = isPose ? document.createElement('input') : null;
 
     const retarget = document.createElement('span');
     retarget.className = 'adjust retarget';
     const txInput = document.createElement('input');
     txInput.type = 'number'; txInput.step = '0.01'; txInput.placeholder = 'x';
-    txInput.title = 'New target x (m) -- "look-at" point for an orientation spring';
+    txInput.title = 'New target x (m) -- "look-at" point for a pose spring';
     const tyInput = document.createElement('input');
     tyInput.type = 'number'; tyInput.step = '0.01'; tyInput.placeholder = 'y';
     tyInput.title = 'New target y (m)';
@@ -898,10 +1674,12 @@ function handleSpringsUpdated(msg) {
     const retargetBtn = document.createElement('button');
     retargetBtn.textContent = 'Retarget';
     retargetBtn.onclick = function() { retargetSpring(name, txInput, tyInput, tzInput); };
-    retarget.appendChild(txInput); retarget.appendChild(tyInput); retarget.appendChild(tzInput);
+    retarget.appendChild(labeledInput('target x (m)', txInput));
+    retarget.appendChild(labeledInput('target y (m)', tyInput));
+    retarget.appendChild(labeledInput('target z (m)', tzInput));
     retarget.appendChild(retargetBtn);
 
-    li.appendChild(span); li.appendChild(adjust); li.appendChild(retarget);
+    li.appendChild(kindSpan); li.appendChild(span); li.appendChild(anchorSpan); li.appendChild(adjust); li.appendChild(retarget);
 
     const btn = document.createElement('button');
     btn.textContent = 'Remove';
@@ -909,7 +1687,7 @@ function handleSpringsUpdated(msg) {
     li.appendChild(btn);
     ul.appendChild(li);
 
-    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput);
+    fetchSpringValues(name, kInput, bInput, txInput, tyInput, tzInput, typeMap[name], anchorSpan, restInput, innerInput, outerInput, positionCenterInputs, pradiusInput, pstiffnessInput);
   });
 }
 
@@ -931,7 +1709,7 @@ function previewWorkspaceCenter() {
     const c = resp.center;
     const addReq = {
       name: WORKSPACE_DEMO_SPRING_NAME,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       stiffness: 50.0,
       damping: 5.0,
       local_point: [parseFloat(document.getElementById('wc-lx').value),
@@ -945,11 +1723,12 @@ function previewWorkspaceCenter() {
     const placeSpring = function() {
       callService(svcAddSpring, addReq, function(addResp) {
         const centerStr = c.map(function(v) { return v.toFixed(4); }).join(', ');
+        const mathText = resp.center_math ? '\n' + resp.center_math : '';
         showMsg('workspace-msg', addResp.success,
           'Candidate center: [' + centerStr + ']. ' + (addResp.message ||
             (addResp.success
               ? '"' + WORKSPACE_DEMO_SPRING_NAME + '" spring placed -- enable torque control, then push/retarget it below if needed.'
-              : 'Failed to place demo spring.')));
+              : 'Failed to place demo spring.')) + mathText);
       }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
     };
     // add_spring refuses if the name already exists, so re-previewing with
@@ -960,32 +1739,33 @@ function previewWorkspaceCenter() {
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
-function getConditionOrder() {
-  const participantId = document.getElementById('wc-pid').value.trim();
-  if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
-  const req = {
-    participant_id: participantId,
-    data_dir: document.getElementById('wc-datadir').value.trim(),
-  };
-  callService(svcAssignConditionOrder, req, function(resp) {
-    if (!resp.success) { showMsg('workspace-msg', false, resp.message); return; }
-    const label = resp.first_condition === 'condition1' ? 'Condition 1' : 'Condition 2';
-    const note = resp.already_assigned ? ' (previously assigned -- unchanged)' : ' (newly assigned)';
-    showMsg('workspace-msg', true, participantId + ': run ' + label + ' first' + note + '.');
-  }, function(err) { showMsg('workspace-msg', false, 'assign_condition_order failed: ' + err); });
-}
-
-// Places a force-free (0 stiffness/damping) marker at condition 2's real
-// orientation-spring target: in front of the participant's actual face
-// (chair position), NOT above wherever the reach-center ended up -- those
-// are two different points on the participant's body (the reach-center is
-// where their *hand* goes; this is where their *face* is). Computed
-// server-side by the same compute_eye_location() finalizeStudyConditions
-// uses, via preview_workspace_center's eye_location field, so it can never
-// drift out of sync with what finalize will actually write. Doesn't
-// depend on workspace_demo existing -- no need to preview the center
-// first (arm_length_cm is still sent since it's the same shared service
-// request as previewWorkspaceCenter, it's just unused for eye_location).
+// Places a force-free (0 stiffness/damping) REAL pose spring at
+// condition 2's actual pose-spring target: in front of the
+// participant's actual face (chair position), NOT above wherever the
+// reach-center ended up -- those are two different points on the
+// participant's body (the reach-center is where their *hand* goes; this
+// is where their *face* is). Target and local_face_normal are both
+// computed/read server-side (compute_eye_location() and
+// workspace_pose_local_face_normal respectively -- same values
+// finalizeStudyConditions will actually write), via
+// preview_workspace_center's eye_location/orientation_local_face_normal
+// fields, so this can never drift out of sync with what finalize writes.
+// A genuine (if force-free) pose spring rather than a disguised
+// zero-stiffness position spring -- confirmed live 2026-09-01 that armviz's
+// prefix-based purple-target coloring (added for real pose springs)
+// never applied to the old position-spring-shaped marker, since it loaded
+// under the springs. prefix, not pose_springs. Doesn't depend on
+// workspace_demo existing -- no need to preview the center first
+// (arm_length_cm is still sent since it's the same shared service request
+// as previewWorkspaceCenter, it's just unused for eye_location).
+//
+// position_center/position_radius (EXPERIMENTAL, see PoseSpring in
+// virtual_spring.py) are required by AddPoseSpring but functionally
+// irrelevant here -- at stiffness=0 nothing ever gates on them, since
+// there's no torque to gate. Reuses resp.center (the actual paired
+// position spring's own target, from this same preview call) for
+// position_center so it's at least consistent with what a real pose
+// spring here would use; position_radius is an arbitrary >0 placeholder.
 function previewEyeLocation() {
   const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
   const armLength = parseFloat(document.getElementById('wc-arm').value);
@@ -998,33 +1778,49 @@ function previewEyeLocation() {
     const eyeTarget = resp.eye_location;
     const addReq = {
       name: WORKSPACE_DEMO_EYE_SPRING_NAME,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       stiffness: 0.0,
       damping: 0.0,
       local_point: [parseFloat(document.getElementById('wc-lx').value),
                     parseFloat(document.getElementById('wc-ly').value),
                     parseFloat(document.getElementById('wc-lz').value)],
+      local_face_normal: resp.orientation_local_face_normal,
       target: eyeTarget,
-      rest_length: 0.0,
-      inner_radius: 0.0,
-      outer_radius: 0.0,
+      position_center: resp.center,
+      position_radius: 0.1,
     };
     const placeSpring = function() {
-      callService(svcAddSpring, addReq, function(addResp) {
+      callService(svcAddPoseSpring, addReq, function(addResp) {
         const eyeStr = eyeTarget.map(function(v) { return v.toFixed(4); }).join(', ');
         showMsg('workspace-msg', addResp.success,
           'Eye location: [' + eyeStr + ']. ' + (addResp.message ||
             (addResp.success
-              ? '"' + WORKSPACE_DEMO_EYE_SPRING_NAME + '" marker placed (0 stiffness -- no force applied) -- this is where condition 2\'s orientation spring will aim.'
+              ? '"' + WORKSPACE_DEMO_EYE_SPRING_NAME + '" marker placed (0 stiffness -- no force applied) -- this is where condition 2\'s pose spring will aim.'
               : 'Failed to place eye marker.')));
-      }, function(err) { showMsg('workspace-msg', false, 'add_spring failed: ' + err); });
+      }, function(err) { showMsg('workspace-msg', false, 'add_pose_spring failed: ' + err); });
     };
-    // Same re-add-over-existing pattern as previewWorkspaceCenter above.
+    // Same re-add-over-existing pattern as previewWorkspaceCenter above --
+    // remove_spring is generic across spring types (see
+    // virtual_spring_node.py), works the same for a pose spring.
     callService(svcRemoveSpring, { name: WORKSPACE_DEMO_EYE_SPRING_NAME }, placeSpring, placeSpring);
   }, function(err) { showMsg('workspace-msg', false, 'preview_workspace_center failed: ' + err); });
 }
 
-function finalizeStudyConditions() {
+// Set (to the participant ID that conflicted) when finalizeStudyConditions
+// gets an already_exists response -- lets finalizeWithNewParticipantId
+// tell "you actually changed the ID" apart from "you clicked it again
+// without changing anything". Cleared on any non-conflicting outcome (see
+// hideFinalizeConflictButtons) so a later, unrelated conflict can't be
+// confused with a stale one.
+let finalizeConflictParticipantId = null;
+
+function hideFinalizeConflictButtons() {
+  finalizeConflictParticipantId = null;
+  document.getElementById('btn-finalize-overwrite').classList.add('hidden');
+  document.getElementById('btn-finalize-new-id').classList.add('hidden');
+}
+
+function finalizeStudyConditions(overwrite) {
   const participantId = document.getElementById('wc-pid').value.trim();
   if (!participantId) { showMsg('workspace-msg', false, 'Participant ID is required.'); return; }
   const eyeHeight = parseFloat(document.getElementById('wc-eye').value);
@@ -1052,15 +1848,27 @@ function finalizeStudyConditions() {
       eye_height_cm: eyeHeight,
       arm_length_cm: armLength,
       ramp_margin_cm: rampMargin,
-      link_name: document.getElementById('wc-link').value,
+      link_name: resolveLinkName(document.getElementById('wc-link').value),
       local_point: [parseFloat(document.getElementById('wc-lx').value),
                     parseFloat(document.getElementById('wc-ly').value),
                     parseFloat(document.getElementById('wc-lz').value)],
       data_dir: document.getElementById('wc-datadir').value.trim(),
+      overwrite: !!overwrite,
     };
     callService(svcFinalizeStudyConditions, req, function(fr) {
-      if (!fr.success) { showMsg('workspace-msg', false, fr.message); return; }
-      let text = 'Wrote ' + fr.condition1_path + ' and ' + fr.condition2_path + '.';
+      if (!fr.success) {
+        showMsg('workspace-msg', false, fr.message);
+        if (fr.already_exists) {
+          finalizeConflictParticipantId = participantId;
+          document.getElementById('btn-finalize-overwrite').classList.remove('hidden');
+          document.getElementById('btn-finalize-new-id').classList.remove('hidden');
+        } else {
+          hideFinalizeConflictButtons();
+        }
+        return;
+      }
+      hideFinalizeConflictButtons();
+      let text = 'Wrote ' + fr.position_path + ', ' + fr.pose_path + ', and ' + fr.kt_path + '.';
       if (fr.warnings && fr.warnings.length) text += ' Warnings: ' + fr.warnings.join(' ');
       showMsg('workspace-msg', true, text);
       removeSpring(WORKSPACE_DEMO_SPRING_NAME);
@@ -1069,10 +1877,146 @@ function finalizeStudyConditions() {
   }, function(err) { showMsg('workspace-msg', false, 'Could not read current target: ' + err); });
 }
 
+// "Overwrite participant": re-finalizes under the SAME participant ID that
+// just conflicted, with overwrite=true -- deliberately re-reads wc-pid
+// live rather than trusting finalizeConflictParticipantId, so if the
+// operator typed a different ID in between (without clicking "Save with
+// new participant ID"), this overwrites whatever ID is actually in the
+// box right now, not a stale remembered one.
+function finalizeOverwriteParticipant() {
+  finalizeStudyConditions(true);
+}
+
+// "Save with new participant ID": blocks unless the participant ID field
+// has actually changed since the conflict was flagged -- otherwise this
+// would just re-hit the exact same conflict and silently do nothing
+// useful, which reads as "the button doesn't work" rather than "you
+// still need to change the ID".
+function finalizeWithNewParticipantId() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (participantId === finalizeConflictParticipantId) {
+    showMsg('workspace-msg', false,
+      'Change the participant ID above before saving as a new participant.');
+    return;
+  }
+  finalizeStudyConditions(false);
+}
+
 function reloadMeshcat() {
   const f = document.getElementById('meshcat-frame');
   f.src = f.src;
 }
+
+// ---- session timer & event log -------------------------------------------
+// Countdown is display-only, purely so the operator can tell the
+// participant how much time is left -- it's never written to the log.
+// Every log row instead carries the *server's* clock time (see logEvent()
+// below / log_event() in study_workspace_config.py), so rows can be lined
+// up against separately-recorded video after the fact.
+
+let timerRemainingSec = 120;
+let timerIntervalId = null;
+let timerRunning = false;
+
+function formatTimer(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function renderTimer() {
+  const el = document.getElementById('timer-display');
+  el.textContent = formatTimer(timerRemainingSec);
+  el.classList.toggle('expired', timerRemainingSec <= 0);
+}
+
+function timerStart() {
+  if (timerRunning) return;
+  if (timerRemainingSec <= 0) timerReset();
+  timerRunning = true;
+  // Wall-clock-delta based, not a naive decrement-per-tick counter, so it
+  // doesn't drift if the tab is backgrounded/throttled.
+  const tickStart = Date.now();
+  const startRemaining = timerRemainingSec;
+  timerIntervalId = setInterval(function() {
+    const elapsed = (Date.now() - tickStart) / 1000;
+    timerRemainingSec = Math.max(0, startRemaining - elapsed);
+    renderTimer();
+    if (timerRemainingSec <= 0) {
+      clearInterval(timerIntervalId);
+      timerIntervalId = null;
+      timerRunning = false;
+    }
+  }, 250);
+}
+
+function timerPause() {
+  if (!timerRunning) return;
+  clearInterval(timerIntervalId);
+  timerIntervalId = null;
+  timerRunning = false;
+}
+
+function timerReset() {
+  clearInterval(timerIntervalId);
+  timerIntervalId = null;
+  timerRunning = false;
+  const mins = parseFloat(document.getElementById('timer-duration-min').value);
+  timerRemainingSec = isFinite(mins) ? mins * 60 : 120;
+  renderTimer();
+}
+
+function refreshStudyOrder() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) {
+    document.getElementById('timer-order-display').textContent = 'enter participant ID above';
+    return;
+  }
+  const req = {
+    participant_id: participantId,
+    data_dir: document.getElementById('wc-datadir').value.trim(),
+  };
+  callService(svcAssignConditionOrder, req, function(resp) {
+    const el = document.getElementById('timer-order-display');
+    if (!resp.success) { el.textContent = resp.message; return; }
+    const order = [resp.first_condition, resp.second_condition, resp.third_condition]
+      .map(function(c) { return CONDITION_LABELS[c] || c; }).join(', ');
+    el.textContent = participantId + ': [' + order + ']' +
+      (resp.already_assigned ? ' (previously assigned)' : ' (newly assigned)');
+  }, function(err) {
+    document.getElementById('timer-order-display').textContent = 'assign_condition_order failed: ' + err;
+  });
+}
+
+function logEvent() {
+  const participantId = document.getElementById('wc-pid').value.trim();
+  if (!participantId) {
+    showMsg('timer-log-msg', false, 'Participant ID is required (top of this panel).');
+    return;
+  }
+  const req = {
+    participant_id: participantId,
+    event_text: document.getElementById('log-event-select').value,
+    condition: document.getElementById('log-condition-select').value,
+    notes: document.getElementById('log-notes').value.trim(),
+    data_dir: document.getElementById('wc-datadir').value.trim(),
+  };
+  callService(svcLogEvent, req, function(resp) {
+    // Reminder for the one event type that has a required next step the
+    // operator can't see from the panel itself -- Qualtrics runs outside
+    // this UI entirely.
+    const reminder = (resp.success && req.event_text === 'Trial end')
+      ? '\nMove the arm back to start position, have the participant answer the questions in Qualtrics, and start the next condition.'
+      : '';
+    showMsg('timer-log-msg', resp.success, resp.message + reminder);
+    // Notes carries over into the next entry otherwise -- easy to forget
+    // it's still sitting there and log the same note again by accident.
+    // Left alone on failure so a retry doesn't lose what was typed.
+    if (resp.success) document.getElementById('log-notes').value = '';
+  }, function(err) { showMsg('timer-log-msg', false, 'log_event failed: ' + err); });
+}
+
+renderTimer();
 
 // ---- torque / safety status displays ----------------------------------
 // gen3_torque_control only publishes /status on an ENABLED/DISABLED
@@ -1092,13 +2036,23 @@ function handleTorqueStatus(msg) {
   el.className = 'val ' + (msg.data === 'ENABLED' ? 'ENABLED ok' : 'inactive');
   const isEnabled = msg.data === 'ENABLED';
   updateTorqueToggleSwitch(isEnabled);
-  // Position-mode-only actions -- moving to a pose or the gripper -- can't
-  // run while torque control is on, so grey them out instead of letting
-  // them fail silently against the robot.
-  ['btn-move-study-start', 'btn-move-joint-angles', 'btn-gripper-open', 'btn-gripper-close']
+  // Position-mode-only actions -- moving to a pose -- can't run while
+  // torque control is on, so grey them out instead of letting them fail
+  // silently against the robot. The gripper buttons are deliberately NOT
+  // in this list -- gripperCommand() below handles dropping out of (and
+  // back into) torque control itself, so they stay clickable regardless
+  // of torque state; it manages its own disabled state while a cycle is
+  // in flight (see gripperCycleInProgress).
+  ['btn-move-study-start', 'btn-move-joint-angles']
     .forEach(function(id) { document.getElementById(id).disabled = isEnabled; });
 }
+// Backs maybeRecoverSpringsAfterGripperCycle's post-gripper-cycle checks
+// (see gripper section) -- kept as a plain variable rather than re-reading
+// the safety-state span's textContent so those checks see the exact wire
+// value, not whatever the DOM happens to hold.
+let lastSafetyStatusRaw = '';
 function handleSafetyStatus(msg) {
+  lastSafetyStatusRaw = msg.data || '';
   const el = document.getElementById('safety-state');
   const status = (msg.data || '').split(' ')[0].split(':')[0];
   el.textContent = msg.data;
@@ -1160,6 +2114,21 @@ function connectRos() {
     sub('/virtual_spring_node/repulsion_enabled_status', 'std_msgs/msg/Bool', function(msg) {
       updateRepulsionToggleSwitch(msg.data);
     });
+    // Live [danger_threshold, caution_threshold, repulsion_max_force_n] --
+    // same "authoritative over whatever's sitting in the form" reasoning
+    // as springs_enabled above. TRANSIENT_LOCAL, so this arrives once
+    // immediately on connect (correcting resetPersistedFormState's plain
+    // HTML-default guess to the node's real configured values -- see that
+    // function's comment for why the boxes couldn't be trusted before
+    // this existed) and again on any live ~/update_collision_thresholds
+    // change from any client.
+    sub('/virtual_spring_node/collision_thresholds_status', 'std_msgs/msg/Float64MultiArray', function(msg) {
+      const data = msg.data || [];
+      if (data.length < 3) return;
+      document.getElementById('ct-danger').value = data[0];
+      document.getElementById('ct-caution').value = data[1];
+      document.getElementById('ct-max-force').value = data[2];
+    });
     sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
     sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
@@ -1173,6 +2142,7 @@ function connectRos() {
     });
 
     populateLinkDropdown();
+    fetchLoadedConfigPath();
 
     // The meshcat iframe keeps its own websocket straight to meshcat-server
     // (not through rosbridge), established once when the iframe's src first

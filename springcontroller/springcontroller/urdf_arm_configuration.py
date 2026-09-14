@@ -211,14 +211,12 @@ class URDFArmConfiguration:
         thousand triangles per link) with a conservative axis-aligned
         bounding box in the mesh's own local frame, in place.
 
-        Offline-profiled 2026-08-07/08-12: mesh-mesh distance queries via
-        pin.computeDistances cost ~126ms/call for this arm's ~91 collision
-        pairs -- capping get_collision_status() (called every control
-        cycle) to ~8Hz instead of the intended ~100Hz, later confirmed to
-        be the dominant cause of a full day's worth of live command-
-        staleness/fault incidents. Bounding boxes over the same pairs cost
-        ~0.01ms/call, a ~10,000x speedup -- negligible against a 10ms
-        cycle budget.
+        Mesh-mesh distance queries via pin.computeDistances cost
+        ~126ms/call for this arm's ~91 collision pairs -- capping
+        get_collision_status() (called every control cycle) to ~8Hz
+        instead of the intended ~100Hz. Bounding boxes over the same
+        pairs cost ~0.01ms/call, a ~10,000x speedup -- negligible against
+        a 10ms cycle budget.
 
         The box always encloses the true mesh (it's exactly the mesh's own
         AABB), so reported distances are conservative: equal to or smaller
@@ -497,24 +495,20 @@ class URDFArmConfiguration:
         resulting joint torque -- a single contact far out on the gripper
         already has a large lever arm back to the shoulder, and several
         simultaneous contacts (e.g. a multi-geometry gripper wrapping a
-        curved obstacle) sum on top of that. Confirmed live 2026-08-19: a
-        gripper closing around a cylinder produced several simultaneous
-        near-contact pairs whose summed |tau| reached 20-36 N*m, well past
-        "low-strength" and close to the wrist joints' torque_limit_nm. After
-        summing every pair's contribution, the *total* vector's norm is
-        clipped to max_total_torque_nm (direction preserved, same principle
-        as gradient-norm clipping) -- default float("inf") (no clipping) so
-        existing callers that don't care about this are unaffected; pass a
-        finite value to actually bound it.
+        curved obstacle) sum on top of that and can approach the wrist
+        joints' torque_limit_nm. After summing every pair's contribution,
+        the *total* vector's norm is clipped to max_total_torque_nm
+        (direction preserved, same principle as gradient-norm clipping) --
+        default float("inf") (no clipping) so existing callers that don't
+        care about this are unaffected; pass a finite value to actually
+        bound it.
 
         Pairs that have actually started interpenetrating (min_distance < 0)
-        are skipped entirely rather than saturated: confirmed empirically
-        2026-08-19 that coal's witness points are not a reliable push-out
-        direction once shapes overlap (a test box driven deeper into a
-        cylinder kept getting a witness point on its FAR side, flipping the
-        resulting direction to push further in) -- get_collision_status()'s
-        hard clamp is the safety response for genuine interpenetration, not
-        this field.
+        are skipped entirely rather than saturated: once shapes overlap,
+        coal's witness points are not a reliable push-out direction (see
+        the inline comment at the interpenetration check below) --
+        get_collision_status()'s hard clamp is the safety response for
+        genuine interpenetration, not this field.
 
         Only pairs where one side is an environment object contribute
         (is_environment_object()) -- self-collision pairs are out of scope
@@ -556,23 +550,20 @@ class URDFArmConfiguration:
                 continue
             if d < 0.0:
                 # Once a pair actually interpenetrates, coal's witness
-                # points are no longer a reliable push-out direction --
-                # confirmed empirically 2026-08-19 live on hardware (a
-                # gripper link embedded in a cylinder obstacle got pushed
-                # *deeper* in, not out) and reproduced offline: as a test
-                # box was driven further into a cylinder, getNearestPoint1()
-                # kept returning a point on the box's FAR side rather than
-                # its near side, flipping the resulting direction, and this
-                # didn't improve with DistanceRequest.enable_signed_distance
-                # either. get_collision_status()'s hard clamp (zero spring
-                # torque, auto-disable, escalate to a full torque disable
-                # after collision_disable_grace_sec) is already the safety
-                # response for actual interpenetration -- skip contributing
-                # a force here rather than trust a direction that can't be
-                # trusted. Saturation at max_force_n for 0 <= d <
-                # danger_threshold (below) is unaffected by this -- that
-                # band is still non-penetrating, where witness points are
-                # reliable.
+                # points are no longer a reliable push-out direction: as a
+                # shape is driven further into another, getNearestPoint1()
+                # can return a point on its FAR side, flipping the
+                # resulting direction to push further in rather than out
+                # (not fixed by DistanceRequest.enable_signed_distance
+                # either). get_collision_status()'s hard clamp (zero
+                # spring torque, auto-disable, escalate to a full torque
+                # disable after collision_disable_grace_sec) is already
+                # the safety response for actual interpenetration -- skip
+                # contributing a force here rather than trust a direction
+                # that can't be trusted. Saturation at max_force_n for
+                # 0 <= d < danger_threshold (below) is unaffected by this
+                # -- that band is still non-penetrating, where witness
+                # points are reliable.
                 continue
 
             if b_is_env:
@@ -617,6 +608,73 @@ class URDFArmConfiguration:
         total_norm = np.linalg.norm(torques)
         if total_norm > max_total_torque_nm > 0.0:
             torques *= max_total_torque_nm / total_norm
+
+        return torques
+
+    def get_joint_limit_repulsion_torques(
+        self, margin_rad: float, max_torque_nm: float,
+    ) -> np.ndarray:
+        """
+        Low-strength per-joint torque field that pushes a joint back toward
+        its center as it nears its own position limit -- a cheap proxy for
+        self-collision risk on this arm, where the links that actually
+        collide are driven by joints 2/4/6 approaching their limits, not
+        by Cartesian proximity of arbitrary link pairs the way
+        get_repulsion_torques() checks.
+
+        Unlike get_repulsion_torques(), this needs no Jacobian or distance
+        query -- it acts directly on each limited joint's own DOF (same
+        "no Jacobian" shape as JointSpring in virtual_spring.py), so it's
+        cheap enough to run every cycle, not throttled.
+
+        Continuous joints (pinocchio nq==2, cos/sin-encoded -- joints 1, 3,
+        5, 7 on this arm) have no position limit and are skipped
+        entirely. Only revolute joints with a finite, non-degenerate
+        [lower, upper] range (joints 2, 4, 6 here, per
+        flat_urdf_files/gen3_kinova_flat.urdf -- read from the URDF rather
+        than hardcoded from Kinova's docs, so it can't drift out of sync
+        with the same model get_gravity_torques()/get_jacobian() already
+        trust) are considered.
+
+        Ramps quadratically from 0 at margin_rad away from a limit to
+        max_torque_nm exactly at (or past) the limit -- same t^2 falloff
+        shape as get_repulsion_torques(), for the same "gentle nudge, not a
+        hard wall" reasoning. Torque direction always points away from
+        whichever limit is closer, toward the joint's center.
+
+        Returns a zero vector if margin_rad or max_torque_nm is <= 0.
+        """
+        torques = np.zeros(self._model.nv)
+        if margin_rad <= 0.0 or max_torque_nm <= 0.0:
+            return torques
+
+        for i in range(self._model.nv):
+            joint = self._model.joints[i + 1]
+            if joint.nq != 1:
+                # Continuous joint -- no position limit to push away from.
+                continue
+            lower = self._model.lowerPositionLimit[joint.idx_q]
+            upper = self._model.upperPositionLimit[joint.idx_q]
+            if not (np.isfinite(lower) and np.isfinite(upper)) or upper <= lower:
+                continue
+
+            angle = self.get_joint_angle(i)
+            dist_to_upper = upper - angle
+            dist_to_lower = angle - lower
+
+            if dist_to_upper < dist_to_lower:
+                if dist_to_upper < margin_rad:
+                    # Clamp to [0, 1] both ends -- dist_to_upper can go
+                    # negative once the angle is actually past the limit,
+                    # which would otherwise push t (and t^2) past 1 and let
+                    # the torque overshoot max_torque_nm instead of
+                    # saturating there.
+                    t = min(1.0, max(0.0, (margin_rad - dist_to_upper) / margin_rad))
+                    torques[i] = -max_torque_nm * t * t
+            else:
+                if dist_to_lower < margin_rad:
+                    t = min(1.0, max(0.0, (margin_rad - dist_to_lower) / margin_rad))
+                    torques[i] = max_torque_nm * t * t
 
         return torques
 
@@ -683,8 +741,8 @@ class URDFArmConfiguration:
         # (the current name for what used to be hpp-fcl) -- the separately
         # installed `hppfcl` package looks API-compatible but is a different,
         # incompatible boost::python type registration and fails at the
-        # GeometryObject constructor. Confirmed empirically: `coal` is what's
-        # actually wired into this pinocchio build.
+        # GeometryObject constructor. `coal` is what's actually wired into
+        # this pinocchio build.
         import coal
 
         if shape == "box":

@@ -2,8 +2,7 @@
 test_repulsion.py
 
 Unit tests for URDFArmConfiguration.get_repulsion_torques() -- the
-low-strength repulsion field around scene collision objects (see the
-"Low-strength repulsion field around collision objects" plan, 2026-08-19).
+low-strength repulsion field around scene collision objects.
 
 Uses two fixtures from test_press_to_pin.py's pattern:
   - simple_2dof_arm.urdf: visual-only, no <collision> elements -- exercises
@@ -152,12 +151,10 @@ def test_saturates_at_max_force_below_danger_threshold():
 
 
 def test_interpenetrating_pairs_contribute_nothing():
-    # Regression test: confirmed live 2026-08-19 that coal's witness points
-    # are not a reliable push-out direction once a pair actually overlaps
-    # (a gripper link embedded in a cylinder obstacle got pushed further
-    # in, not out) -- get_repulsion_torques() now skips any pair with
-    # min_distance < 0 entirely rather than trust that direction. See
-    # get_repulsion_torques's docstring.
+    # Regression test: coal's witness points are not a reliable push-out
+    # direction once a pair actually overlaps -- get_repulsion_torques()
+    # skips any pair with min_distance < 0 entirely rather than trust
+    # that direction. See get_repulsion_torques's docstring.
     arm = make_arm()
     add_object_at_gap(arm, gap=-0.01)  # 1cm overlap
     torques = arm.get_repulsion_torques(CAUTION, MAX_FORCE)

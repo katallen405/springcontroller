@@ -4,27 +4,23 @@ wait_and_enable_torque.py
 
 Only calls the torque-enable service once virtual_spring_node is confirmed
 alive AND actually publishing torques, instead of blindly enabling after a
-fixed delay. Confirmed live 2026-08-07: a bad springs config crashed
-virtual_spring_node on startup before it ever published anything, and
-gen3_spring.launch.py's old timer-based auto-enable fired anyway --
-gen3_torque_control's own watchdog caught the missing torque stream and
-disabled again ~200ms later, but the arm briefly entered torque mode with
-nobody actually commanding it. Given mode-transition windows are exactly
-what's shown to be fault-prone (see kinova_torque_control_node.py's
-_enter_torque_mode fix), that's a real gap worth closing at the source
-rather than relying on the watchdog to clean up after it.
+fixed delay. A bad springs config crashing virtual_spring_node on startup
+before it ever published anything, combined with a timer-based auto-enable
+firing anyway, would otherwise briefly put the arm into torque mode with
+nobody actually commanding it before gen3_torque_control's own watchdog
+catches the missing torque stream and disables it again. Mode-transition
+windows are exactly what's fault-prone here, so this closes the gap at
+the source rather than relying on the watchdog to clean up after it.
 
 Also refuses to enable (unless --allow-danger-enable) if
 virtual_spring_node's ~/safety_status reports the resting pose is already
-inside danger_threshold or in outright collision. Added 2026-08-13 after a
-live test that deliberately started near-collision: the self-collision
-scale_factor oscillating right at the danger boundary produces jerky
-commanded torque, which is what's been tripping the Kinova's own
-actuator-level current/following-error protection (Joint 2 on 2026-08-07,
-Joint 4 on 2026-08-13) -- not a bug in the clamp logic, the clamp reacting
-correctly to an already-marginal starting pose. Enabling from that pose was
-previously silent; now it's a deliberate, loud, opt-in choice instead of
-something that just happens to work most of the time.
+inside danger_threshold or in outright collision. Enabling from an
+already-marginal starting pose lets the self-collision scale_factor
+oscillate right at the danger boundary, producing jerky commanded torque
+that can trip the Kinova's own actuator-level current/following-error
+protection -- not a bug in the clamp logic, the clamp reacting correctly
+to an already-marginal starting pose. That's a deliberate, loud, opt-in
+choice rather than something that just happens to work most of the time.
 
 Usage:
   wait_and_enable_torque.py TORQUE_CONTROL_SERVICE TORQUE_TOPIC SAFETY_STATUS_TOPIC
