@@ -1,0 +1,141 @@
+=== Descriptive statistics by condition ===
+
+-- fluency --
+           count  mean  median   std
+condition                           
+KT            24  2.96     3.0  0.95
+Position      24  3.54     4.0  0.78
+Pose          24  3.83     4.0  0.82
+
+-- adapts --
+           count  mean  median   std
+condition                           
+KT            24  2.93    2.75  1.04
+Position      24  3.50    3.50  0.97
+Pose          24  3.83    3.75  0.82
+
+-- helpfulness --
+           count  mean  median   std
+condition                           
+KT            24  3.49    3.62  0.77
+Position      24  3.60    3.38  1.00
+Pose          24  4.08    4.25  0.83
+
+=== Descriptive statistics by trial order (1st/2nd/3rd seen, regardless of condition) ===
+
+-- fluency --
+       count  mean  median   std
+order                           
+1         24  3.50     4.0  0.88
+2         24  3.46     4.0  0.83
+3         24  3.38     3.5  1.06
+
+-- adapts --
+       count  mean  median   std
+order                           
+1         24  3.55    3.50  0.94
+2         24  3.16    3.38  1.13
+3         24  3.55    3.62  0.94
+
+-- helpfulness --
+       count  mean  median   std
+order                           
+1         24  3.98    3.75  0.67
+2         24  3.64    3.62  0.93
+3         24  3.56    3.62  1.04
+
+=== Repeated-measures comparisons across KT / Position / Pose (condition only, order ignored) ===
+
+-- fluency: Friedman test (n=24 complete participants) --
+Friedman chi-square = 12.507, p = 0.0019
+  Wilcoxon KT vs Position: p = 0.0326 (Holm-corrected: 0.0652)
+  Wilcoxon KT vs Pose: p = 0.0033 (Holm-corrected: 0.0099)
+  Wilcoxon Position vs Pose: p = 0.2356 (Holm-corrected: 0.2356)
+
+-- fluency: Repeated-measures ANOVA (n=24 complete participants) --
+                 Anova
+=======================================
+          F Value Num DF  Den DF Pr > F
+---------------------------------------
+condition  7.0375 2.0000 46.0000 0.0022
+=======================================
+
+  Paired t-test KT vs Position: p = 0.0274 (Holm-corrected: 0.0547)
+  Paired t-test KT vs Pose: p = 0.0011 (Holm-corrected: 0.0034)
+  Paired t-test Position vs Pose: p = 0.2156 (Holm-corrected: 0.2156)
+
+-- adapts: Friedman test (n=24 complete participants) --
+Friedman chi-square = 9.461, p = 0.0088
+  Wilcoxon KT vs Position: p = 0.0329 (Holm-corrected: 0.0657)
+  Wilcoxon KT vs Pose: p = 0.0016 (Holm-corrected: 0.0048)
+  Wilcoxon Position vs Pose: p = 0.0811 (Holm-corrected: 0.0811)
+
+-- adapts: Repeated-measures ANOVA (n=24 complete participants) --
+                 Anova
+=======================================
+          F Value Num DF  Den DF Pr > F
+---------------------------------------
+condition  8.1752 2.0000 46.0000 0.0009
+=======================================
+
+  Paired t-test KT vs Position: p = 0.0335 (Holm-corrected: 0.0670)
+  Paired t-test KT vs Pose: p = 0.0011 (Holm-corrected: 0.0034)
+  Paired t-test Position vs Pose: p = 0.0698 (Holm-corrected: 0.0698)
+
+-- helpfulness: Friedman test (n=24 complete participants) --
+Friedman chi-square = 6.675, p = 0.0355
+  Wilcoxon KT vs Position: p = 0.6378 (Holm-corrected: 0.6378)
+  Wilcoxon KT vs Pose: p = 0.0053 (Holm-corrected: 0.0159)
+  Wilcoxon Position vs Pose: p = 0.0233 (Holm-corrected: 0.0465)
+
+-- helpfulness: Repeated-measures ANOVA (n=24 complete participants) --
+                 Anova
+=======================================
+          F Value Num DF  Den DF Pr > F
+---------------------------------------
+condition  4.6222 2.0000 46.0000 0.0148
+=======================================
+
+  Paired t-test KT vs Position: p = 0.6486 (Holm-corrected: 0.6486)
+  Paired t-test KT vs Pose: p = 0.0056 (Holm-corrected: 0.0168)
+  Paired t-test Position vs Pose: p = 0.0103 (Holm-corrected: 0.0206)
+
+=== Controlling for order (mixed model) ===
+
+-- fluency: mixed model controlling for condition and order (n=72 block ratings, 24 participants) --
+/home/katallen/sandbox/src/springcontroller/analysis/analyze.py:247: ConvergenceWarning: The MLE may be on the boundary of the parameter space.
+  groups=sub["participant_id"]).fit(reml=False)
+                           Coef. Std.Err.       z  P>|z|  [0.025 0.975]
+Intercept                  3.014    0.217  13.921  0.000   2.590  3.438
+C(condition)[T.Position]   0.583    0.232   2.517  0.012   0.129  1.038
+C(condition)[T.Pose]       0.875    0.232   3.775  0.000   0.421  1.329
+C(order)[T.2]             -0.042    0.232  -0.180  0.857  -0.496  0.413
+C(order)[T.3]             -0.125    0.232  -0.539  0.590  -0.579  0.329
+Group Var                  0.051    0.117                              
+
+  Condition effect (controlling for order): LR chi-square = 12.910, df = 2, p = 0.0016
+  Order effect (controlling for condition): LR chi-square = 0.301, df = 2, p = 0.8604
+
+-- adapts: mixed model controlling for condition and order (n=72 block ratings, 24 participants) --
+                           Coef. Std.Err.       z  P>|z|  [0.025 0.975]
+Intercept                  3.059    0.223  13.732  0.000   2.622  3.496
+C(condition)[T.Position]   0.573    0.212   2.704  0.007   0.158  0.988
+C(condition)[T.Pose]       0.906    0.212   4.277  0.000   0.491  1.322
+C(order)[T.2]             -0.396    0.212  -1.868  0.062  -0.811  0.020
+C(order)[T.3]              0.000    0.212   0.000  1.000  -0.415  0.415
+Group Var                  0.293    0.228                              
+
+  Condition effect (controlling for order): LR chi-square = 15.803, df = 2, p = 0.0004
+  Order effect (controlling for condition): LR chi-square = 4.440, df = 2, p = 0.1086
+
+-- helpfulness: mixed model controlling for condition and order (n=72 block ratings, 24 participants) --
+                           Coef. Std.Err.       z  P>|z|  [0.025  0.975]
+Intercept                  3.743    0.203  18.408  0.000   3.345   4.142
+C(condition)[T.Position]   0.115    0.192   0.596  0.551  -0.262   0.492
+C(condition)[T.Pose]       0.594    0.192   3.086  0.002   0.217   0.971
+C(order)[T.2]             -0.344    0.192  -1.787  0.074  -0.721   0.033
+C(order)[T.3]             -0.417    0.192  -2.166  0.030  -0.794  -0.040
+Group Var                  0.252    0.212                               
+
+  Condition effect (controlling for order): LR chi-square = 9.677, df = 2, p = 0.0079
+  Order effect (controlling for condition): LR chi-square = 5.073, df = 2, p = 0.0791
