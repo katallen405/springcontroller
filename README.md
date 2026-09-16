@@ -147,6 +147,36 @@ percentages) next to the input files by default (override with
 an outlier condition here, to get those and to spot-check it against its
 overlay video.
 
+## Testing condition differences (repeated-measures ANOVA)
+
+```bash
+python3 anova_conditions.py <path/to/directory/of/posture/csvs>
+```
+
+The study is within-subjects -- every participant did all three conditions,
+each on two sides -- so `condition_comparison_summary.csv`'s one pooled row
+per condition (all participants merged) has no within-group variance and
+can't be fed to an ANOVA. `anova_conditions.py` instead builds one row per
+**(participant, condition)** -- a participant's two sides combined into a
+single pooled frame count for that condition (per-frame, not an average of
+two percentages) -- and runs a one-way repeated-measures ANOVA (condition
+as the within-subject factor, participant as the subject) on each zone
+percentage, via [pingouin](https://pingouin-stats.org/)'s `rm_anova`
+(reports Greenhouse-Geisser-corrected p-values automatically when
+Mauchly's test finds sphericity is violated).
+
+Writes the per-participant-per-condition table to
+`anova_participant_condition_table.csv` next to the input files (override
+with `--out-table`) before running the ANOVA, so the numbers behind each
+test are auditable on their own. Warns if the design isn't fully balanced
+(some participant missing a condition) -- pingouin drops incomplete
+participants from that metric's test rather than erroring, so a warning
+here is the only sign that happened.
+
+Requires `pingouin` and `pandas`, which aren't part of the base
+`~/.posture_venv` setup below -- `pip install pingouin pandas` into it
+once (confirmed compatible with the venv's pinned `numpy<2`).
+
 ## Two cameras for different things
 
 The rig has two cameras at opposite corners of the table, and they turned

@@ -69,6 +69,14 @@ def extract_condition(csv_path):
     return stem
 
 
+def extract_participant(csv_path):
+    """'p10_position_side1_trialonly.csv' -> 'p10'."""
+    match = re.match(r"^(p\d+)_", csv_path.stem)
+    if not match:
+        raise ValueError(f"{csv_path.name}: filename doesn't start with a p<N>_ participant prefix")
+    return match.group(1)
+
+
 def condition_sort_key(condition):
     for i, preferred in enumerate(PREFERRED_CONDITION_ORDER):
         if preferred.lower() == condition.lower():
