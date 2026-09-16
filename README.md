@@ -228,6 +228,15 @@ sides' `Total Adjustment Time` per condition (one row per
 Holm-corrected post-hoc procedure as `anova_conditions.py` (see above) on
 `total_adjustment_time_sec`.
 
+`--latex` also writes a `booktabs`-style LaTeX table of the omnibus result
+(and of the post-hoc comparisons, if they ran) to
+`adjustment_time_anova.tex` next to the input CSV (override with
+`--latex-out`) -- needs `\usepackage{booktabs}` in the paper's preamble for
+`\toprule`/`\midrule`/`\bottomrule`. The table-building functions
+(`stats_helpers.rm_anova_to_latex`/`posthoc_to_latex`) work on any
+`rm_anova_with_posthoc` result, so the same `--latex` flag would be a small
+addition to `anova_conditions.py` too, if needed later.
+
 `plot_adjustment_time.py` plots that same per-(Participant, Condition)
 table (via `anova_adjustment_time.py`'s
 `build_participant_condition_table`) as one horizontal bar per condition

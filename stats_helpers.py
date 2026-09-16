@@ -27,6 +27,51 @@ def rm_anova_with_posthoc(df, dv, within, subject, alpha=0.05, posthoc_padjust="
     return result, posthoc
 
 
+def rm_anova_to_latex(anova_result, caption, label):
+    """One-row LaTeX table (booktabs) for an rm_anova() result's omnibus
+    effect: F, df1, df2, and p (Greenhouse-Geisser-corrected if rm_anova
+    found sphericity violated, else uncorrected)."""
+    effect, error = anova_result.iloc[0], anova_result.iloc[1]
+    uses_gg = "p_GG_corr" in anova_result.columns
+    p = effect["p_GG_corr"] if uses_gg else effect["p_unc"]
+    p_header = r"$p_{GG}$" if uses_gg else r"$p$"
+    return "\n".join([
+        r"\begin{table}[h]",
+        r"\centering",
+        rf"\caption{{{caption}}}",
+        rf"\label{{{label}}}",
+        r"\begin{tabular}{lrrrr}",
+        r"\toprule",
+        rf"Source & $F$ & $df_1$ & $df_2$ & {p_header} \\",
+        r"\midrule",
+        rf"{effect['Source']} & {effect['F']:.2f} & {int(effect['DF'])} & {int(error['DF'])} & {p:.3f} \\",
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ])
+
+
+def posthoc_to_latex(posthoc_result, caption, label):
+    """LaTeX table (booktabs) for a pairwise_tests() result: one row per
+    condition-pair contrast."""
+    lines = [
+        r"\begin{table}[h]",
+        r"\centering",
+        rf"\caption{{{caption}}}",
+        rf"\label{{{label}}}",
+        r"\begin{tabular}{llrrrr}",
+        r"\toprule",
+        r"A & B & $T$ & $p$ (unc.) & $p$ (Holm) & Hedges' $g$ \\",
+        r"\midrule",
+    ]
+    for _, row in posthoc_result.iterrows():
+        lines.append(
+            rf"{row['A']} & {row['B']} & {row['T']:.2f} & {row['p_unc']:.3f} & {row['p_corr']:.3f} & {row['hedges']:.2f} \\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    return "\n".join(lines)
+
+
 def warn_if_unbalanced(df, condition_col, participant_col):
     """Prints a warning if some participant is missing a condition -- pingouin
     drops incomplete participants from that metric's test rather than
