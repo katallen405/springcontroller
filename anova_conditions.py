@@ -9,7 +9,9 @@ ANOVA. This script instead builds one row per (participant, condition) --
 combining a participant's two sides into a single pooled frame count for
 that condition, per-frame (not averaging the two sides' percentages) -- and
 runs a one-way repeated-measures ANOVA (condition as the within-subject
-factor, participant as the subject) on each zone percentage.
+factor, participant as the subject) on each zone percentage, then Holm-
+corrected post-hoc pairwise comparisons (paired t-tests) for any metric
+whose omnibus ANOVA comes back significant.
 
 Per-frame classification reuses classify_ergonomics.py's classify_row (via
 compare_conditions.py's classify_session_counts), so zones here match
@@ -75,6 +77,11 @@ def main():
         help="per-participant-per-condition table used as ANOVA input "
         "(default: <directory>/anova_participant_condition_table.csv)",
     )
+    ap.add_argument(
+        "--alpha", type=float, default=0.05,
+        help="significance threshold for running post-hoc pairwise comparisons "
+        "after a metric's omnibus ANOVA (default: 0.05)",
+    )
     args = ap.parse_args()
 
     directory = Path(args.directory)
@@ -109,6 +116,15 @@ def main():
         print(f"=== {metric_col} ===")
         result = pg.rm_anova(data=df, dv=metric_col, within="condition", subject="participant", detailed=True)
         print(result.to_string(index=False))
+
+        omnibus = result.iloc[0]
+        # rm_anova only adds p_GG_corr when Mauchly's test finds sphericity
+        # violated; that's the p-value to trust in that case, not p_unc.
+        omnibus_p = omnibus["p_GG_corr"] if "p_GG_corr" in result.columns else omnibus["p_unc"]
+        if omnibus_p < args.alpha:
+            print(f"\nomnibus p={omnibus_p:.4f} < alpha={args.alpha} -- post-hoc pairwise comparisons (Holm-corrected):")
+            posthoc = pg.pairwise_tests(data=df, dv=metric_col, within="condition", subject="participant", padjust="holm")
+            print(posthoc.to_string(index=False))
         print()
 
 

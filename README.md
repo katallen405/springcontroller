@@ -165,6 +165,13 @@ percentage, via [pingouin](https://pingouin-stats.org/)'s `rm_anova`
 (reports Greenhouse-Geisser-corrected p-values automatically when
 Mauchly's test finds sphericity is violated).
 
+Whenever a metric's omnibus ANOVA is significant (`p_GG_corr` if sphericity
+was violated, else `p_unc`, against `--alpha`, default 0.05),
+`anova_conditions.py` automatically follows it with Holm-corrected post-hoc
+pairwise comparisons (paired t-tests between each pair of conditions) via
+pingouin's `pairwise_tests` -- skipped for any metric whose omnibus test
+isn't significant, so it isn't fishing across untested pairs.
+
 Writes the per-participant-per-condition table to
 `anova_participant_condition_table.csv` next to the input files (override
 with `--out-table`) before running the ANOVA, so the numbers behind each
