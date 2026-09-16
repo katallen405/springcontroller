@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Batch-classify a directory of *_posture.csv files (extract_posture.py
-output, one per participant/condition/etc.) and plot their time-in-zone
-exposure side by side.
+"""Batch-classify a directory of per-session posture CSVs (extract_posture.py
+output, or a trial-cropped *_trialonly.csv derived from it -- same columns
+either way, one file per participant/condition/etc.) and plot their
+time-in-zone exposure side by side.
 
 This reuses classify_ergonomics.py's own per-session classification
 (load_posture_rows/shoulder_fallback_thresholds/summarize) rather than
@@ -33,9 +34,15 @@ CATEGORY_COLORS = {
 }
 
 
+SESSION_LABEL_SUFFIXES = ("_trialonly", "_posture")
+
+
 def session_label(csv_path):
     stem = csv_path.stem
-    return stem[: -len("_posture")] if stem.endswith("_posture") else stem
+    for suffix in SESSION_LABEL_SUFFIXES:
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
 
 
 def classify_session(csv_path, hunch_thresh_deg, lean_thresh_deg, shoulder_percentile, gap_tolerance, sustained_seconds):
@@ -79,8 +86,12 @@ def plot_comparison(sessions, summaries, out_path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("directory", help="directory containing *_posture.csv files")
-    ap.add_argument("--pattern", default="*_posture.csv", help="glob pattern for input files (default: *_posture.csv)")
+    ap.add_argument("directory", help="directory containing per-session posture CSVs")
+    ap.add_argument(
+        "--pattern", default="*_trialonly.csv",
+        help="glob pattern for input files (default: *_trialonly.csv; pass "
+        "'*_posture.csv' for uncropped whole-session files instead)",
+    )
     ap.add_argument("--hunch-threshold-deg", type=float, default=20.0)
     ap.add_argument("--lean-threshold-deg", type=float, default=15.0)
     ap.add_argument("--shoulder-percentile", type=float, default=75.0)

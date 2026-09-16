@@ -108,17 +108,19 @@ to compare against.
 
 ```bash
 python3 compare_sessions.py <path/to/directory/of/posture/csvs> \
-  [--pattern '*_position_posture.csv']
+  [--pattern '*_position_side1_trialonly.csv']
 ```
 
 `compare_sessions.py` batch-runs `classify_ergonomics.py`'s own per-session
 classification (same thresholds, same session-relative shoulder-fallback
 percentiles -- just computed once per file instead of once) over every
-`*_posture.csv` in a directory, then plots a grouped bar chart of
+matching file in a directory, then plots a grouped bar chart of
 hunch/lean/neutral/unclassified time side by side across sessions, one
-group per file. `--pattern` narrows to one condition, e.g.
-`*_position_posture.csv` for just the `position` condition in a directory
-that also has `*_KT_posture.csv` and `*_pose_posture.csv`.
+group per file. Default `--pattern` is `*_trialonly.csv` (trial-cropped
+sessions); pass `--pattern '*_posture.csv'` instead for uncropped
+whole-session files. Either way, `--pattern` can also narrow to one
+condition/side, e.g. `*_position_side1_trialonly.csv` for just the
+`position` condition's first side.
 
 As with the single-session summary, `hunch`/`lean`/`neutral` are % of that
 session's *classified* time and `unclassified` is % of *wall-clock* time --
