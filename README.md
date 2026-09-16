@@ -14,7 +14,7 @@ python3 extract_posture.py <path/to/bag_dir> --out-video <out>.mp4
 python3 classify_ergonomics.py <path/to/bag_dir>_posture.csv
 python3 plot_posture.py <path/to/bag_dir>_posture.csv \
   --episodes-csv <path/to/bag_dir>_posture_episodes.csv
-python3 compare_sessions.py <path/to/directory/of/posture/csvs>
+python3 compare_conditions.py <path/to/directory/of/posture/csvs>
 ```
 
 ## Usage
@@ -104,38 +104,48 @@ it.** The default thresholds are starting points, not validated for this
 rig -- revisit them once there's a session with a human-rated ground truth
 to compare against.
 
-## Comparing exposure across sessions
+## Comparing exposure across conditions
 
 ```bash
-python3 compare_sessions.py <path/to/directory/of/posture/csvs> \
-  [--pattern '*_position_side1_trialonly.csv']
+python3 compare_conditions.py <path/to/directory/of/posture/csvs>
 ```
 
-`compare_sessions.py` batch-runs `classify_ergonomics.py`'s own per-session
-classification (same thresholds, same session-relative shoulder-fallback
-percentiles -- just computed once per file instead of once) over every
-matching file in a directory, then plots a grouped bar chart of
-hunch/lean/neutral/unclassified time side by side across sessions, one
-group per file. Default `--pattern` is `*_trialonly.csv` (trial-cropped
-sessions); pass `--pattern '*_posture.csv'` instead for uncropped
-whole-session files. Either way, `--pattern` can also narrow to one
-condition/side, e.g. `*_position_side1_trialonly.csv` for just the
-`position` condition's first side.
+`compare_conditions.py` pools every matching file in a directory by
+condition (parsed from each filename, e.g. `KT`/`pose`/`position` out of
+`p10_position_side1_trialonly.csv`) and plots one horizontal stacked bar
+per condition -- all that condition's sessions combined, `hunch` / `lean` /
+`hunch+lean` / `neutral` / `unclassified` as % of that condition's total
+pooled frames (so each bar sums to 100%). It classifies each frame with
+`classify_ergonomics.py`'s own `classify_row`, so a frame's zone here
+always matches what `classify_ergonomics.py <that_session>_posture.csv`
+would call it -- each session's shoulder-fallback percentile is still
+computed from that session alone (session-relative, per
+classify_ergonomics.py's design) before its frames get pooled into the
+condition's row. This is a per-frame average, not a per-session one -- a
+condition with more or longer sessions carries proportionally more weight.
 
-As with the single-session summary, `hunch`/`lean`/`neutral` are % of that
-session's *classified* time and `unclassified` is % of *wall-clock* time --
-different denominators, plotted together for comparison but not meant to be
-read as parts of one 100% bar. A session with an unusually short
-green/red/purple bar and a tall gray one just has poor coverage, not
-necessarily good posture -- check `pct_unclassified_of_wallclock` in the
-output CSV before drawing conclusions from it.
+Default `--pattern` is `*_trialonly.csv` (trial-cropped sessions); pass
+`--pattern '*_posture.csv'` instead for uncropped whole-session files.
+`--pattern` can also narrow further, e.g. `*_side1_trialonly.csv` for just
+the first side across all conditions.
 
-Writes `exposure_comparison.png` and `exposure_comparison_summary.csv`
-(one row per session) next to the input files by default (override with
+Bar colors are SmartPlayground's categorical palette
+(`~/Dropbox/Research/SmartPlayground/VideoDataAnalysis/plot_infographic.py`),
+reassigned low-to-high severity (`neutral` -> `lean` -> `hunch` ->
+`hunch+lean`); `unclassified` stays a neutral gray since it isn't a posture
+zone at all (no signal, not "good posture") and borrowing one of the four
+zone hues for it would visually imply otherwise. Condition row order
+mirrors `CONDITIONS` in
+`~/sandbox/src/springcontroller/analysis/plot_conditions.py`.
+
+Writes `condition_comparison.png` and `condition_comparison_summary.csv`
+(one row per condition, with `n_sessions`/`n_frames` alongside the
+percentages) next to the input files by default (override with
 `--out`/`--out-csv`). It does not write each session's own
 `*_zones.csv`/`*_episodes.csv`/`*_ergo_summary.csv` -- run
-`classify_ergonomics.py` directly on a session that looks like an outlier
-here to get those, and to spot-check it against its overlay video.
+`classify_ergonomics.py` directly on a session that looks like it's driving
+an outlier condition here, to get those and to spot-check it against its
+overlay video.
 
 ## Two cameras for different things
 
