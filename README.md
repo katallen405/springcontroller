@@ -186,14 +186,22 @@ test are auditable on their own. Warns if the design isn't fully balanced
 participants from that metric's test rather than erroring, so a warning
 here is the only sign that happened.
 
+`--latex` writes a `booktabs`-style LaTeX table of each metric's omnibus
+result (plus its post-hoc comparisons, if they ran) to
+`anova_conditions.tex` next to the input files (override with
+`--latex-out`) -- one table pair per metric, labeled `tab:anova-<metric>`/
+`tab:posthoc-<metric>` so they don't collide in the paper. Needs
+`\usepackage{booktabs}` in the preamble.
+
 Requires `pingouin` and `pandas`, which aren't part of the base
 `~/.posture_venv` setup below -- `pip install pingouin pandas` into it
 once (confirmed compatible with the venv's pinned `numpy<2`).
 
-`stats_helpers.py`'s `rm_anova_with_posthoc`/`warn_if_unbalanced` hold the
-RM-ANOVA-plus-post-hoc and balance-check logic shared with
-`anova_adjustment_time.py` below, so both scripts run the identical
-statistical procedure on different per-participant-per-condition tables.
+`stats_helpers.py`'s `rm_anova_with_posthoc`/`warn_if_unbalanced`/
+`rm_anova_to_latex`/`posthoc_to_latex` hold the RM-ANOVA-plus-post-hoc,
+balance-check, and LaTeX-table logic shared with `anova_adjustment_time.py`
+below, so both scripts run the identical statistical procedure (and LaTeX
+format) on different per-participant-per-condition tables.
 
 ## Adjustment time by condition
 
@@ -232,10 +240,8 @@ Holm-corrected post-hoc procedure as `anova_conditions.py` (see above) on
 (and of the post-hoc comparisons, if they ran) to
 `adjustment_time_anova.tex` next to the input CSV (override with
 `--latex-out`) -- needs `\usepackage{booktabs}` in the paper's preamble for
-`\toprule`/`\midrule`/`\bottomrule`. The table-building functions
-(`stats_helpers.rm_anova_to_latex`/`posthoc_to_latex`) work on any
-`rm_anova_with_posthoc` result, so the same `--latex` flag would be a small
-addition to `anova_conditions.py` too, if needed later.
+`\toprule`/`\midrule`/`\bottomrule`. Same `stats_helpers.py` table-building
+functions as `anova_conditions.py`'s `--latex` (see above).
 
 `plot_adjustment_time.py` plots that same per-(Participant, Condition)
 table (via `anova_adjustment_time.py`'s

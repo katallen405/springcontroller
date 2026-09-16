@@ -18,6 +18,10 @@ compare_conditions.py's classify_session_counts), so zones here match
 classify_ergonomics.py exactly; each session's shoulder-fallback percentile
 is still computed session-relative, before its frames get pooled.
 
+Pass --latex to also write a LaTeX (booktabs) table of each metric's
+omnibus result, and of its post-hoc comparisons if they ran, for dropping
+into a paper.
+
 Requires pingouin + pandas (not part of the base posture_analysis venv
 setup in the README -- pip install pingouin pandas).
 """
@@ -29,7 +33,7 @@ import pandas as pd
 
 from classify_ergonomics import ZONE_BOTH, ZONE_HUNCH, ZONE_LEAN, ZONE_NEUTRAL
 from compare_conditions import CATEGORIES, UNCLASSIFIED, classify_session_counts, extract_condition, extract_participant
-from stats_helpers import rm_anova_with_posthoc, warn_if_unbalanced
+from stats_helpers import posthoc_to_latex, rm_anova_to_latex, rm_anova_with_posthoc, warn_if_unbalanced
 
 METRIC_COLUMNS = {
     ZONE_NEUTRAL: "pct_neutral",
@@ -82,6 +86,11 @@ def main():
         help="significance threshold for running post-hoc pairwise comparisons "
         "after a metric's omnibus ANOVA (default: 0.05)",
     )
+    ap.add_argument("--latex", action="store_true", help="also write a LaTeX table of each metric's results")
+    ap.add_argument(
+        "--latex-out", default=None,
+        help="LaTeX output path (default: <directory>/anova_conditions.tex)",
+    )
     args = ap.parse_args()
 
     directory = Path(args.directory)
@@ -105,10 +114,30 @@ def main():
     n_participants = df["participant"].nunique()
     print(f"\n{n_participants} participants x {df['condition'].nunique()} conditions\n")
 
+    latex_tables = []
     for metric_col in list(METRIC_COLUMNS.values()) + ["pct_unclassified"]:
         print(f"=== {metric_col} ===")
-        rm_anova_with_posthoc(df, dv=metric_col, within="condition", subject="participant", alpha=args.alpha)
+        anova_result, posthoc_result = rm_anova_with_posthoc(df, dv=metric_col, within="condition", subject="participant", alpha=args.alpha)
         print()
+
+        if args.latex:
+            metric_label = metric_col.replace("_", "-")
+            latex_tables.append(rm_anova_to_latex(
+                anova_result,
+                caption=f"Repeated-measures ANOVA of {metric_col} by condition",
+                label=f"tab:anova-{metric_label}",
+            ))
+            if posthoc_result is not None:
+                latex_tables.append(posthoc_to_latex(
+                    posthoc_result,
+                    caption=f"Post-hoc pairwise comparisons of {metric_col} (Holm-corrected)",
+                    label=f"tab:posthoc-{metric_label}",
+                ))
+
+    if args.latex:
+        latex_out = Path(args.latex_out) if args.latex_out else directory / "anova_conditions.tex"
+        latex_out.write_text("\n\n".join(latex_tables) + "\n")
+        print(f"wrote {latex_out}")
 
 
 if __name__ == "__main__":
