@@ -26,10 +26,10 @@ from collections import Counter
 from pathlib import Path
 
 import pandas as pd
-import pingouin as pg
 
 from classify_ergonomics import ZONE_BOTH, ZONE_HUNCH, ZONE_LEAN, ZONE_NEUTRAL
 from compare_conditions import CATEGORIES, UNCLASSIFIED, classify_session_counts, extract_condition, extract_participant
+from stats_helpers import rm_anova_with_posthoc, warn_if_unbalanced
 
 METRIC_COLUMNS = {
     ZONE_NEUTRAL: "pct_neutral",
@@ -100,31 +100,14 @@ def main():
     if skipped:
         print(f"{len(skipped)} file(s) skipped (empty): {', '.join(skipped)}")
 
-    counts_per_condition = df.groupby("condition")["participant"].nunique()
-    n_participants = df["participant"].nunique()
-    unbalanced = counts_per_condition[counts_per_condition != n_participants]
-    if not unbalanced.empty:
-        print(
-            f"WARNING: unbalanced design -- {n_participants} participant(s) total, but "
-            f"{dict(unbalanced)} condition(s) don't have all of them. "
-            "pingouin's rm_anova will drop incomplete participants."
-        )
+    warn_if_unbalanced(df, "condition", "participant")
 
+    n_participants = df["participant"].nunique()
     print(f"\n{n_participants} participants x {df['condition'].nunique()} conditions\n")
 
     for metric_col in list(METRIC_COLUMNS.values()) + ["pct_unclassified"]:
         print(f"=== {metric_col} ===")
-        result = pg.rm_anova(data=df, dv=metric_col, within="condition", subject="participant", detailed=True)
-        print(result.to_string(index=False))
-
-        omnibus = result.iloc[0]
-        # rm_anova only adds p_GG_corr when Mauchly's test finds sphericity
-        # violated; that's the p-value to trust in that case, not p_unc.
-        omnibus_p = omnibus["p_GG_corr"] if "p_GG_corr" in result.columns else omnibus["p_unc"]
-        if omnibus_p < args.alpha:
-            print(f"\nomnibus p={omnibus_p:.4f} < alpha={args.alpha} -- post-hoc pairwise comparisons (Holm-corrected):")
-            posthoc = pg.pairwise_tests(data=df, dv=metric_col, within="condition", subject="participant", padjust="holm")
-            print(posthoc.to_string(index=False))
+        rm_anova_with_posthoc(df, dv=metric_col, within="condition", subject="participant", alpha=args.alpha)
         print()
 
 

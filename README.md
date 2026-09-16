@@ -15,6 +15,7 @@ python3 classify_ergonomics.py <path/to/bag_dir>_posture.csv
 python3 plot_posture.py <path/to/bag_dir>_posture.csv \
   --episodes-csv <path/to/bag_dir>_posture_episodes.csv
 python3 compare_conditions.py <path/to/directory/of/posture/csvs>
+python3 adjustment_times.py <path/to/directory/of/corrected/event/logs>
 ```
 
 ## Usage
@@ -129,6 +130,11 @@ Default `--pattern` is `*_trialonly.csv` (trial-cropped sessions); pass
 `--pattern` can also narrow further, e.g. `*_side1_trialonly.csv` for just
 the first side across all conditions.
 
+`--no-title` drops the chart title and `--font-scale` (default 1.0)
+multiplies every text element's size, for a figure headed into a paper
+(e.g. `--no-title --font-scale 2` for a small full-column figure with its
+own caption).
+
 Bar colors are SmartPlayground's categorical palette
 (`~/Dropbox/Research/SmartPlayground/VideoDataAnalysis/plot_infographic.py`),
 reassigned low-to-high severity (`neutral` -> `lean` -> `hunch` ->
@@ -183,6 +189,59 @@ here is the only sign that happened.
 Requires `pingouin` and `pandas`, which aren't part of the base
 `~/.posture_venv` setup below -- `pip install pingouin pandas` into it
 once (confirmed compatible with the venv's pinned `numpy<2`).
+
+`stats_helpers.py`'s `rm_anova_with_posthoc`/`warn_if_unbalanced` hold the
+RM-ANOVA-plus-post-hoc and balance-check logic shared with
+`anova_adjustment_time.py` below, so both scripts run the identical
+statistical procedure on different per-participant-per-condition tables.
+
+## Adjustment time by condition
+
+```bash
+python3 adjustment_times.py <path/to/directory/of/corrected/event/logs>
+python3 anova_adjustment_time.py <path/to/directory>/adjustment_times.csv
+python3 plot_adjustment_time.py <path/to/directory>/adjustment_times.csv
+```
+
+`adjustment_times.py` reads `fix_event_logs.py`'s
+`event_log_<N>_corrected.csv` files and pairs each `Adjustment
+start`/`Adjustment end` event by its combined condition field (e.g. `KT
+side 1`) into one row per (Participant, Condition, Side): `Adjustment
+Start`, `Adjustment End`, `Total Adjustment Time` (seconds). Duplicate
+start/end rows for the same slot -- `fix_event_logs.py`'s own corrections
+report documents ~32 of these across the 24 logs, kept rather than deleted
+during that correction pass -- are resolved the same way
+`classify_ergonomics.py`'s `load_trials()` resolves duplicate Trial
+start/end rows: a new start overwrites any still-unresolved pending start
+for that slot (latest start wins), and the first end seen after that
+closes it. Every duplicate, orphaned start/end, blank timestamp, or an end
+that lands at/before its start gets printed as a warning and excluded from
+the output, rather than silently corrupting a duration -- always check
+those warnings after re-running against a freshly corrected log; a
+slot with no valid pair usually means the video still needs watching to
+fill in a genuinely missing `Adjustment end` (or `start`), not just a
+timestamp typo.
+
+`anova_adjustment_time.py` takes that CSV, sums each participant's two
+sides' `Total Adjustment Time` per condition (one row per
+(Participant, Condition)), and runs the same repeated-measures ANOVA +
+Holm-corrected post-hoc procedure as `anova_conditions.py` (see above) on
+`total_adjustment_time_sec`.
+
+`plot_adjustment_time.py` plots that same per-(Participant, Condition)
+table (via `anova_adjustment_time.py`'s
+`build_participant_condition_table`) as one horizontal bar per condition
+-- mean total adjustment time, SEM as an error bar, each participant's own
+value overlaid as a jittered point so the spread/outliers behind the mean
+stay visible. Unlike `compare_conditions.py`'s stacked bars (a percentage
+breakdown that sums to 100%), this is a single continuous measure per
+condition, so bar colors and condition order instead mirror
+`CONDITION_COLORS`/`CONDITIONS` in
+`~/sandbox/src/springcontroller/analysis/plot_conditions.py` (Okabe-Ito,
+one color per condition), which already compares KT/Position/Pose for this
+same study. Takes the same `--no-title`/`--font-scale` flags as
+`compare_conditions.py`, and writes `adjustment_time_comparison.png` next
+to the input CSV by default (override with `--out`).
 
 ## Two cameras for different things
 

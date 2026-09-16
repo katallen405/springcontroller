@@ -98,7 +98,8 @@ def classify_session_counts(csv_path, hunch_thresh_deg, lean_thresh_deg, shoulde
     return counts
 
 
-def plot_condition_comparison(conditions, pct_by_condition, out_path):
+def plot_condition_comparison(conditions, pct_by_condition, out_path, title=True, font_scale=1.0):
+    base_fontsize = plt.rcParams["font.size"] * font_scale
     fig, ax = plt.subplots(figsize=(10, 0.9 * len(conditions) + 1.5))
     y = list(range(len(conditions)))
     left = [0.0] * len(conditions)
@@ -108,14 +109,16 @@ def plot_condition_comparison(conditions, pct_by_condition, out_path):
         left = [l + v for l, v in zip(left, vals)]
 
     ax.set_yticks(y)
-    ax.set_yticklabels(conditions)
+    ax.set_yticklabels(conditions, fontsize=base_fontsize)
     ax.invert_yaxis()
     ax.set_xlim(0, 100)
-    ax.set_xlabel("% of total frames")
-    ax.set_title("Posture zone exposure by condition (all sessions pooled)")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=len(CATEGORIES))
+    ax.set_xlabel("% of total frames", fontsize=base_fontsize)
+    ax.tick_params(axis="x", labelsize=base_fontsize)
+    if title:
+        ax.set_title("Posture zone exposure by condition (all sessions pooled)", fontsize=base_fontsize)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=len(CATEGORIES), fontsize=base_fontsize)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=130)
+    fig.savefig(out_path, dpi=130, bbox_inches="tight")
 
 
 def main():
@@ -131,6 +134,8 @@ def main():
     ap.add_argument("--shoulder-percentile", type=float, default=75.0)
     ap.add_argument("--out", default=None, help="output PNG (default: <directory>/condition_comparison.png)")
     ap.add_argument("--out-csv", default=None, help="per-condition summary CSV (default: <directory>/condition_comparison_summary.csv)")
+    ap.add_argument("--no-title", action="store_true", help="omit the chart title (e.g. for a paper figure with its own caption)")
+    ap.add_argument("--font-scale", type=float, default=1.0, help="multiplier on all chart text size (default: 1.0)")
     args = ap.parse_args()
 
     directory = Path(args.directory)
@@ -166,7 +171,7 @@ def main():
         n_frames_by_condition[c] = total
         pct_by_condition[c] = {cat: 100.0 * counts.get(cat, 0) / total for cat in CATEGORIES}
 
-    plot_condition_comparison(conditions, pct_by_condition, out_path)
+    plot_condition_comparison(conditions, pct_by_condition, out_path, title=not args.no_title, font_scale=args.font_scale)
 
     fieldnames = ["condition", "n_sessions", "n_frames"] + [f"pct_{cat.replace('+', '_')}" for cat in CATEGORIES]
     with open(out_csv, "w", newline="") as fh:
