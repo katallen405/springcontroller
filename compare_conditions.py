@@ -116,7 +116,7 @@ def plot_condition_comparison(conditions, pct_by_condition, out_path, title=True
     ax.tick_params(axis="x", labelsize=base_fontsize)
     if title:
         ax.set_title("Posture zone exposure by condition (all sessions pooled)", fontsize=base_fontsize)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=len(CATEGORIES), fontsize=base_fontsize)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=base_fontsize)
     fig.tight_layout()
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
 
