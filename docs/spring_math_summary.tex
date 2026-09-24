@@ -1,0 +1,75 @@
+% spring_math_summary.tex -- condensed main-body version of the spring
+% control equations. Full derivations, the piecewise deadband, and the
+% position-radius gate for pose springs are in the appendix
+% (spring_math.tex); this fragment states only the equations actually
+% run in the reported condition (no deadband, rest length zero).
+%
+% A fragment, not a standalone document: \input{} it from the paper.
+% Requires: amsmath, amssymb, bm
+
+\subsection{Virtual spring control}
+\label{sec:spring-math-summary}
+
+The arm is driven by a set of virtual springs, each mapping the current
+configuration to a joint torque; torques are summed and commanded directly, so
+no inverse kinematics or trajectory is involved. For a spring attached at a
+point $\bm{p}(\bm{q})$ on link $\ell$, let $\bm{J}_{v}, \bm{J}_{\omega} \in
+\mathbb{R}^{3\times n}$ be the point's translational and the link's rotational
+Jacobian, so that a Cartesian force $\bm{f}$ and moment $\bm{m}$ map to joint
+torque by the transpose relation
+%
+\begin{equation}
+  \bm{\tau} \;=\; \bm{J}_{v}^{\top}\bm{f} \;+\; \bm{J}_{\omega}^{\top}\bm{m}.
+  \label{eq:summary-transpose}
+\end{equation}
+
+\paragraph{Linear springs.} A linear spring pulls $\bm{p}(\bm{q})$ toward a
+world target $\bm{p}^{*}$ with stiffness $k$ and damping $b$. Writing
+$\bm{d}(\bm{q}) = \bm{p}^{*} - \bm{p}(\bm{q})$ for the displacement, the force
+and resulting torque are
+%
+\begin{equation}
+  \bm{\tau} \;=\; \bm{J}_{v}^{\top}\Bigl(\,\underbrace{k\,\bm{d}(\bm{q})}_{\text{elastic}}
+  \;-\; \underbrace{b\,\bm{J}_{v}\dot{\bm{q}}}_{\text{damping}}\Bigr).
+  \label{eq:summary-linear}
+\end{equation}
+%
+(The full model additionally supports a dead zone and a soft-start ramp on
+$\lVert\bm{d}\rVert$; see appendix.)
+
+\paragraph{Pose springs.} A pose spring orients a link-fixed direction
+$\bm{n}(\bm{q})$ toward a target heading $\bm{u}(\bm{q})$ (a look-at
+constraint), rather than positioning a point. With axis--angle error
+$(\theta, \hat{\bm{a}})$ between $\bm{n}$ and $\bm{u}$, rotational stiffness
+$k_{\theta}$, and damping $b_{\theta}$,
+%
+\begin{equation}
+  \bm{\tau}_{\mathrm{orient}} \;=\; \bm{J}_{\omega}^{\top}
+  \Bigl(k_{\theta}\,\theta\,\hat{\bm{a}} \;-\; b_{\theta}\,\bm{J}_{\omega}\dot{\bm{q}}\Bigr).
+  \label{eq:summary-pose}
+\end{equation}
+%
+(The full model additionally gates the component of this torque that would
+move $\bm{p}(\bm{q})$ once it drifts past a bounded radius; see appendix.)
+
+\paragraph{Joint springs.} A small number of joints instead carry a torsional
+spring acting directly on their own coordinate, with no Jacobian involved
+--- needed for axes a Cartesian spring cannot see, e.g.\ a wrist joint whose
+rotation does not move its own attachment point. For joint $j$,
+%
+\begin{equation}
+  \tau_{j} \;=\; -\,k\,\Delta\theta \;-\; b\,\dot{\theta}_{j},
+  \qquad
+  \Delta\theta = \operatorname{wrap}_{(-\pi,\pi]}(\theta_{j} - \theta^{*}).
+  \label{eq:summary-joint}
+\end{equation}
+
+\paragraph{Aggregation.} All springs superpose. With gravity compensation
+$\bm{\tau}_{g}(\bm{q})$ and a ramp factor $s \in [0,1]$ applied only to the
+spring sum (never to gravity compensation),
+%
+\begin{equation}
+  \bm{\tau}_{\mathrm{cmd}} \;=\; s\sum_{i} \bm{\tau}_{i}(\bm{q}, \dot{\bm{q}})
+  \;+\; \bm{\tau}_{g}(\bm{q}).
+  \label{eq:summary-total}
+\end{equation}

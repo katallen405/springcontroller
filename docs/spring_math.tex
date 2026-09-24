@@ -1,0 +1,436 @@
+% spring_math.tex -- equations implemented by springcontroller.
+%
+% A fragment, not a standalone document: \input{} it from the paper.
+% Requires: amsmath, amssymb, bm
+%
+% Every equation here corresponds to code in
+% springcontroller/springcontroller/virtual_spring.py; the marginal
+% comments give the class and method.
+
+\section{Virtual spring control}
+\label{sec:spring-math}
+
+The arm is controlled by a set of virtual springs acting in parallel. Each
+spring is a passive element that maps the arm's current configuration to a
+generalised joint torque; the controller sums their contributions and commands
+the result in torque mode. No inverse kinematics and no trajectory are
+involved, which is what allows a person to push the arm off its setpoint and
+feel a smooth restoring force rather than a servo fighting back.
+
+\subsection{Notation and kinematics}
+\label{sec:notation}
+
+Let $\bm{q} \in \mathbb{R}^{n}$ be the vector of joint positions and
+$\dot{\bm{q}} \in \mathbb{R}^{n}$ the joint velocities, for an arm with $n$
+degrees of freedom. Forward kinematics gives, for each link $\ell$, a
+homogeneous transform from the link frame to the world frame,
+%
+\begin{equation}
+  \bm{T}_{w\ell}(\bm{q}) =
+  \begin{bmatrix}
+    \bm{R}_{\ell}(\bm{q}) & \bm{o}_{\ell}(\bm{q}) \\
+    \bm{0}^{\top} & 1
+  \end{bmatrix},
+  \qquad
+  \bm{R}_{\ell} \in SO(3), \quad \bm{o}_{\ell} \in \mathbb{R}^{3}.
+\end{equation}
+
+A spring attaches to link $\ell$ at a point ${}^{\ell}\bm{a} \in \mathbb{R}^{3}$
+fixed in the \emph{link's own} frame. Its world position is
+%
+\begin{equation}
+  \bm{p}(\bm{q}) \;=\; \bm{o}_{\ell}(\bm{q}) \;+\; \bm{R}_{\ell}(\bm{q})\,
+  {}^{\ell}\bm{a}.
+  \label{eq:attachment-point}
+\end{equation}
+%
+Specifying the attachment in the link frame rather than the world frame is what
+lets a spring track a point on a moving link---for instance the centre of a
+block held in the gripper, which is offset from any URDF frame origin.
+
+Throughout, $\hat{\bm{v}} = \bm{v}/\lVert\bm{v}\rVert$ denotes a unit vector,
+$[\bm{v}]_{\times}$ the skew-symmetric matrix satisfying
+$[\bm{v}]_{\times}\bm{w} = \bm{v}\times\bm{w}$, and $\bm{A}^{+}$ the
+Moore--Penrose pseudoinverse of $\bm{A}$. Displacement vectors are written to
+point \emph{from} the current state \emph{toward} the target, so that a spring's
+force carries a positive stiffness and is attractive.
+
+\subsection{Jacobian and the transpose mapping}
+\label{sec:jacobian}
+
+The geometric Jacobian of the attachment point,
+$\bm{J}(\bm{q}) \in \mathbb{R}^{6 \times n}$, relates joint velocity to the
+point's linear velocity and the link's angular velocity:
+%
+\begin{equation}
+  \begin{bmatrix} \dot{\bm{p}} \\ \bm{\omega} \end{bmatrix}
+  \;=\;
+  \bm{J}(\bm{q})\,\dot{\bm{q}},
+  \qquad
+  \bm{J} = \begin{bmatrix} \bm{J}_{v} \\ \bm{J}_{\omega} \end{bmatrix},
+  \qquad
+  \bm{J}_{v}, \bm{J}_{\omega} \in \mathbb{R}^{3 \times n}.
+  \label{eq:jacobian-def}
+\end{equation}
+
+Kinematics libraries report the Jacobian at a link's frame \emph{origin}. Since
+the attachment point is generally offset from that origin, the translational
+block must be shifted. Writing the offset in world-aligned axes as
+$\bm{r} = \bm{R}_{\ell}\,{}^{\ell}\bm{a}$, the attachment point is rigidly
+fixed to the link, so its velocity is that of the origin plus the rotational
+contribution,
+%
+\begin{equation}
+  \dot{\bm{p}} \;=\; \dot{\bm{o}}_{\ell} + \bm{\omega} \times \bm{r}
+  \;=\; \dot{\bm{o}}_{\ell} - [\bm{r}]_{\times}\,\bm{\omega},
+\end{equation}
+%
+and therefore, with $\bm{J}_{v}^{o}$ the translational Jacobian at the origin,
+%
+\begin{equation}
+  \boxed{\;\bm{J}_{v}(\bm{q}) \;=\; \bm{J}_{v}^{o}(\bm{q}) \;-\;
+  [\bm{r}]_{\times}\,\bm{J}_{\omega}(\bm{q}).\;}
+  \label{eq:point-shift}
+\end{equation}
+%
+The rotational block is unchanged by the shift, since every point of a rigid
+link shares the same angular velocity.
+
+Springs are defined as wrenches---a force $\bm{f}$ applied at the attachment
+point and a moment $\bm{m}$ on the link---but the arm is commanded in joint
+torques. The two are related by the principle of virtual work. An arbitrary
+virtual joint displacement $\delta\bm{q}$ produces, by
+\eqref{eq:jacobian-def}, a virtual translation
+$\delta\bm{p} = \bm{J}_{v}\,\delta\bm{q}$ and a virtual rotation
+$\delta\bm{\phi} = \bm{J}_{\omega}\,\delta\bm{q}$. Equating the work done in
+Cartesian space with the work done in joint space,
+%
+\begin{equation}
+  \delta W
+  \;=\; \bm{f}^{\top}\delta\bm{p} + \bm{m}^{\top}\delta\bm{\phi}
+  \;=\; \bm{f}^{\top}\bm{J}_{v}\,\delta\bm{q}
+      + \bm{m}^{\top}\bm{J}_{\omega}\,\delta\bm{q}
+  \;=\; \bigl(\bm{J}_{v}^{\top}\bm{f}
+      + \bm{J}_{\omega}^{\top}\bm{m}\bigr)^{\!\top}\delta\bm{q}
+  \;\stackrel{!}{=}\; \bm{\tau}^{\top}\delta\bm{q}.
+\end{equation}
+%
+As this must hold for every $\delta\bm{q}$, the bracketed vectors are equal:
+%
+\begin{equation}
+  \boxed{\;\bm{\tau} \;=\; \bm{J}^{\top}
+  \begin{bmatrix}\bm{f}\\\bm{m}\end{bmatrix}
+  \;=\; \bm{J}_{v}^{\top}\bm{f} \;+\; \bm{J}_{\omega}^{\top}\bm{m}.\;}
+  \label{eq:jacobian-transpose}
+\end{equation}
+
+Equation~\eqref{eq:jacobian-transpose} is the whole of the mapping from spring
+to actuator, and it has two properties worth stating because the rest of the
+design depends on them. First, it requires no matrix inversion and so is
+defined everywhere, including at kinematic singularities---unlike an
+inverse-kinematics or resolved-rate scheme, it cannot diverge as the arm
+straightens. Second, it is exactly the static force balance: the commanded
+torques are those that would hold the arm in equilibrium against the spring
+wrench, which is why the resulting behaviour is passive and feels compliant
+rather than driven.
+
+Column $j$ of $\bm{J}_{v}$ is the linear velocity the attachment point acquires
+per unit velocity of joint $j$, so the $j$th entry of
+$\bm{J}_{v}^{\top}\bm{f}$ is the projection of the spring force onto that
+direction. A joint that cannot move the attachment point therefore receives no
+torque from a force spring, no matter how stiff---a fact returned to in
+\S\ref{sec:joint-spring}.
+
+\subsection{Linear springs}
+\label{sec:linear-spring}
+
+A linear spring pulls the attachment point $\bm{p}(\bm{q})$ toward a fixed
+world target $\bm{p}^{*}$. Define the displacement, its magnitude (the
+\emph{extension}), and its direction:
+%
+\begin{equation}
+  \bm{d}(\bm{q}) = \bm{p}^{*} - \bm{p}(\bm{q}),
+  \qquad
+  e = \lVert\bm{d}\rVert,
+  \qquad
+  \hat{\bm{d}} = \bm{d}/e \quad (e > 0).
+\end{equation}
+
+Rather than a single Hooke's-law term, the elastic force is piecewise in $e$,
+so that a tolerance region can be specified in which the arm is left entirely
+free. Given a stiffness $k > 0$, an inner radius $r_{\mathrm{in}}$, an outer
+radius $r_{\mathrm{out}}$, and a rest length $L_{0}$, and writing $\beta$ for
+the predicate $r_{\mathrm{out}} > r_{\mathrm{in}}$ (whether a deadband is
+configured at all):
+%
+\begin{equation}
+  \bm{f}_{k}(e) =
+  \begin{cases}
+    \bm{0}
+      & e \le r_{\mathrm{in}}, \\[6pt]
+    \dfrac{k\,(e - r_{\mathrm{in}})^{2}}{r_{\mathrm{out}} - r_{\mathrm{in}}}\,
+    \hat{\bm{d}}
+      & \beta \wedge \; r_{\mathrm{in}} < e \le r_{\mathrm{out}}, \\[10pt]
+    k\,(e - r_{\mathrm{in}})\,\hat{\bm{d}}
+      & \beta \wedge \; e > r_{\mathrm{out}}, \\[6pt]
+    k\,(e - L_{0})\,\hat{\bm{d}}
+      & \neg\beta .
+  \end{cases}
+  \label{eq:linear-force}
+\end{equation}
+
+The three-region structure gives a dead zone, a soft-start ramp, and a
+fully-stiff region. Inside $r_{\mathrm{in}}$ the spring is silent: the operator
+may move the arm freely within a tolerance ball around the target. Across the
+deadband the force grows \emph{quadratically}, entering from zero rather than
+stepping to full stiffness at the boundary. Beyond $r_{\mathrm{out}}$ the
+spring is an ordinary linear spring anchored at $r_{\mathrm{in}}$.
+
+Anchoring the outer region at $r_{\mathrm{in}}$ rather than at $L_{0}$ is
+deliberate: it makes \eqref{eq:linear-force} continuous at
+$e = r_{\mathrm{out}}$ by construction, both the ramp and the linear branch
+evaluating to $k\,(r_{\mathrm{out}} - r_{\mathrm{in}})$ there, for any
+configured $L_{0}$. Were the outer branch anchored at $L_{0}$ instead, a
+mismatched rest length would put a force discontinuity exactly at
+$r_{\mathrm{out}}$, and sensor noise carrying $e$ back and forth across that
+boundary would make the commanded force chatter between the two values on
+successive control cycles. Note that \eqref{eq:linear-force} is $C^{0}$ but not
+$C^{1}$: the slope at $e = r_{\mathrm{out}}$ jumps from $2k$ on the ramp to $k$
+on the linear branch. This is a discontinuity in stiffness, not in force, and
+is not perceptible in practice.
+
+Viscous damping opposes the world-space velocity of the attachment point, which
+\eqref{eq:jacobian-def} supplies directly from the measured joint velocities
+without numerical differentiation of position:
+%
+\begin{equation}
+  \bm{f}_{b} \;=\; -\,b\,\dot{\bm{p}} \;=\; -\,b\,\bm{J}_{v}\dot{\bm{q}},
+  \qquad b \ge 0.
+  \label{eq:linear-damping}
+\end{equation}
+
+Applying \eqref{eq:jacobian-transpose} with zero moment, the spring's
+contribution to the joint torques is
+%
+\begin{equation}
+  \boxed{\;\bm{\tau} \;=\; \bm{J}_{v}^{\top}\bigl(\bm{f}_{k} + \bm{f}_{b}\bigr).\;}
+  \label{eq:linear-torque}
+\end{equation}
+
+In the ungated case ($\neg\beta$) the elastic term is conservative, with stored
+potential energy
+%
+\begin{equation}
+  U = \tfrac{1}{2}\,k\,(e - L_{0})^{2}.
+\end{equation}
+
+\subsection{Pose springs}
+\label{sec:pose-spring}
+
+A pose spring orients a link rather than positioning it. A direction
+${}^{\ell}\hat{\bm{n}}$ fixed in the link frame---the ``face normal'', for
+example the outward normal of the face of a held block---is driven to point at
+a world target $\bm{p}^{*}$, giving a \emph{look-at} constraint. In the study
+this keeps a held object's face turned toward the participant as the arm moves.
+
+The current face normal in world coordinates is
+%
+\begin{equation}
+  \bm{n}(\bm{q}) \;=\; \bm{R}_{\ell}(\bm{q})\,{}^{\ell}\hat{\bm{n}},
+\end{equation}
+%
+and the desired heading is the unit vector from the attachment point to the
+target,
+%
+\begin{equation}
+  \bm{u}(\bm{q}) \;=\;
+  \frac{\bm{p}^{*} - \bm{p}(\bm{q})}{\lVert\bm{p}^{*} - \bm{p}(\bm{q})\rVert}.
+  \label{eq:pose-desired}
+\end{equation}
+%
+Both are recomputed from the \emph{current} configuration on every control
+cycle. This is what distinguishes a look-at constraint from a fixed orientation
+setpoint: as the arm moves, $\bm{u}$ moves with it, and the face continues to
+track $\bm{p}^{*}$ rather than holding a rotation frozen at the moment the
+spring was created.
+
+The rotation carrying $\bm{n}$ onto $\bm{u}$ is expressed in axis--angle form
+via their cross product:
+%
+\begin{equation}
+  \bm{c} = \bm{n} \times \bm{u},
+  \qquad
+  \theta = \operatorname{atan2}\bigl(\lVert\bm{c}\rVert,\;
+                                     \bm{n}\cdot\bm{u}\bigr),
+  \qquad
+  \hat{\bm{a}} = \bm{c}/\lVert\bm{c}\rVert.
+  \label{eq:pose-axis-angle}
+\end{equation}
+%
+The two-argument form is used in preference to
+$\theta = \arccos(\bm{n}\cdot\bm{u})$ because it remains well conditioned at
+both ends of the range: $\arccos$ has unbounded derivative as its argument
+approaches $\pm 1$, so near perfect alignment ($\theta \to 0$) and near
+inversion ($\theta \to \pi$)---precisely the configurations the controller
+spends most of its time in---it amplifies floating-point error in the dot
+product into a large angular error. The axis is undefined when
+$\lVert\bm{c}\rVert = 0$; the implementation takes $\hat{\bm{a}} = \bm{0}$
+there, yielding zero moment. At $\theta = 0$ this is correct. At $\theta = \pi$
+it is an \emph{unstable} equilibrium---the exactly-antiparallel configuration
+is left unforced, but any perturbation off it produces a moment driving the
+normal back toward alignment, so the arm does not rest there in practice.
+
+The restoring moment is Hooke's law in the angle, with viscous damping opposing
+the link's angular velocity:
+%
+\begin{equation}
+  \bm{m} \;=\; \underbrace{k_{\theta}\,\theta\,\hat{\bm{a}}}_{\text{elastic}}
+  \;-\; \underbrace{b_{\theta}\,\bm{J}_{\omega}\dot{\bm{q}}}_{\text{damping}},
+  \qquad k_{\theta}, b_{\theta} \ge 0,
+  \label{eq:pose-moment}
+\end{equation}
+%
+which by \eqref{eq:jacobian-transpose}, with zero force, gives the
+orientation torque
+%
+\begin{equation}
+  \bm{\tau}_{\mathrm{orient}} \;=\; \bm{J}_{\omega}^{\top}\bm{m}.
+  \label{eq:pose-orient-torque}
+\end{equation}
+
+\subsubsection{Bounding positional drift}
+\label{sec:pose-nullspace}
+
+Equation~\eqref{eq:pose-orient-torque} carries no Cartesian force, but it does
+not follow that the attachment point stays put. On a serial chain nearly every
+joint affects position and orientation simultaneously, so torque applied to
+correct orientation will in general also translate the point---potentially far
+outside the workspace a paired linear spring is trying to hold. The pose spring
+therefore splits its torque according to whether each component can move the
+attachment point.
+
+Let $\bm{N}$ be the orthogonal projector onto the null space of $\bm{J}_{v}$,
+%
+\begin{equation}
+  \bm{N} \;=\; \bm{I}_{n} - \bm{J}_{v}^{+}\bm{J}_{v},
+\end{equation}
+%
+and decompose accordingly:
+%
+\begin{equation}
+  \bm{\tau}_{\mathrm{safe}} = \bm{N}\,\bm{\tau}_{\mathrm{orient}},
+  \qquad
+  \bm{\tau}_{\mathrm{risky}} = \bm{\tau}_{\mathrm{orient}}
+                             - \bm{\tau}_{\mathrm{safe}}
+                             = \bm{J}_{v}^{+}\bm{J}_{v}\,
+                               \bm{\tau}_{\mathrm{orient}}.
+  \label{eq:pose-split}
+\end{equation}
+%
+By the Moore--Penrose identity $\bm{J}_{v}\bm{J}_{v}^{+}\bm{J}_{v} =
+\bm{J}_{v}$ we have $\bm{J}_{v}\bm{\tau}_{\mathrm{safe}} = \bm{0}$ exactly:
+the safe component provably cannot translate the attachment point, and is
+applied at full strength unconditionally. Since $\bm{N}$ is symmetric and
+idempotent, the two components are orthogonal and the split is a genuine
+decomposition rather than an approximation.
+
+The remaining component is attenuated by how far the attachment point has
+drifted from a nominal centre $\bm{c}$, within a permitted radius $\rho > 0$.
+With $\delta = \lVert\bm{p}(\bm{q}) - \bm{c}\rVert$,
+%
+\begin{equation}
+  \alpha = \min\!\left(1,\; \frac{\rho}{\delta}\right),
+  \qquad
+  \bm{\tau}_{\mathrm{pose}} = \bm{\tau}_{\mathrm{safe}}
+                            + \alpha\,\bm{\tau}_{\mathrm{risky}}.
+  \label{eq:pose-gate}
+\end{equation}
+%
+Inside the radius $\alpha = 1$ and the spring has full authority; beyond it
+authority decays as $\rho/\delta$. The gate is continuous at $\delta = \rho$,
+so no chattering arises as the point crosses the boundary, and it needs no
+separate margin parameter. Discarding $\bm{\tau}_{\mathrm{risky}}$ entirely
+was found to be too weak in practice: a real arm's null space is small or
+empty in many configurations, leaving almost no orientation authority at all.
+
+Because \eqref{eq:pose-gate} only ever \emph{throttles} torque and never
+generates a restoring pull, a pose spring used without a paired linear spring
+has nothing returning the attachment point once it drifts. An optional
+translational term supplies this, zero inside $\rho$ and Hooke's law beyond it:
+%
+\begin{equation}
+  \bm{f}_{p} =
+  \begin{cases}
+    \bm{0} & \delta \le \rho, \\[4pt]
+    k_{p}\,(\delta - \rho)\,\dfrac{\bm{c} - \bm{p}(\bm{q})}{\delta}
+           & \delta > \rho,
+  \end{cases}
+  \qquad k_{p} \ge 0,
+  \label{eq:pose-position-force}
+\end{equation}
+%
+which shares the ``excess distance past a radius'' form of the outer branch of
+\eqref{eq:linear-force}. The complete pose spring torque is then
+%
+\begin{equation}
+  \boxed{\;\bm{\tau} \;=\; \bm{\tau}_{\mathrm{safe}}
+                        + \alpha\,\bm{\tau}_{\mathrm{risky}}
+                        + \bm{J}_{v}^{\top}\bm{f}_{p}.\;}
+  \label{eq:pose-torque}
+\end{equation}
+
+\subsection{Joint springs}
+\label{sec:joint-spring}
+
+The third spring type acts on a single joint's own coordinate, with no
+Jacobian involved. For joint $j$ with angle $\theta_{j}$ and target
+$\theta^{*}$,
+%
+\begin{equation}
+  \boxed{\;\tau_{j} \;=\; -\,k\,\Delta\theta \;-\; b\,\dot{\theta}_{j},
+  \qquad
+  \Delta\theta = \operatorname{wrap}_{(-\pi,\pi]}\!\bigl(\theta_{j}
+                 - \theta^{*}\bigr),\;}
+  \label{eq:joint-torque}
+\end{equation}
+%
+contributing $\tau_{j}\bm{e}_{j}$ to the joint torque vector, where
+$\bm{e}_{j}$ is the $j$th standard basis vector. The sign is explicit here
+because $\Delta\theta$ is measured as current minus target, the opposite
+convention to $\bm{d}$ in \S\ref{sec:linear-spring}. Taking the shortest signed
+path avoids driving a continuous joint the long way round when the error
+straddles the wrap point.
+
+This element exists because of the structural limitation noted at the end of
+\S\ref{sec:jacobian}. Consider a wrist joint whose axis passes through the
+attachment point. Rotating it does not move that point at all, so the
+corresponding column of $\bm{J}_{v}$ is zero, and by
+\eqref{eq:linear-torque} a linear spring produces \emph{exactly} zero torque on
+that joint regardless of its stiffness---leaving the joint free to drift. A
+joint spring supplies restoring or damping torque on precisely those axes a
+Cartesian spring is blind to.
+
+\subsection{Aggregation}
+\label{sec:aggregation}
+
+Springs superpose. For a set of $N$ active springs with individual torques
+$\bm{\tau}_{i}$ from \eqref{eq:linear-torque}, \eqref{eq:pose-torque} or
+\eqref{eq:joint-torque}, the commanded torque is
+%
+\begin{equation}
+  \boxed{\;\bm{\tau}_{\mathrm{cmd}} \;=\;
+  s\sum_{i=1}^{N}\bm{\tau}_{i}(\bm{q}, \dot{\bm{q}})
+  \;+\; \bm{\tau}_{g}(\bm{q}),\;}
+  \qquad s \in [0, 1],
+  \label{eq:total-torque}
+\end{equation}
+%
+where $\bm{\tau}_{g}(\bm{q})$ is the generalised gravity torque and $s$ is a
+ramp factor used to fade springs in when torque control is engaged, avoiding a
+step in commanded torque at the transition.
+
+The scale $s$ multiplies the spring sum only. Gravity compensation is applied
+at full magnitude on every cycle in which it is enabled, since it is what holds
+the arm up; ramping it alongside the springs would let the arm sag as $s$
+approaches zero. On platforms that compensate gravity in firmware,
+$\bm{\tau}_{g} = \bm{0}$ and the term drops out.
