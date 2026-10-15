@@ -172,6 +172,10 @@ collision_object_topic : str
 torque_status_topic : str
     "ENABLED"/"DISABLED" status topic driving the spring-force ramp-in.
     Empty (default) disables ramping entirely -- spring_scale stays 1.0.
+torque_bridge_name : str
+    Bridge name shown when torque_status_topic's publisher disappears
+    (default "gen3_torque_control"; gen2_spring.launch.py sets
+    "gen2_torque_control").
 spring_ramp_duration_sec : double
     Ramp duration for spring-force torque after torque-enable. Gravity
     comp is never ramped (see compute_total_torques).
@@ -397,6 +401,10 @@ class VirtualSpringNode(Node):
         # 1.0 always, matching prior behavior (e.g. UR3e, which has no
         # such status topic).
         self.declare_parameter("torque_status_topic", "")
+        # Name used for the torque bridge in ~/safety_status and log text
+        # when torque_status_topic's publisher disappears. The default keeps
+        # Gen3 output (which springcontroller_ui matches on) unchanged.
+        self.declare_parameter("torque_bridge_name", "gen3_torque_control")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
         # get_collision_status() profiled at ~126ms/call -- called every
         # _joint_state_cb, that would block the control loop down to
@@ -777,6 +785,9 @@ class VirtualSpringNode(Node):
             self.get_parameter("torque_status_topic").get_parameter_value().string_value
         )
         self._torque_status_topic = torque_status_topic
+        self._torque_bridge_name = (
+            self.get_parameter("torque_bridge_name").get_parameter_value().string_value
+        )
         # Liveness of gen3_torque_control (or equivalent) itself, distinct
         # from _last_torque_status above: that cache only updates on an
         # ENABLED/DISABLED *transition* (kinova_torque_control_node
@@ -1327,7 +1338,7 @@ class VirtualSpringNode(Node):
         if was_connected and not self._torque_control_connected:
             self.get_logger().error(
                 f"{self._torque_status_topic}'s publisher has disappeared "
-                f"-- gen3_torque_control (or equivalent) is no longer "
+                f"-- {self._torque_bridge_name} is no longer "
                 f"running. Torque commands published from here are no "
                 f"longer being applied to the arm."
             )
@@ -2837,7 +2848,7 @@ class VirtualSpringNode(Node):
             msg.data += " (springs disabled by collision -- re-enable via ~/enable)"
         if self._torque_status_topic and self._torque_control_connected is False:
             msg.data += (
-                " (gen3_torque_control UNREACHABLE -- torque commands are "
+                f" ({self._torque_bridge_name} UNREACHABLE -- torque commands are "
                 "not being applied; torque-enabled status shown elsewhere "
                 "may be stale)"
             )
