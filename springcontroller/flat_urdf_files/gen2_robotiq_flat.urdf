@@ -15,7 +15,7 @@
   <link name="j2s7s300_link_base">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/base.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/base.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -23,7 +23,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/base.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/base.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -42,7 +42,7 @@
   <link name="j2s7s300_link_1">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/shoulder.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/shoulder.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -50,12 +50,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_big.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_big.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/shoulder.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/shoulder.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -96,7 +96,7 @@
   <link name="j2s7s300_link_2">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/arm_half_1.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/arm_half_1.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -104,12 +104,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_big.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_big.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/arm_half_1.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/arm_half_1.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -150,7 +150,7 @@
   <link name="j2s7s300_link_3">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/arm_half_2.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/arm_half_2.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -158,12 +158,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_big.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_big.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/arm_half_2.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/arm_half_2.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -204,7 +204,7 @@
   <link name="j2s7s300_link_4">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/forearm.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/forearm.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -212,12 +212,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_small.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_small.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/forearm.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/forearm.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -258,7 +258,7 @@
   <link name="j2s7s300_link_5">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/wrist_spherical_1.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/wrist_spherical_1.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -266,12 +266,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_small.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_small.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/wrist_spherical_1.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/wrist_spherical_1.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -312,7 +312,7 @@
   <link name="j2s7s300_link_6">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/wrist_spherical_2.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/wrist_spherical_2.dae" />
       </geometry>
       <material name="carbon_fiber">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -320,12 +320,12 @@
     </visual>
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/ring_small.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/ring_small.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/kinova-ros/kinova_description/meshes/wrist_spherical_2.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/kinova/meshes/wrist_spherical_2.dae" />
       </geometry>
     </collision>
     <inertial>
@@ -375,12 +375,12 @@
   <link name="j2s7s300_link_7">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/poli2/poli2_description/meshes/manipulator/robotiq_wrist.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/poli2/meshes/manipulator/robotiq_wrist.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/poli2/poli2_description/meshes/manipulator/robotiq_wrist.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/poli2/meshes/manipulator/robotiq_wrist.stl" />
       </geometry>
     </collision>
   <inertial><mass value="0.1" /><origin xyz="0 0 0" rpy="0 0 0" /><inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4" /></inertial></link>
@@ -404,12 +404,12 @@
   <link name="gripper_base_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_base_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_base_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_base_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_base_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -443,12 +443,12 @@
   <link name="gripper_finger1_knuckle_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_knuckle_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_knuckle_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_knuckle_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_knuckle_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -467,12 +467,12 @@
   <link name="gripper_finger2_knuckle_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_knuckle_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_knuckle_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_knuckle_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_knuckle_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -501,12 +501,12 @@
   <link name="gripper_finger1_finger_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_finger_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_finger_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_finger_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_finger_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -525,12 +525,12 @@
   <link name="gripper_finger2_finger_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_finger_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_finger_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_finger_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_finger_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -565,12 +565,12 @@
   <link name="gripper_finger1_inner_knuckle_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_inner_knuckle_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_inner_knuckle_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_inner_knuckle_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_inner_knuckle_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -589,12 +589,12 @@
   <link name="gripper_finger2_inner_knuckle_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_inner_knuckle_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_inner_knuckle_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_inner_knuckle_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_inner_knuckle_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -629,12 +629,12 @@
   <link name="gripper_finger1_finger_tip_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_finger_tip_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_finger_tip_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_finger_tip_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_finger_tip_link.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -653,12 +653,12 @@
   <link name="gripper_finger2_finger_tip_link">
     <visual>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/visual/robotiq_85_finger_tip_link.dae" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/visual/robotiq_85_finger_tip_link.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/katallen/sandbox/src/robotiq_85_gripper/robotiq_85_description/meshes/collision/robotiq_85_finger_tip_link.stl" />
+        <mesh filename="package://springcontroller/meshes/gen2_robotiq/robotiq/meshes/collision/robotiq_85_finger_tip_link.stl" />
       </geometry>
     </collision>
     <inertial>
