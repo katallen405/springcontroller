@@ -1,0 +1,10 @@
+/**:
+  ros__parameters:
+
+    # No springs loaded -- the Gen2's firmware gravity compensation only
+    # (virtual_spring_node runs with add_gravity_compensation:=false, so it
+    # publishes all-zero torques). The default for gen2_spring.launch.py,
+    # so first runs on a new setup exercise the torque bridge alone.
+    #
+    # spring_names: [""] rather than [] -- see gen3_springs_none.yaml.
+    spring_names: [""]
