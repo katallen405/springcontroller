@@ -15,3 +15,18 @@
     # _load_springs_from_params()'s `if not name: continue` already treats
     # a blank name as "no springs".
     spring_names: [""]
+
+    # Idle amplification (lower perceived inertia/impedance in this
+    # gravity-only mode). Off here too -- turn on at runtime with
+    # ros2 service call /virtual_spring_node/set_idle_amplification std_srvs/srv/SetBool "{data: true}"
+    # and watch /virtual_spring_node/idle_amplification_enabled_status.
+    # Per-joint values are in joint_1..joint_7 order; defaults sized from
+    # study-config bags (no extra wrist sensor) -- re-check with
+    # test/replay_external_torque_observer.py if the payload changes.
+    idle_amplification_enabled: false
+    idle_amplification_alpha: 0.3
+    ext_torque_observer_gain: 20.0
+    ext_torque_deadband_nm: [0.3, 0.3, 0.2, 0.3, 0.05, 0.08, 0.05]
+    ext_torque_amp_max_nm: [2.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5]
+    ext_torque_bias_max_nm: [2.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5]
+    idle_amplification_velocity_cutoff: 1.5

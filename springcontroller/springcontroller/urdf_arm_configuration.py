@@ -126,6 +126,9 @@ class URDFArmConfiguration:
     ) -> None:
         self._model = _build_pinocchio_model(urdf_path, locked_joint_names)
         self._data = self._model.createData()
+        # Separate Data for get_dynamics() so its passes can't disturb the
+        # kinematics/Jacobians cached in self._data by update().
+        self._dyn_data = self._model.createData()
         self._danger_threshold = danger_threshold
 
         # Collision model — loaded separately so kinematic-only use still works
@@ -335,6 +338,15 @@ class URDFArmConfiguration:
     def get_gravity_torques(self) -> np.ndarray:
         pin.computeGeneralizedGravity(self._model, self._data, self._q)
         return self._data.g.copy()
+
+    def get_dynamics(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(M, C, g) at the current q, q̇ -- inputs for ExternalTorqueObserver."""
+        d = self._dyn_data
+        M = pin.crba(self._model, d, self._q)
+        M = np.triu(M) + np.triu(M, 1).T  # crba fills only the upper triangle
+        C = pin.computeCoriolisMatrix(self._model, d, self._q, self._qdot).copy()
+        g = pin.computeGeneralizedGravity(self._model, d, self._q).copy()
+        return M, C, g
 
     def get_joint_angle(self, joint_index: int) -> float:
         """

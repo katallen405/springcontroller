@@ -62,6 +62,17 @@ Publications
     Live joint_limit_repulsion_enabled state -- same "believed on but
     wasn't" reasoning as ~/repulsion_enabled_status.
 
+~/external_torque_estimate (sensor_msgs/JointState)
+    Momentum-observer estimate of external (human) joint torque: effort =
+    bias-corrected τ̂_ext, velocity = learned rest bias b̂ (see
+    external_torque_observer.py). Published whenever the observer steps.
+
+~/idle_amplification_torques (sensor_msgs/JointState)
+    Effort field carries the idle-amplification term (zeros unless active).
+
+~/idle_amplification_enabled_status (std_msgs/Bool, TRANSIENT_LOCAL)
+    Live idle_amplification_enabled state.
+
 ~/spring_forces (springcontroller_interfaces/SpringForces)
     Every active spring's current force/moment, throttled to
     spring_force_publish_interval_sec (default 0.1s -- independent of the
@@ -110,6 +121,9 @@ Services
     Toggle the joint_limit_repulsion_enabled field (see
     get_joint_limit_repulsion_torques) at runtime -- same "ros2 param set
     has no effect" reasoning as set_repulsion_enabled above.
+
+~/set_idle_amplification  (std_srvs/SetBool)
+    Toggle idle amplification at runtime (see idle_amplification_enabled).
 
 ~/update_collision_thresholds  (springcontroller_interfaces/UpdateCollisionThresholds)
     Live-tune danger_threshold and caution_threshold together (rejects the
@@ -225,6 +239,17 @@ max_pose_spring_stiffness_nm_per_rad : double
     high as a likely position-spring-units (N/m) mistake rather than a
     genuine N*m/rad value. See its declare_parameter call for the live
     incident this guards against.
+idle_amplification_enabled : bool
+    With NO springs loaded and torque ENABLED, add
+    α·deadband(τ̂_ext) (clipped per joint) to lower the arm's perceived
+    inertia/impedance in gravity-comp-only mode. Default false.
+idle_amplification_alpha, ext_torque_observer_gain, ext_torque_deadband_nm,
+ext_torque_amp_max_nm, ext_torque_bias_max_nm, ext_torque_rest_velocity,
+idle_amplification_velocity_cutoff :
+    Amplification gain, observer bandwidth (rad/s), per-joint deadband /
+    output clip / rest-bias clamp (N·m), rest speed threshold and runaway
+    speed cutoff (rad/s). See test/replay_external_torque_observer.py for
+    sizing the per-joint values from rosbags.
 """
 
 import csv
@@ -252,6 +277,9 @@ from springcontroller.virtual_spring import (
     VirtualSpring, JointSpring, PoseSpring, SpringCollection,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
+from springcontroller.external_torque_observer import (
+    ExternalTorqueObserver, amplification_torque,
+)
 import yaml
 from springcontroller_interfaces.srv import (
     AddSpring, RemoveSpring, AddJointSpring, AddPoseSpring,
@@ -398,6 +426,43 @@ class VirtualSpringNode(Node):
         # such status topic).
         self.declare_parameter("torque_status_topic", "")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
+        # Idle amplification: only while NO springs are loaded, adds
+        # α·deadband(τ̂_ext) from a momentum observer on measured joint
+        # torque, lowering perceived inertia/impedance. Off by default;
+        # ~/set_idle_amplification overrides at runtime. Per-joint arrays
+        # are in pinocchio joint order. Defaults sized from the Sept 2026
+        # study-config bags via test/replay_external_torque_observer.py
+        # (deadband ≈ rest-p99 of |τ̂_ext|, bias clamp covers joint_2's
+        # pose-dependent ~0.7-1.7 N·m model error).
+        self.declare_parameter("idle_amplification_enabled", False)
+        self.declare_parameter("idle_amplification_alpha", 0.3)
+        self.declare_parameter("ext_torque_observer_gain", 20.0)
+        self.declare_parameter("ext_torque_deadband_nm", [0.3, 0.3, 0.2, 0.3, 0.05, 0.08, 0.05])
+        self.declare_parameter("ext_torque_amp_max_nm", [2.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5])
+        self.declare_parameter("ext_torque_bias_max_nm", [2.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5])
+        self.declare_parameter("ext_torque_rest_velocity", 0.02)
+        # Above this joint speed (rad/s), amplification drops to zero and the
+        # observer resets -- catches runaway/instability, and the observer's
+        # 100 Hz discretization error grows at high speed anyway.
+        self.declare_parameter("idle_amplification_velocity_cutoff", 1.5)
+        self._idle_amp_enabled = (
+            self.get_parameter("idle_amplification_enabled").get_parameter_value().bool_value
+        )
+        self._idle_amp_alpha = (
+            self.get_parameter("idle_amplification_alpha").get_parameter_value().double_value
+        )
+        self._idle_amp_velocity_cutoff = (
+            self.get_parameter("idle_amplification_velocity_cutoff").get_parameter_value().double_value
+        )
+        self._ext_deadband = np.array(
+            self.get_parameter("ext_torque_deadband_nm").get_parameter_value().double_array_value
+        )
+        self._ext_amp_max = np.array(
+            self.get_parameter("ext_torque_amp_max_nm").get_parameter_value().double_array_value
+        )
+        self._ext_observer: ExternalTorqueObserver | None = None
+        self._ext_effort_warned = False
+        self._idle_amp_enabled_since = None
         # get_collision_status() profiled at ~126ms/call -- called every
         # _joint_state_cb, that would block the control loop down to
         # ~8-21Hz instead of the intended ~100Hz. Self-collision doesn't
@@ -580,6 +645,30 @@ class VirtualSpringNode(Node):
             raise RuntimeError(f"Failed to load URDF: {e}") from e
 
         self._joint_order = None
+
+        bias_max = np.array(
+            self.get_parameter("ext_torque_bias_max_nm").get_parameter_value().double_array_value
+        )
+        bad = [
+            name for name, arr in (
+                ("ext_torque_deadband_nm", self._ext_deadband),
+                ("ext_torque_amp_max_nm", self._ext_amp_max),
+                ("ext_torque_bias_max_nm", bias_max),
+            ) if arr.shape != (self._arm.n_dof,)
+        ]
+        if bad:
+            self.get_logger().error(
+                f"{bad} must each have {self._arm.n_dof} entries -- idle "
+                f"amplification unavailable this run."
+            )
+            self._idle_amp_enabled = False
+        else:
+            self._ext_observer = ExternalTorqueObserver(
+                self._arm.n_dof,
+                gain=self.get_parameter("ext_torque_observer_gain").get_parameter_value().double_value,
+                bias_max=bias_max,
+                rest_velocity=self.get_parameter("ext_torque_rest_velocity").get_parameter_value().double_value,
+            )
 
         self.get_logger().info(
             f"URDF loaded. {self._arm.n_dof} DOF. "
@@ -961,6 +1050,21 @@ class VirtualSpringNode(Node):
         self._joint_limit_repulsion_enabled_pub.publish(
             Bool(data=self._joint_limit_repulsion_enabled)
         )
+        self._idle_amp_enable_srv = self.create_service(
+            SetBool, "~/set_idle_amplification", self._set_idle_amplification_cb,
+        )
+        self._idle_amp_enabled_pub = self.create_publisher(
+            Bool, "~/idle_amplification_enabled_status", springs_updated_qos
+        )
+        self._idle_amp_enabled_pub.publish(Bool(data=self._idle_amp_enabled))
+        # effort = bias-corrected τ̂_ext, velocity = learned bias b̂.
+        self._ext_torque_pub = self.create_publisher(
+            JointState, "~/external_torque_estimate", 10
+        )
+        # Always published (zeros when inactive), same as ~/repulsion_torques.
+        self._idle_amp_torque_pub = self.create_publisher(
+            JointState, "~/idle_amplification_torques", 10
+        )
         # Live [danger_threshold, caution_threshold, repulsion_max_force_n],
         # same TRANSIENT_LOCAL reasoning as the two publishers above --
         # without this, a viewer's caution-halo padding is set once from
@@ -1048,6 +1152,22 @@ class VirtualSpringNode(Node):
         )
         response.success = True
         response.message = f"joint_limit_repulsion_enabled = {request.data}"
+        return response
+
+    def _set_idle_amplification_cb(self, request, response):
+        if request.data and self._ext_observer is None:
+            response.success = False
+            response.message = "idle amplification unavailable: bad ext_torque_* parameter lengths (see startup log)."
+            return response
+        self._idle_amp_enabled = request.data
+        self._idle_amp_enabled_since = self.get_clock().now() if request.data else None
+        self._idle_amp_enabled_pub.publish(Bool(data=request.data))
+        self.get_logger().info(
+            f"Idle amplification {'enabled' if request.data else 'disabled'} "
+            f"(alpha={self._idle_amp_alpha}, only active with no springs loaded)."
+        )
+        response.success = True
+        response.message = f"idle_amplification_enabled = {request.data}"
         return response
 
     def _update_collision_thresholds_cb(self, request, response):
@@ -1302,6 +1422,8 @@ class VirtualSpringNode(Node):
         was_enabled = (self._last_torque_status == "ENABLED")
         if is_enabled and not was_enabled:
             self._torque_enabled_since = self.get_clock().now()
+            if self._ext_observer is not None:
+                self._ext_observer.reset()
             self.get_logger().info(
                 f"Torque control enabled -- ramping spring force in over "
                 f"{self._spring_ramp_duration:.2f}s (gravity comp unramped)."
@@ -1337,8 +1459,10 @@ class VirtualSpringNode(Node):
 
     def _joint_state_cb(self, msg: JointState) -> None:
         now = self.get_clock().now()
+        js_dt = None
         if self._last_js_recv_time is not None:
             gap = (now - self._last_js_recv_time).nanoseconds / 1e9
+            js_dt = gap
             if gap > self._js_gap_warn_sec and not self._js_gap_warned:
                 self.get_logger().warn(
                     f"/joint_states gap {gap * 1000:.1f}ms exceeds "
@@ -1402,7 +1526,11 @@ class VirtualSpringNode(Node):
         vel = np.array(msg.velocity) if msg.velocity else np.zeros(len(msg.position))
         q_arm = pos[self._joint_order]
         qdot  = vel[self._joint_order]
-        
+        effort = (
+            np.array(msg.effort)[self._joint_order]
+            if len(msg.effort) > max(self._joint_order) else None
+        )
+
         try:
             # Initialize start time on first callback
             if self.start_time is None:
@@ -1508,6 +1636,17 @@ class VirtualSpringNode(Node):
                 else np.zeros_like(torques)
             )
             spring_only_torques = torques - gravity_torques
+
+            # Treated as spring-side torque so the collision clamp below
+            # zeroes/scales it like any spring; gravity comp untouched.
+            idle_amp_out = self._compute_idle_amplification(qdot, effort, js_dt, spring_scale)
+            torques = torques + idle_amp_out
+            spring_only_torques = spring_only_torques + idle_amp_out
+            idle_amp_msg = JointState()
+            idle_amp_msg.header.stamp = now.to_msg()
+            idle_amp_msg.name = self._arm.joint_names
+            idle_amp_msg.effort = idle_amp_out.tolist()
+            self._idle_amp_torque_pub.publish(idle_amp_msg)
 
             # Self-collision safety scaling (throttled -- see
             # collision_check_interval_sec)
@@ -1721,6 +1860,53 @@ class VirtualSpringNode(Node):
         out.name   = self._arm.joint_names
         out.effort = torques.tolist()
         self._torque_pub.publish(out)
+
+    def _compute_idle_amplification(
+        self, qdot: np.ndarray, effort: np.ndarray | None, dt: float | None, spring_scale: float,
+    ) -> np.ndarray:
+        """
+        Step the external-torque observer (always, so its rest bias keeps
+        converging even while amplification is off) and return the
+        amplification torque -- zero unless enabled, torque control is
+        ENABLED, and no springs are loaded at all.
+        """
+        zeros = np.zeros(self._arm.n_dof)
+        obs = self._ext_observer
+        if obs is None:
+            return zeros
+        if effort is None:
+            if not self._ext_effort_warned:
+                self.get_logger().warn(
+                    "/joint_states has no effort field -- external-torque "
+                    "observer and idle amplification inactive."
+                )
+                self._ext_effort_warned = True
+            return zeros
+        if dt is None or dt > 0.05 or np.max(np.abs(qdot)) > self._idle_amp_velocity_cutoff:
+            obs.reset()
+            return zeros
+
+        M, C, g = self._arm.get_dynamics()
+        est = obs.step(M, C, g, qdot, effort, dt)
+        est_msg = JointState()
+        est_msg.header.stamp = self.get_clock().now().to_msg()
+        est_msg.name = self._arm.joint_names
+        est_msg.effort = est.tolist()
+        est_msg.velocity = obs.bias.tolist()
+        self._ext_torque_pub.publish(est_msg)
+
+        no_springs_loaded = next(iter(self._springs), None) is None
+        if not (self._idle_amp_enabled and self._last_torque_status == "ENABLED"
+                and no_springs_loaded):
+            return zeros
+
+        scale = spring_scale
+        if self._spring_ramp_duration > 0.0 and self._idle_amp_enabled_since is not None:
+            since = (self.get_clock().now() - self._idle_amp_enabled_since).nanoseconds / 1e9
+            scale = min(scale, max(0.0, since / self._spring_ramp_duration))
+        return scale * amplification_torque(
+            est, self._idle_amp_alpha, self._ext_deadband, self._ext_amp_max,
+        )
 
     def _trigger_torque_disable_failsafe(self) -> None:
         """
