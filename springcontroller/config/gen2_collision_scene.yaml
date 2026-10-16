@@ -1,0 +1,23 @@
+# Scene collision objects for the Gen2 (see gen3_collision_scene.yaml for the
+# file format and how it's loaded). world == the arm's base frame
+# (gen2_robotiq_flat.urdf puts j2s7s300_link_base at the world origin).
+#
+# PLACEHOLDER GEOMETRY: assumes the arm is mounted on a table whose top is
+# flush with the base (z = 0), extending 0.6 m in every horizontal
+# direction. Measure the real table and fix the dimensions/position before
+# using load_collision_scene:=true -- a wrong scene either misses real
+# obstacles or clamps torques for no reason.
+
+objects:
+
+  table:
+    shape: box
+    dimensions: [1.2, 1.2, 0.05]
+    frame_id: "world"
+    pose:
+      # z = -half the box height so the top face lands at z=0.
+      position: [0.0, 0.0, -0.025]
+      orientation: [0.0, 0.0, 0.0, 1.0]
+    # The base sits right on the table surface; without this it registers a
+    # permanent near-miss and blanket-scales torques.
+    exclude_links: ["j2s7s300_link_base"]

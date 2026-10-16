@@ -172,6 +172,10 @@ collision_object_topic : str
 torque_status_topic : str
     "ENABLED"/"DISABLED" status topic driving the spring-force ramp-in.
     Empty (default) disables ramping entirely -- spring_scale stays 1.0.
+torque_bridge_name : str
+    Bridge name shown when torque_status_topic's publisher disappears
+    (default "gen3_torque_control"; gen2_spring.launch.py sets
+    "gen2_torque_control").
 spring_ramp_duration_sec : double
     Ramp duration for spring-force torque after torque-enable. Gravity
     comp is never ramped (see compute_total_torques).
@@ -397,6 +401,10 @@ class VirtualSpringNode(Node):
         # 1.0 always, matching prior behavior (e.g. UR3e, which has no
         # such status topic).
         self.declare_parameter("torque_status_topic", "")
+        # Name used for the torque bridge in ~/safety_status and log text
+        # when torque_status_topic's publisher disappears. The default keeps
+        # Gen3 output (which springcontroller_ui matches on) unchanged.
+        self.declare_parameter("torque_bridge_name", "gen3_torque_control")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
         # get_collision_status() profiled at ~126ms/call -- called every
         # _joint_state_cb, that would block the control loop down to
@@ -777,6 +785,9 @@ class VirtualSpringNode(Node):
             self.get_parameter("torque_status_topic").get_parameter_value().string_value
         )
         self._torque_status_topic = torque_status_topic
+        self._torque_bridge_name = (
+            self.get_parameter("torque_bridge_name").get_parameter_value().string_value
+        )
         # Liveness of gen3_torque_control (or equivalent) itself, distinct
         # from _last_torque_status above: that cache only updates on an
         # ENABLED/DISABLED *transition* (kinova_torque_control_node
@@ -999,24 +1010,38 @@ class VirtualSpringNode(Node):
         urdf_xml = fetch_robot_description(self)
         if urdf_xml is not None:
             self.get_logger().info("Loaded URDF from /robot_description topic.")
-            return URDFArmConfiguration.from_xml_string(
+            arm = URDFArmConfiguration.from_xml_string(
                 urdf_xml, danger_threshold=danger_threshold, srdf_path=srdf_path,
                 locked_joint_names=locked_joint_names,
             )
+        else:
+            urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
+            if not urdf_path:
+                raise RuntimeError(
+                    "No /robot_description topic found and urdf_path parameter not set."
+                )
 
-        urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
-        if not urdf_path:
-            raise RuntimeError(
-                "No /robot_description topic found and urdf_path parameter not set."
+            self.get_logger().warn(
+                f"No /robot_description topic found; falling back to file: {urdf_path}"
+            )
+            arm = URDFArmConfiguration.from_urdf(
+                urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path,
+                locked_joint_names=locked_joint_names,
             )
 
-        self.get_logger().warn(
-            f"No /robot_description topic found; falling back to file: {urdf_path}"
-        )
-        return URDFArmConfiguration.from_urdf(
-            urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path,
-            locked_joint_names=locked_joint_names,
-        )
+        # URDFArmConfiguration only warnings.warn()s when collision geometry
+        # fails to load (e.g. a package:// mesh that isn't installed), which
+        # is easy to miss in launch output -- and it means the self/scene
+        # collision clamp is silently off. An SRDF being configured says
+        # collision checking was expected, so say so loudly.
+        if srdf_path and not arm.has_collision_model:
+            self.get_logger().error(
+                "Collision model did NOT load (see the 'Could not load collision "
+                "model' warning above) -- self/scene collision checking is OFF. "
+                "Usually a mesh in the URDF that can't be resolved: rebuild and "
+                "re-source the package that provides it."
+            )
+        return arm
 
 
     def _set_grav_comp_cb(self, request, response):
@@ -1327,7 +1352,7 @@ class VirtualSpringNode(Node):
         if was_connected and not self._torque_control_connected:
             self.get_logger().error(
                 f"{self._torque_status_topic}'s publisher has disappeared "
-                f"-- gen3_torque_control (or equivalent) is no longer "
+                f"-- {self._torque_bridge_name} is no longer "
                 f"running. Torque commands published from here are no "
                 f"longer being applied to the arm."
             )
@@ -2837,7 +2862,7 @@ class VirtualSpringNode(Node):
             msg.data += " (springs disabled by collision -- re-enable via ~/enable)"
         if self._torque_status_topic and self._torque_control_connected is False:
             msg.data += (
-                " (gen3_torque_control UNREACHABLE -- torque commands are "
+                f" ({self._torque_bridge_name} UNREACHABLE -- torque commands are "
                 "not being applied; torque-enabled status shown elsewhere "
                 "may be stale)"
             )
