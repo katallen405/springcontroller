@@ -1114,24 +1114,38 @@ class VirtualSpringNode(Node):
         urdf_xml = fetch_robot_description(self)
         if urdf_xml is not None:
             self.get_logger().info("Loaded URDF from /robot_description topic.")
-            return URDFArmConfiguration.from_xml_string(
+            arm = URDFArmConfiguration.from_xml_string(
                 urdf_xml, danger_threshold=danger_threshold, srdf_path=srdf_path,
                 locked_joint_names=locked_joint_names,
             )
+        else:
+            urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
+            if not urdf_path:
+                raise RuntimeError(
+                    "No /robot_description topic found and urdf_path parameter not set."
+                )
 
-        urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
-        if not urdf_path:
-            raise RuntimeError(
-                "No /robot_description topic found and urdf_path parameter not set."
+            self.get_logger().warn(
+                f"No /robot_description topic found; falling back to file: {urdf_path}"
+            )
+            arm = URDFArmConfiguration.from_urdf(
+                urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path,
+                locked_joint_names=locked_joint_names,
             )
 
-        self.get_logger().warn(
-            f"No /robot_description topic found; falling back to file: {urdf_path}"
-        )
-        return URDFArmConfiguration.from_urdf(
-            urdf_path, danger_threshold=danger_threshold, srdf_path=srdf_path,
-            locked_joint_names=locked_joint_names,
-        )
+        # URDFArmConfiguration only warnings.warn()s when collision geometry
+        # fails to load (e.g. a package:// mesh that isn't installed), which
+        # is easy to miss in launch output -- and it means the self/scene
+        # collision clamp is silently off. An SRDF being configured says
+        # collision checking was expected, so say so loudly.
+        if srdf_path and not arm.has_collision_model:
+            self.get_logger().error(
+                "Collision model did NOT load (see the 'Could not load collision "
+                "model' warning above) -- self/scene collision checking is OFF. "
+                "Usually a mesh in the URDF that can't be resolved: rebuild and "
+                "re-source the package that provides it."
+            )
+        return arm
 
 
     def _set_grav_comp_cb(self, request, response):

@@ -2,22 +2,28 @@
 # Generate flat_urdf_files/gen2_robotiq_flat.urdf: Kinova Gen2 j2s7s300 with
 # the lab's custom wrist adaptor + Robotiq 2F-85, from poli2's ROS 1 xacro.
 #
-# kinova_description, poli2_description and robotiq_85_description are
-# catkin packages, invisible to ROS 2's $(find)/package:// resolution, so
-# this copies their xacros to a temp dir and rewrites both to absolute
-# source paths. The output therefore only works on machines with the same
-# ~/sandbox/src checkout layout (just as gen3_kinova_flat.urdf depends on
-# an installed kortex_description).
+# An offline dev tool: the ROS 1 description packages it reads
+# (kinova_description, poli2_description, robotiq_85_description) don't
+# need to exist at runtime. Their meshes are copied into
+# meshes/gen2_robotiq/ and referenced as package://springcontroller/...,
+# resolved from the install space like gen3_kinova_flat.urdf's
+# package://kortex_description/... meshes. Rebuild springcontroller after
+# rerunning this.
+#
+# Source locations can be overridden:
+#   KINOVA_DESCRIPTION=... POLI2_DESCRIPTION=... ROBOTIQ_DESCRIPTION=... \
+#       springcontroller/tools/make_gen2_robotiq_urdf.sh
 set -euo pipefail
 
-SRC="${SRC:-$HOME/sandbox/src}"
-KIN="$SRC/kinova-ros/kinova_description"
-POLI="$SRC/poli2/poli2_description"
-RQ="$SRC/robotiq_85_gripper/robotiq_85_description"
-OUT="$(cd "$(dirname "$0")/.." && pwd)/flat_urdf_files/gen2_robotiq_flat.urdf"
+KIN="${KINOVA_DESCRIPTION:-$HOME/ros1_legacy_files_reference/kinova-ros/kinova_description}"
+POLI="${POLI2_DESCRIPTION:-$HOME/ros1_legacy_files_reference/poli2/poli2_description}"
+RQ="${ROBOTIQ_DESCRIPTION:-$HOME/sandbox/src/robotiq_85_gripper/robotiq_85_description}"
+PKG="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="$PKG/flat_urdf_files/gen2_robotiq_flat.urdf"
+MESH_DIR="$PKG/meshes/gen2_robotiq"
 
 for d in "$KIN" "$POLI" "$RQ"; do
-    [[ -d "$d" ]] || { echo "missing $d" >&2; exit 1; }
+    [[ -d "$d" ]] || { echo "missing $d (override with the env vars above)" >&2; exit 1; }
 done
 
 TMP="$(mktemp -d)"
@@ -27,6 +33,8 @@ cp "$KIN"/urdf/*.xacro "$KIN"/urdf/kinova.gazebo "$TMP/kinova/"
 cp "$POLI"/urdf/j2s7s300_robotiq.xacro "$TMP/poli2/"
 cp "$RQ"/urdf/*.xacro "$TMP/robotiq/"
 
+# catkin $(find) / package:// don't resolve under ROS 2; point them at the
+# sources for xacro, then vendor_urdf_meshes.py swaps the meshes for copies.
 sed -i \
     -e "s#\$(find kinova_description)/urdf#$TMP/kinova#g" \
     -e "s#\$(find poli2_description)/urdf#$TMP/poli2#g" \
@@ -53,6 +61,10 @@ xacro "$TMP/gen2_robotiq.urdf.xacro" > "$TMP/flat.urdf"
 # so this placeholder never feeds a torque -- it's only here so the model
 # isn't silently massless if that ever changes.
 python3 "$(dirname "$0")/add_placeholder_inertial.py" "$TMP/flat.urdf" j2s7s300_link_7 0.1
+
+python3 "$(dirname "$0")/vendor_urdf_meshes.py" "$TMP/flat.urdf" "$MESH_DIR" \
+    package://springcontroller/meshes/gen2_robotiq \
+    kinova="$KIN" poli2="$POLI" robotiq="$RQ"
 
 {
     head -n 1 "$TMP/flat.urdf"   # <?xml ...?> must stay first
