@@ -30,6 +30,7 @@ setup(
             "virtual_spring_node = springcontroller.virtual_spring_node:main",
             "torque_relay = springcontroller.torque_relay:main",
             "press_to_pin = springcontroller.press_to_pin:main",
+            "hande_gripper_node = springcontroller.hande_gripper_node:main",
         ],
 
     },
