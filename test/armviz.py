@@ -1,5 +1,6 @@
 #!/home/katallen/.springcontroller_venv/bin/python3
 import argparse
+import os
 import math
 import re
 import json
@@ -32,8 +33,10 @@ def parse_args():
                      "shows the robot, spring attachment points, and targets."
     )
     parser.add_argument(
-        "--urdf", required=True,
-        help="Path to the robot URDF (flattened, no unresolved xacro) to visualize.",
+        "--urdf", default=None,
+        help="Fallback robot URDF (flattened, no unresolved xacro), used only "
+             "if /robot_description isn't being published -- same preference "
+             "order as virtual_spring_node.",
     )
     parser.add_argument(
         "--zmq-url", default=None,
@@ -64,7 +67,7 @@ def parse_args():
 
 _args = parse_args()
 
-URDF          = _args.urdf
+URDF          = os.path.expanduser(_args.urdf) if _args.urdf else None
 CAUTION_THRESHOLD = _args.caution_threshold
 JOINT_STATES  = "/joint_states"
 SPRINGS_TOPIC = "/virtual_spring_node/springs_updated"
@@ -78,7 +81,56 @@ CLOSEST_POINTS_TOPIC = "/virtual_spring_node/closest_collision_points"
 # Pinocchio setup
 # ---------------------------------------------------------------------------
 
-model, collision_model, visual_model = pin.buildModelsFromUrdf(URDF)
+# rclpy is initialized here (not in Main below) so the model can come from
+# /robot_description -- the same source virtual_spring_node._load_arm()
+# prefers. Loading --urdf instead made armviz and the node disagree whenever
+# the two differed (e.g. ceeorobot_flat.urdf has a cart offset and names its
+# tool frame tool0_controller, while the UR driver's description has tool0).
+rclpy.init(args=sys.argv)
+node = rclpy.create_node('spring_viz_node')
+
+
+def fetch_robot_description(timeout_sec=3.0):
+    """Same as virtual_spring_node.fetch_robot_description (copied rather
+    than imported -- that module pulls in matplotlib etc.)."""
+    description = None
+
+    def cb(msg):
+        nonlocal description
+        description = msg.data
+
+    qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                     reliability=ReliabilityPolicy.RELIABLE)
+    sub = node.create_subscription(String, "/robot_description", cb, qos)
+    deadline = time.time() + timeout_sec
+    while description is None and time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    node.destroy_subscription(sub)
+    return description
+
+
+def _ament_share_dirs():
+    """Search dirs for package:// mesh URIs in /robot_description."""
+    try:
+        from ament_index_python.packages import get_packages_with_prefixes
+    except ImportError:
+        return []
+    return sorted({os.path.join(p, "share") for p in get_packages_with_prefixes().values()})
+
+
+_urdf_xml = fetch_robot_description()
+if _urdf_xml is not None:
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".urdf", delete=False) as _f:
+        _f.write(_urdf_xml)
+    print("[viz] loaded URDF from /robot_description topic")
+    model, collision_model, visual_model = pin.buildModelsFromUrdf(_f.name, _ament_share_dirs())
+    os.unlink(_f.name)
+elif URDF:
+    print(f"[viz] no /robot_description; falling back to --urdf {URDF}")
+    model, collision_model, visual_model = pin.buildModelsFromUrdf(URDF)
+else:
+    sys.exit("[viz] no /robot_description topic and no --urdf given")
 data = model.createData()
 
 # Maps joint name -> the actual pinocchio Joint object, so we can write into
@@ -936,9 +988,6 @@ def draw_frames(q):
 # Main
 # ---------------------------------------------------------------------------
 
-rclpy.init(args=sys.argv)
-node = rclpy.create_node('spring_viz_node')
-
 node.create_subscription(JointState, JOINT_STATES,  joint_cb,           10)
 
 # TRANSIENT_LOCAL to match virtual_spring_node's ~/springs_updated,
@@ -978,7 +1027,10 @@ node.create_subscription(
 )
 
 viz = MeshcatVisualizer(model, collision_model, visual_model)
-viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
+# Build the meshcat viewer ourselves rather than passing zmq_url= to
+# initViewer: that kwarg only exists in pinocchio 3.x, and ros_venv has 2.7.
+import meshcat
+viz.initViewer(viewer=meshcat.Visualizer(zmq_url=_args.zmq_url), open=_args.open)
 viz.loadViewerModel()
 
 # Bootstrap from parameters, retrying for a bit rather than a single

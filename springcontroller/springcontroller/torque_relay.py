@@ -51,9 +51,29 @@ class TorqueRelay(Node):
         )
 
 
+    @staticmethod
+    def _resolve(name, msg_names):
+        """Exact match, else the unique msg name that is `name` with a prefix
+        (e.g. joint_order "elbow_joint" matches "ur3e_elbow_joint"), so the
+        relay works with or without the UR driver's tf_prefix."""
+        if name in msg_names:
+            return name
+        candidates = [m for m in msg_names if m.endswith(name)]
+        return candidates[0] if len(candidates) == 1 else None
+
     def springtorques_cb(self, msg: JointState) -> None:
         name_to_effort = dict(zip(msg.name, msg.effort))
-        effort = [name_to_effort.get(n, 0.0) for n in self._joint_order]
+        resolved = [self._resolve(n, msg.name) for n in self._joint_order]
+        missing = [n for n, r in zip(self._joint_order, resolved) if r is None]
+        if missing:
+            # Silently zero-filling here once hid a ur3e_ prefix mismatch
+            # (arm got all-zero torques while springs computed real ones).
+            self.get_logger().error(
+                f"joint_order names {missing} not in torque msg names {list(msg.name)}; "
+                f"sending 0 for those joints.",
+                throttle_duration_sec=5.0,
+            )
+        effort = [name_to_effort[r] if r is not None else 0.0 for r in resolved]
         out = Float64MultiArray()
         out.data = effort
         self.torque_pub.publish(out)

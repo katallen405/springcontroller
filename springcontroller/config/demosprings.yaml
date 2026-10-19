@@ -5,14 +5,25 @@
     # entry in the 'springs' namespace below.
     spring_names:
       - tip_spring
+      - elbow_spring
 
 
     springs:
 
       tip_spring:
-        link_name:    "tool0_controller" # must match a frame name in the URDF
+        link_name:    "tool0" # must match a frame in /robot_description (the UR driver's URDF, which
+                              # virtual_spring_node and armviz both prefer). ceeorobot_flat.urdf names
+                              # this frame tool0_controller instead -- that's only the --urdf fallback.
         local_point:  [0.0, 0.0, 0.0] # attachment point in link-local frame (m)
-        target:       [0.371, 0.205, 0.073] # target position in world frame (m)
-        stiffness:    10            # N/m
-        damping:      0.0              # N·s/m
+        target:       [0.451, 0.105, 0.1] # target position in world frame (m)
+        stiffness:    75.0            # N/m
+        damping:      5.0              # N·s/m
+        rest_length:  0.0              # m  (0 = zero-length spring)
+
+      elbow_spring:
+        link_name:    "elbow_joint" # joint frame; same origin as forearm_link
+        local_point:  [0.0, 0.0, 0.0] # attachment point in link-local frame (m)
+        target:       [0.226, 0.03, 0.337] # target position in world frame (m)
+        stiffness:    75.0            # N/m
+        damping:      5.0              # N·s/m
         rest_length:  0.0              # m  (0 = zero-length spring)

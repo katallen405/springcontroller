@@ -1004,7 +1004,9 @@ class VirtualSpringNode(Node):
                 locked_joint_names=locked_joint_names,
             )
 
-        urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
+        urdf_path = os.path.expanduser(
+            self.get_parameter("urdf_path").get_parameter_value().string_value
+        )
         if not urdf_path:
             raise RuntimeError(
                 "No /robot_description topic found and urdf_path parameter not set."
