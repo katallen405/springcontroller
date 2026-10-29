@@ -96,7 +96,7 @@ def generate_launch_description():
             "start_bridge", default_value="false",
             description="Also start gen2_torque_node from this launch file."),
         DeclareLaunchArgument(
-            "gravity_payload", default_value="[0.5, 0.0, 0.0, 0.0]",
+            "gravity_payload", default_value="[0.55, 0.0, 0.0, 0.0]",
             description="Passed to gen2_torque_node when start_bridge:=true."),
         DeclareLaunchArgument(
             "enable_torque_control", default_value="false",

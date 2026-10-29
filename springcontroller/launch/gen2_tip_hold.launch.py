@@ -1,6 +1,6 @@
 """
 gen2_tip_hold.launch.py
-gen2_spring.launch.py with one tip spring (k = 40 N/m, b = 0) anchored at the
+gen2_spring.launch.py with one tip spring (k = 10 N/m, b = 0) anchored at the
 gripper's position when springcontroller starts (config/gen2_tip_hold_springs.yaml
 leaves `target` unset, so virtual_spring_node uses the first measured pose).
 

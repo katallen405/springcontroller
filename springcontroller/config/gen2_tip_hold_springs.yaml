@@ -17,6 +17,7 @@
       tip_spring:
         link_name:    "j2s7s300_ee_link"
         local_point:  [0.0, 0.0, 0.0]
-        stiffness:    40.0                   # N/m
+        stiffness:    10.0                   # N/m -- tried on arm -0: 40 pulls hard and
+                                             # fast, 20 still hard, 10 reasonable
         damping:      0.0                    # N*s/m
         rest_length:  0.0
