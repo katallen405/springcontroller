@@ -1,0 +1,82 @@
+# UR3e (ceeorobot cell + Robotiq Hand-E), `robot:=ur3e`. Pairs with
+# springcontroller's ur3e_spring.launch.py (virtual_spring_node ->
+# torque_relay -> forward_effort_controller).
+# Parameter meanings: see study_control_panel.yaml / orchestration_node.py.
+study_control_panel_node:
+  ros__parameters:
+    robot: ur3e
+    robot_label: UR3e
+    spring_launch_file: ur3e_spring.launch.py
+    torque_bridge_name: the UR driver
+    # Torque on = controller_manager switches forward_effort_controller in
+    # and scaled_joint_trajectory_controller out; off = the reverse (the
+    # trajectory controller then holds the arm where it is).
+    torque_backend: ros2_control
+    controller_manager: /controller_manager
+    ros2_control_effort_controller: forward_effort_controller
+    ros2_control_position_controller: scaled_joint_trajectory_controller
+    ros2_control_poll_sec: 0.5
+    torque_enable_service: ""
+    torque_status_topic: ""
+    # No collision-gated joint move on the UR3e yet.
+    move_to_joint_angles_topic: ""
+    move_status_topic: ""
+    abort_move_service: ""
+    clear_faults_service: ""
+    # hande_gripper_node (springcontroller, ur3e-hande-gripper branch).
+    gripper_command_service: /hande_gripper/gripper_command
+    # The Hand-E talks over its own URCap socket, so it moves with the
+    # effort controller still active.
+    gripper_requires_torque_off: false
+    # ur3e_spring.launch.py's armviz uses meshcat's own server, which takes
+    # the first free port from 7000.
+    meshcat_url: http://localhost:7000/static/
+    ui_link_presets: >-
+      {"tool": {"link_name": "tool0_controller", "local_point": [0, 0, 0]}}
+    ui_excluded_link_pattern: ""
+    check_collision_service: /virtual_spring_node/check_collision_at
+    move_confirm_timeout_sec: 3.0
+    add_spring_service: /virtual_spring_node/add_spring
+    remove_spring_service: /virtual_spring_node/remove_spring
+    spring_node_get_parameters_service: /virtual_spring_node/get_parameters
+    safety_status_topic: /virtual_spring_node/safety_status
+    joint_states_topic: /joint_states
+    # Unprefixed; the driver's tf_prefix (ur3e_elbow_joint, ...) also matches.
+    joint_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    prefer_robot_description: true
+    urdf_path: /home/katallen/sandbox/src/springcontroller/springcontroller/flat_urdf_files/ceeorobot_flat.urdf
+    locked_joint_names: [""]
+    # Must name a frame in whichever model loaded (/robot_description or
+    # urdf_path) -- springs.yaml's tip spring uses the same frame.
+    tip_link_name: tool0_controller
+    reset_spring_name: reset_tip_spring
+    reset_spring_stiffness: 50.0
+    reset_spring_damping: 5.0
+    reset_spring_local_point: [0.0, 0.0, 0.0]
+    study_start_preset_path: "~/springcontroller_ui_study_start_ur3e.yaml"
+    # Workspace calibration: NOT calibrated for the UR3e cell. Placeholders
+    # -- measure the seat mark and tune before running participants.
+    workspace_seat_x: 0.0
+    workspace_seat_y: 0.0
+    workspace_study_data_dir: "~/ur3e_study_data"
+    workspace_spring_name: tip_spring
+    workspace_spring_stiffness: 50.0
+    workspace_spring_damping: 5.0
+    workspace_pose_spring_name: face_participant
+    workspace_pose_local_face_normal: [0.0, 0.0, 1.0]
+    workspace_pose_stiffness: 5.0
+    workspace_pose_damping: 0.2
+    workspace_pose_position_stiffness: 10.0
+    # The UR3e's last (wrist-roll) joint plays joint_7's role here.
+    workspace_joint7_spring_name: wrist3_damper
+    workspace_joint7_name: wrist_3_joint
+    workspace_joint7_damping: 1.5
+    joint_state_freshness_sec: 1.0
+    safety_status_freshness_sec: 3.0
+    service_call_timeout_sec: 5.0

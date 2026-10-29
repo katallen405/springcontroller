@@ -1,0 +1,78 @@
+# Kinova Gen2 JACO (j2s7s300 + Robotiq 2F-85), `robot:=gen2`. Pairs with
+# springcontroller's gen2_spring.launch.py and gen2_torque_control.
+# Parameter meanings: see study_control_panel.yaml / orchestration_node.py.
+study_control_panel_node:
+  ros__parameters:
+    robot: gen2
+    robot_label: Kinova Gen2
+    spring_launch_file: gen2_spring.launch.py
+    torque_bridge_name: gen2_torque_control
+    torque_backend: bridge
+    torque_enable_service: /gen2_torque_control/enable
+    torque_status_topic: /gen2_torque_control/status
+    move_to_joint_angles_topic: /gen2_torque_control/move_to_joint_angles
+    move_status_topic: /gen2_torque_control/move_status
+    abort_move_service: /gen2_torque_control/abort_move
+    clear_faults_service: /gen2_torque_control/clear_faults
+    # gen2_torque_control's gripper_command only answers "not supported
+    # yet"; left out so the panel doesn't drop torque control around a
+    # gripper command that can't do anything.
+    gripper_command_service: ""
+    meshcat_url: http://localhost:7101/static/
+    ui_link_presets: >-
+      {"tip": {"link_name": "j2s7s300_ee_link", "local_point": [0, 0, 0]}}
+    ui_excluded_link_pattern: "^gripper_finger"
+    check_collision_service: /virtual_spring_node/check_collision_at
+    move_confirm_timeout_sec: 3.0
+    add_spring_service: /virtual_spring_node/add_spring
+    remove_spring_service: /virtual_spring_node/remove_spring
+    spring_node_get_parameters_service: /virtual_spring_node/get_parameters
+    safety_status_topic: /virtual_spring_node/safety_status
+    # gen2_spring.launch.py's joint_states_topic default.
+    joint_states_topic: /gen2/joint_states_lowlevel
+    joint_names:
+      - j2s7s300_joint_1
+      - j2s7s300_joint_2
+      - j2s7s300_joint_3
+      - j2s7s300_joint_4
+      - j2s7s300_joint_5
+      - j2s7s300_joint_6
+      - j2s7s300_joint_7
+    prefer_robot_description: true
+    urdf_path: /home/katallen/sandbox/src/springcontroller/springcontroller/flat_urdf_files/gen2_robotiq_flat.urdf
+    # Same list as gen2_spring.launch.py's GRIPPER_LOCKED_JOINTS.
+    locked_joint_names:
+      - gripper_finger1_joint
+      - gripper_finger2_joint
+      - gripper_finger1_inner_knuckle_joint
+      - gripper_finger2_inner_knuckle_joint
+      - gripper_finger1_finger_tip_joint
+      - gripper_finger2_finger_tip_joint
+    tip_link_name: j2s7s300_ee_link
+    # Gen2 spring values follow the arm -0 tuning (gen2_tip_hold_springs.yaml:
+    # k = 10 N/m, b = 0); 50 N/m is far too strong on this arm.
+    reset_spring_name: reset_tip_spring
+    reset_spring_stiffness: 10.0
+    reset_spring_damping: 0.0
+    reset_spring_local_point: [0.0, 0.0, 0.0]
+    study_start_preset_path: "~/springcontroller_ui_study_start_gen2.yaml"
+    # Workspace calibration: NOT calibrated for the Gen2 bench. The seat
+    # position and pose-spring values below are placeholders -- measure the
+    # seat mark and tune before running participants on this arm.
+    workspace_seat_x: 0.0
+    workspace_seat_y: 0.0
+    workspace_study_data_dir: "~/gen2_study_data"
+    workspace_spring_name: tip_spring
+    workspace_spring_stiffness: 10.0
+    workspace_spring_damping: 0.0
+    workspace_pose_spring_name: face_participant
+    workspace_pose_local_face_normal: [0.0, 0.0, 1.0]
+    workspace_pose_stiffness: 1.0
+    workspace_pose_damping: 0.0
+    workspace_pose_position_stiffness: 2.0
+    workspace_joint7_spring_name: joint7_damper
+    workspace_joint7_name: j2s7s300_joint_7
+    workspace_joint7_damping: 0.5
+    joint_state_freshness_sec: 1.0
+    safety_status_freshness_sec: 3.0
+    service_call_timeout_sec: 5.0
