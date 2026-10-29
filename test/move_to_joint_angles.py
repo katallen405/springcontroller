@@ -2,8 +2,9 @@
 """
 move_to_joint_angles.py
 
-Collision-checked caller for gen3_torque_control's
-~move_to_joint_angles topic (see kinova_torque_control_node.py). That topic
+Collision-checked caller for the torque bridges' move_to_joint_angles topic
+(gen3_torque_control's kinova_torque_control_node.py, or
+gen2_torque_control -- pick with --robot). That topic
 only knows how to move the arm -- it has no notion of the loaded
 scene/self-collision model, so this script is where the safety gate lives:
 queries virtual_spring_node's ~/check_collision_at service (the same
@@ -20,9 +21,14 @@ and the move_to_joint_angles docstring for why this pair of nodes has to
 stay this way (no kortex_bringup running alongside gen3_torque_control).
 
 Usage:
-  move_to_joint_angles.py J1 J2 J3 J4 J5 J6 J7   (radians)
-      [--check-service SERVICE] [--move-topic TOPIC]
+  move_to_joint_angles.py J1 J2 J3 J4 J5 J6 J7   (radians, URDF convention)
+      [--robot gen3|gen2] [--check-service SERVICE] [--move-topic TOPIC]
       [--timeout-sec SEC] [--strict]
+
+--robot picks the default --move-topic (gen3 by default, so existing
+callers are unchanged). For the Gen2 the angles are Kinova's own, e.g. the
+candle pose is every joint at pi:
+  move_to_joint_angles.py --robot gen2 3.14159 3.14159 3.14159 3.14159 3.14159 3.14159 3.14159
 
 --strict also refuses when the target is merely in the danger zone
 (in_danger), not just outright in_collision. Default only refuses on
@@ -33,8 +39,13 @@ actually a collision.
 Exits nonzero and does NOT publish the move if the collision check itself
 fails (service unavailable, wrong joint count, etc. -- fails closed) or if
 the target is rejected.
+
+If virtual_spring_node has no collision model loaded, its check reports "no
+collision" with min_distance=inf -- nothing was checked. The move still
+goes ahead, with a warning that the target was checked against empty space.
 """
 import argparse
+import math
 import sys
 import time
 
@@ -44,15 +55,26 @@ from std_msgs.msg import Float64MultiArray
 
 from springcontroller_interfaces.srv import CheckCollisionAtAngles
 
+MOVE_TOPICS = {
+    "gen3": "/gen3_torque_control/move_to_joint_angles",
+    "gen2": "/gen2_torque_control/move_to_joint_angles",
+}
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("joint_angles_rad", type=float, nargs=7, metavar="J")
+    parser.add_argument(
+        "--robot", choices=sorted(MOVE_TOPICS), default="gen3",
+        help="Which torque bridge to send the move to (sets the default --move-topic).",
+    )
     parser.add_argument(
         "--check-service", default="/virtual_spring_node/check_collision_at",
     )
     parser.add_argument(
-        "--move-topic", default="/gen3_torque_control/move_to_joint_angles",
+        "--move-topic", default=None,
+        help="Override the bridge's move topic (default: from --robot).",
     )
     parser.add_argument("--timeout-sec", type=float, default=10.0)
     parser.add_argument(
@@ -60,6 +82,8 @@ def main() -> None:
         help="Also refuse when the target is merely in the danger zone, not just in_collision.",
     )
     args = parser.parse_args()
+    if args.move_topic is None:
+        args.move_topic = MOVE_TOPICS[args.robot]
 
     rclpy.init()
     node = Node("move_to_joint_angles_gate")
@@ -91,6 +115,16 @@ def main() -> None:
         f"closest_pair=({result.link_a}, {result.link_b})"
     )
 
+    # _check_collision_at_cb's "no collision model loaded" answer: not in
+    # collision, but only because there was nothing to check against.
+    if not result.in_collision and math.isinf(result.min_distance):
+        logger.warn(
+            "virtual_spring_node has no collision model loaded (min_distance=inf) -- "
+            "the target was checked against EMPTY SPACE, i.e. not really checked. "
+            "Moving anyway. If a collision model was expected, look for its "
+            "'Collision model did NOT load' error."
+        )
+
     if result.in_collision:
         logger.error(
             f"Target {args.joint_angles_rad} would be in self/scene collision "
@@ -120,7 +154,7 @@ def main() -> None:
 
     publisher = node.create_publisher(Float64MultiArray, args.move_topic, 10)
     # Give DDS discovery a moment to match the publisher with
-    # kinova_torque_control_node's subscriber before publishing once and
+    # the torque bridge's subscriber before publishing once and
     # exiting -- otherwise a fresh publisher's first message can be sent
     # before the subscription-side connection is up and silently dropped.
     time.sleep(0.3)
