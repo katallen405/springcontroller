@@ -1,0 +1,23 @@
+/**:
+  ros__parameters:
+
+    # Gen2 j2s7s300 + Robotiq 2F-85: one tip spring that holds the gripper
+    # where it is. No `target` on purpose -- virtual_spring_node then sets the
+    # target to j2s7s300_ee_link's actual position from the first joint-state
+    # message, so the spring starts at zero force wherever the arm is when
+    # springcontroller comes up. Used by gen2_tip_hold.launch.py.
+    #
+    # damping 0: the spring's velocity damping is what made the first Gen2
+    # spring tests feel sluggish; add it back once the stiffness feels right.
+    spring_names:
+      - tip_spring
+
+    springs:
+
+      tip_spring:
+        link_name:    "j2s7s300_ee_link"
+        local_point:  [0.0, 0.0, 0.0]
+        stiffness:    10.0                   # N/m -- tried on arm -0: 40 pulls hard and
+                                             # fast, 20 still hard, 10 reasonable
+        damping:      0.0                    # N*s/m
+        rest_length:  0.0

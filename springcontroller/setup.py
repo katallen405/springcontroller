@@ -1,8 +1,20 @@
 import glob
+import os
 
 from setuptools import setup
 
 package_name = "springcontroller"
+
+
+def _tree(src_root):
+    """data_files entries installing src_root/** under share/<pkg>/src_root,
+    keeping its subdirectory layout (package:// mesh URIs depend on it)."""
+    entries = []
+    for dirpath, _, filenames in os.walk(src_root):
+        if filenames:
+            entries.append((os.path.join("share", package_name, dirpath),
+                            [os.path.join(dirpath, f) for f in filenames]))
+    return entries
 
 setup(
     name=package_name,
@@ -17,6 +29,10 @@ setup(
         # silently missing from the install.
         ("share/" + package_name + "/launch", glob.glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob.glob("config/*.yaml")),
+        # Meshes for flat_urdf_files/gen2_robotiq_flat.urdf, referenced as
+        # package://springcontroller/meshes/... (see
+        # tools/make_gen2_robotiq_urdf.sh).
+        *_tree("meshes"),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

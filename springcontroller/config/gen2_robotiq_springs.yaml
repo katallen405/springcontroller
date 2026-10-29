@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+
+    # Example single tip spring for the Gen2 j2s7s300 + Robotiq 2F-85
+    # (flat_urdf_files/gen2_robotiq_flat.urdf). The target is where
+    # j2s7s300_ee_link (between the gripper fingers) sits in the candle
+    # pose (every joint at 180 deg, arm straight up), so enabling at candle
+    # starts with zero spring force. Move the target to wherever you
+    # actually want the tip pulled.
+    spring_names:
+      - tip_spring
+
+    springs:
+
+      tip_spring:
+        link_name:    "j2s7s300_ee_link"
+        local_point:  [0.0, 0.0, 0.0]
+        target:       [0.0, -0.013, 1.281]   # world frame (m) = arm base frame
+        stiffness:    10.0                   # N/m -- 40+ pulls hard and fast on the Gen2
+                                             # (much more than on the UR3e); 10 is reasonable
+        damping:      0.0                    # N·s/m -- velocity damping felt sluggish
+        rest_length:  0.0
