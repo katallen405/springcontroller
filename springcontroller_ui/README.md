@@ -266,7 +266,7 @@ with a line saying so.
 |---|---|---|---|
 | Torque on/off | `gen3_torque_control/enable` | `gen2_torque_control/enable` | controller switch (below) |
 | Move to joint angles / study start | yes | yes | not yet |
-| Gripper | yes (drops torque around it) | not yet | `hande_gripper/gripper_command` |
+| Gripper | yes (drops torque around it) | `gen2_torque_control/gripper_command` + Activate button | `hande_gripper/gripper_command` + Activate button |
 | Clear faults | yes | yes | no |
 | Workspace calibration values | calibrated | **placeholders** | **placeholders** |
 

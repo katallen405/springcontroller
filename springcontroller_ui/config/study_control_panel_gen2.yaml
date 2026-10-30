@@ -14,10 +14,11 @@ study_control_panel_node:
     move_status_topic: /gen2_torque_control/move_status
     abort_move_service: /gen2_torque_control/abort_move
     clear_faults_service: /gen2_torque_control/clear_faults
-    # gen2_torque_control's gripper_command only answers "not supported
-    # yet"; left out so the panel doesn't drop torque control around a
-    # gripper command that can't do anything.
-    gripper_command_service: ""
+    # Robotiq 2F-85 on its own RS-485 link, so it moves with torque control
+    # on; needs one activation (jaws sweep) after each gripper power-up.
+    gripper_command_service: /gen2_torque_control/gripper_command
+    gripper_activate_service: /gen2_torque_control/gripper_activate
+    gripper_requires_torque_off: false
     meshcat_url: http://localhost:7101/static/
     ui_link_presets: >-
       {"tip": {"link_name": "j2s7s300_ee_link", "local_point": [0, 0, 0]}}

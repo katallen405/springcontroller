@@ -25,6 +25,7 @@ study_control_panel_node:
     clear_faults_service: ""
     # hande_gripper_node (springcontroller, ur3e-hande-gripper branch).
     gripper_command_service: /hande_gripper/gripper_command
+    gripper_activate_service: /hande_gripper/activate
     # The Hand-E talks over its own URCap socket, so it moves with the
     # effort controller still active.
     gripper_requires_torque_off: false

@@ -180,6 +180,8 @@ class StudyControlPanelNode(Node):
         # this node). "" = this robot has none; the UI greys out the button.
         self.declare_parameter("gripper_command_service", "/gen3_torque_control/gripper_command")
         self.declare_parameter("clear_faults_service", "/gen3_torque_control/clear_faults")
+        # Trigger that activates (calibrates) the gripper; "" = none needed.
+        self.declare_parameter("gripper_activate_service", "")
         # True when the gripper only moves with torque control off (Kortex),
         # so the UI drops out of torque control around a gripper command.
         self.declare_parameter("gripper_requires_torque_off", True)
@@ -309,6 +311,7 @@ class StudyControlPanelNode(Node):
         self._position_controller = gp("ros2_control_position_controller")
         self._gripper_command_service = gp("gripper_command_service")
         self._clear_faults_service = gp("clear_faults_service")
+        self._gripper_activate_service = gp("gripper_activate_service")
         self._gripper_requires_torque_off = bool(gp("gripper_requires_torque_off"))
         self._meshcat_url = gp("meshcat_url")
         self._ui_link_presets = json.loads(gp("ui_link_presets") or "{}")
@@ -602,6 +605,7 @@ class StudyControlPanelNode(Node):
             "joint_states_topic": self._joint_states_topic,
             "joint_names": self._joint_names,
             "gripper_command_service": self._gripper_command_service,
+            "gripper_activate_service": self._gripper_activate_service,
             "clear_faults_service": self._clear_faults_service,
             "meshcat_url": self._meshcat_url,
             "link_presets": self._ui_link_presets,

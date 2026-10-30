@@ -91,6 +91,19 @@ def test_ur3e_profile_points_at_its_own_torque_status(ur3e):
     assert p["features"]["gripper_requires_torque_off"] is False
 
 
+def test_gripper_wiring_per_robot(any_robot_node):
+    robot, node = any_robot_node
+    p = node._robot_profile()
+    expected = {
+        # robot: (command service, activate service, needs torque off)
+        "gen3": ("/gen3_torque_control/gripper_command", "", True),
+        "gen2": ("/gen2_torque_control/gripper_command", "/gen2_torque_control/gripper_activate", False),
+        "ur3e": ("/hande_gripper/gripper_command", "/hande_gripper/activate", False),
+    }[robot]
+    assert (p["gripper_command_service"], p["gripper_activate_service"],
+            p["features"]["gripper_requires_torque_off"]) == expected
+
+
 # ---------------------------------------------------------------------
 # Joint names: exact, or the UR driver's tf_prefix'd form
 # ---------------------------------------------------------------------

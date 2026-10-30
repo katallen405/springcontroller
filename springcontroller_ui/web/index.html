@@ -250,6 +250,12 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
           <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
         </div>
+        <div class="hidden" id="gripper-activate-row">
+          <p class="hint">Needed once after the gripper powers up. Activating sweeps the jaws fully open and closed -- keep hands and objects clear.</p>
+          <div class="btn-row">
+            <button class="action off" id="btn-gripper-activate" onclick="gripperActivate()">Activate gripper</button>
+          </div>
+        </div>
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </details>
 
@@ -546,6 +552,7 @@ const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
 // come from the robot profile (handleRobotProfile); '' = this robot has none.
 const svcGripperCommand   = { name: '', type: 'std_srvs/srv/SetBool' };
 const svcClearFaults      = { name: '', type: 'std_srvs/srv/Trigger' };
+const svcGripperActivate  = { name: '', type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
 const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
@@ -856,6 +863,12 @@ function gripperCommand(close) {
     gripperCycleInProgress = false;
     setGripperButtonsEnabled(true);
   });
+}
+
+function gripperActivate() {
+  callService(svcGripperActivate, {},
+    function(resp) { showMsg('gripper-msg', resp.success, resp.message || (resp.success ? 'Activating.' : 'Failed.')); },
+    function(err) { showMsg('gripper-msg', false, 'Gripper activate failed: ' + err); });
 }
 
 function sendGripperCommand(close, reenableTorqueAfter) {
@@ -2147,6 +2160,9 @@ function handleRobotProfile(msg) {
 
   svcGripperCommand.name = p.gripper_command_service || '';
   svcClearFaults.name = p.clear_faults_service || '';
+  svcGripperActivate.name = p.gripper_activate_service || '';
+  document.getElementById('gripper-activate-row').classList.toggle(
+    'hidden', !(f.gripper && svcGripperActivate.name));
   LINK_PRESETS = p.link_presets || {};
   EXCLUDED_LINK_PATTERN = p.excluded_link_pattern ? new RegExp(p.excluded_link_pattern, 'i') : null;
 
