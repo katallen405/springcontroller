@@ -332,7 +332,9 @@ class URDFArmConfiguration:
             [ pz,   0, -px],
             [-py,  px,   0],
         ])
-        J[:3, :] += skew_p @ J[3:, :]
+        # p_dot = o_dot + omega x r = o_dot - [r]_x omega
+        # (docs/JACOBIAN_SIGN_NOTE.md; test/test_jacobian_point_shift.py).
+        J[:3, :] -= skew_p @ J[3:, :]
         return J
 
     def get_gravity_torques(self) -> np.ndarray:

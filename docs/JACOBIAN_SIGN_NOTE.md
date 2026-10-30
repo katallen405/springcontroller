@@ -1,7 +1,18 @@
 # Sign of the Jacobian point-shift in `urdf_arm_configuration.py`
 
-**Status: reported, not fixed.** No code was changed. Fixing this alters the
-dynamics of an already-run study, so it needs to be a deliberate decision.
+**Status: fixed on 2026-10-29** (branch `jacobian-sign-fix`; the shift is now
+`-=`). Guarded by `test/test_jacobian_point_shift.py`, which compares
+`get_jacobian` against finite-difference FK on the real Gen3 and Gen2 URDFs.
+
+**Study reproducibility:** every run recorded before this fix used the old
+`+=` sign. The last pre-fix commit is tagged `pre-jacobian-fix`; check that
+tag out to reproduce the study's dynamics exactly. Springs with a non-zero
+`local_point` (e.g. Gen3 `gen3_springs.yaml`, `[0, 0, 0.1]`) now get correct
+Cartesian damping and `Jv.T` force mapping, so they will feel different —
+expect more damping, not less. Springs at `local_point = [0, 0, 0]` are
+unchanged.
+
+The original report follows.
 
 Found while deriving eq. (4) of `docs/spring_math.tex` for the paper.
 
