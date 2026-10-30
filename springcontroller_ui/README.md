@@ -1,13 +1,15 @@
 # springcontroller_ui
 
-Browser-based control panel for running the Gen3 spring-controller study:
+Browser-based control panel for running the spring-controller study on the
+Kinova Gen3, Kinova Gen2 or UR3e (see [Robots](#robots)):
 mode-switch/e-stop, gripper control, study-start-pose capture/move, spring
 reset, an add/remove-springs panel with an embedded meshcat view, and the
 per-participant **workspace calibration** flow that turns two tape-measure
 numbers into that participant's condition YAML files.
 
 This package never touches hardware directly (see [How it fits together](#how-it-fits-together)) --
-it drives `gen3_torque_control` and `virtual_spring_node`, which do.
+it drives the robot's torque bridge (or, on the UR3e, `controller_manager`)
+and `virtual_spring_node`, which do. The diagram below shows the Gen3.
 
 ## How it fits together
 
@@ -238,16 +240,50 @@ drive any robot behavior.
 ## Launching
 
 ```bash
-ros2 launch springcontroller_ui study_control_panel.launch.py
+ros2 launch springcontroller_ui study_control_panel.launch.py robot:=gen3   # default
+ros2 launch springcontroller_ui study_control_panel.launch.py robot:=gen2
+ros2 launch springcontroller_ui study_control_panel.launch.py robot:=ur3e
 ```
 
 Starts rosbridge, `study_control_panel_node`, and the static UI server
-together (default `http://localhost:8090/`). This does **not** start
-`gen3_torque_control` or `gen3_spring.launch.py` (virtual_spring_node) --
-those still need to be launched separately, with the joint-states remap the
-panel's hint text and the top-level `springcontroller` package README
-describe, before torque control or the workspace calibration flow will do
-anything.
+together (default `http://localhost:8090/`). This does **not** start the
+robot's driver or its spring launch file (`gen3_spring.launch.py`,
+`gen2_spring.launch.py`, `ur3e_spring.launch.py`) -- those still need to be
+launched separately before torque control or the workspace calibration flow
+will do anything.
+
+### Robots
+
+`robot:=` picks `config/study_control_panel.yaml` (gen3),
+`study_control_panel_gen2.yaml` or `study_control_panel_ur3e.yaml`;
+`config:=<path>` overrides it. The node publishes the robot's names (topics,
+services, joints, link presets, meshcat URL) on the latched
+`~/robot_profile`, and the page wires itself from that -- `web/index.html`
+holds no robot-specific names. A control the robot doesn't have is greyed out
+with a line saying so.
+
+| | Gen3 | Gen2 | UR3e |
+|---|---|---|---|
+| Torque on/off | `gen3_torque_control/enable` | `gen2_torque_control/enable` | controller switch (below) |
+| Move to joint angles / study start | yes | yes | not yet |
+| Gripper | yes (drops torque around it) | `gen2_torque_control/gripper_command` + Activate button | `hande_gripper/gripper_command` + Activate button |
+| Clear faults | yes | yes | no |
+| Workspace calibration values | calibrated | **placeholders** | **placeholders** |
+
+- **UR3e torque on/off** goes through `controller_manager/switch_controller`
+  (STRICT): on activates `forward_effort_controller` and deactivates
+  `scaled_joint_trajectory_controller`; off is the reverse, so the trajectory
+  controller holds the arm. The node polls `list_controllers` and republishes
+  `ENABLED`/`DISABLED` on `~/torque_status`. The soft e-stop button switches
+  torque off the same way -- it is not the pendant's E-stop.
+- **Joint names** match exactly or by suffix, so the UR driver's `tf_prefix`
+  (`ur3e_elbow_joint`) matches `elbow_joint`.
+- **FK model**: like `virtual_spring_node`, the node prefers
+  `/robot_description` (waiting up to `robot_description_timeout_sec`) and
+  falls back to `urdf_path`, so link positions agree with the springs'.
+- The Gen2 and UR3e configs' seat position and pose-spring values are
+  uncalibrated placeholders -- measure and tune them before running
+  participants on those arms.
 
 ## Tests
 
@@ -258,4 +294,5 @@ colcon test --packages-select springcontroller_ui
 `test/test_study_workspace_config.py` covers the workspace-center/eye-location
 math directly (no rclpy needed); the other `test/test_*.py` files cover
 `orchestration_node.py`'s interlocks, FK helper, move-to-joint-angles
-gating, and tip-spring retargeting.
+gating, and tip-spring retargeting. `test/test_robot_profiles.py` starts the
+node from each robot config and covers the UR3e controller switch.

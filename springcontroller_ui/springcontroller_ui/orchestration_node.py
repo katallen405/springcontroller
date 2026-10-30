@@ -55,6 +55,7 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.msg import ParameterType
+from controller_manager_msgs.srv import ListControllers, SwitchController
 
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 from springcontroller_interfaces.srv import AddSpring, RemoveSpring, CheckCollisionAtAngles
@@ -83,6 +84,45 @@ from springcontroller_ui.study_workspace_config import (
 )
 
 
+def fetch_robot_description(node: Node, timeout_sec: float) -> Optional[str]:
+    """Latched /robot_description, or None if nothing arrives in time.
+    Copy of virtual_spring_node.fetch_robot_description (importing that
+    module drags in its plotting dependencies)."""
+    description = None
+
+    def cb(msg: String) -> None:
+        nonlocal description
+        description = msg.data
+
+    qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                     reliability=ReliabilityPolicy.RELIABLE)
+    sub = node.create_subscription(String, "/robot_description", cb, qos)
+    deadline = time.monotonic() + timeout_sec
+    while description is None and time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    node.destroy_subscription(sub)
+    return description
+
+
+def resolve_joint_indices(msg_names: list[str], wanted: list[str]) -> tuple[list[int], list[str]]:
+    """Index of each `wanted` name in a JointState's names: an exact match,
+    else the one name ending in it (the UR driver's tf_prefix turns
+    "elbow_joint" into "ur3e_elbow_joint" -- same rule as torque_relay).
+    Returns (indices, missing); indices is only complete when missing is
+    empty."""
+    indices, missing = [], []
+    for name in wanted:
+        if name in msg_names:
+            indices.append(msg_names.index(name))
+            continue
+        candidates = [i for i, m in enumerate(msg_names) if m.endswith(name)]
+        if len(candidates) == 1:
+            indices.append(candidates[0])
+        else:
+            missing.append(name)
+    return indices, missing
+
+
 class _Freshness:
     """Tracks the last time a cached value was received, so callers can ask
     'is this actually alive right now' instead of trusting a value that may
@@ -105,12 +145,55 @@ class _Freshness:
 
 
 class StudyControlPanelNode(Node):
-    def __init__(self) -> None:
-        super().__init__("study_control_panel_node")
+    def __init__(self, **node_kwargs) -> None:
+        super().__init__("study_control_panel_node", **node_kwargs)
 
         # ------------------------------------------------------------
         # Parameters
         # ------------------------------------------------------------
+        # Which arm this panel drives. Everything robot-specific below is
+        # its own parameter (see config/study_control_panel_<robot>.yaml);
+        # these few only label things for the operator and pick the
+        # torque on/off mechanism.
+        self.declare_parameter("robot", "gen3")
+        self.declare_parameter("robot_label", "Kinova Gen3")
+        self.declare_parameter("spring_launch_file", "gen3_spring.launch.py")
+        # Named in "is X running?" messages, and matched against
+        # virtual_spring_node's "<name> UNREACHABLE" safety-status suffix
+        # (its own torque_bridge_name param) by the UI.
+        self.declare_parameter("torque_bridge_name", "gen3_torque_control")
+        # "bridge": a Kinova bridge's SetBool ~/enable + String ~/status
+        # (torque_enable_service / torque_status_topic).
+        # "ros2_control": torque on = activate ros2_control_effort_controller
+        # and deactivate ros2_control_position_controller via
+        # controller_manager's switch_controller (the UR3e, where
+        # torque_relay feeds forward_effort_controller); off = the reverse,
+        # leaving the arm holding position under the trajectory controller.
+        # The ENABLED/DISABLED state is polled from list_controllers and
+        # republished on ~/torque_status.
+        self.declare_parameter("torque_backend", "bridge")
+        self.declare_parameter("controller_manager", "/controller_manager")
+        self.declare_parameter("ros2_control_effort_controller", "forward_effort_controller")
+        self.declare_parameter("ros2_control_position_controller", "scaled_joint_trajectory_controller")
+        self.declare_parameter("ros2_control_poll_sec", 0.5)
+        # Straight-to-the-driver services the UI calls itself (not through
+        # this node). "" = this robot has none; the UI greys out the button.
+        self.declare_parameter("gripper_command_service", "/gen3_torque_control/gripper_command")
+        self.declare_parameter("clear_faults_service", "/gen3_torque_control/clear_faults")
+        # Trigger that activates (calibrates) the gripper; "" = none needed.
+        self.declare_parameter("gripper_activate_service", "")
+        # True when the gripper only moves with torque control off (Kortex),
+        # so the UI drops out of torque control around a gripper command.
+        self.declare_parameter("gripper_requires_torque_off", True)
+        self.declare_parameter("meshcat_url", "http://localhost:7101/static/")
+        # JSON object {preset_name: {"link_name": ..., "local_point": [x,y,z]}}
+        # for the UI's link dropdowns (a ROS parameter can't hold a dict).
+        self.declare_parameter("ui_link_presets", "{}")
+        # Links the UI never offers as a spring attachment (regex, "" = none).
+        self.declare_parameter("ui_excluded_link_pattern", "robotiq")
+        # Any of the move/torque names below may be "" when the robot has no
+        # such interface; the matching service then refuses with a message
+        # instead of creating a client for an invalid topic name.
         self.declare_parameter("torque_enable_service", "/gen3_torque_control/enable")
         self.declare_parameter("torque_status_topic", "/gen3_torque_control/status")
         # Position moves go through gen3_torque_control's own
@@ -156,6 +239,8 @@ class StudyControlPanelNode(Node):
             "robotiq_85_left_finger_tip_joint",
             "robotiq_85_right_finger_tip_joint",
         ])
+        self.declare_parameter("prefer_robot_description", False)
+        self.declare_parameter("robot_description_timeout_sec", 3.0)
         self.declare_parameter("tip_link_name", "end_effector_link")
         self.declare_parameter("reset_spring_name", "reset_tip_spring")
         self.declare_parameter("reset_spring_stiffness", 50.0)
@@ -213,6 +298,24 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("service_call_timeout_sec", 5.0)
 
         gp = lambda name: self.get_parameter(name).value  # noqa: E731
+        self._robot = gp("robot")
+        self._robot_label = gp("robot_label")
+        self._spring_launch_file = gp("spring_launch_file")
+        self._torque_bridge_name = gp("torque_bridge_name")
+        self._torque_backend = gp("torque_backend")
+        if self._torque_backend not in ("bridge", "ros2_control"):
+            raise ValueError(
+                f"torque_backend must be 'bridge' or 'ros2_control', got '{self._torque_backend}'")
+        self._controller_manager = gp("controller_manager").rstrip("/")
+        self._effort_controller = gp("ros2_control_effort_controller")
+        self._position_controller = gp("ros2_control_position_controller")
+        self._gripper_command_service = gp("gripper_command_service")
+        self._clear_faults_service = gp("clear_faults_service")
+        self._gripper_activate_service = gp("gripper_activate_service")
+        self._gripper_requires_torque_off = bool(gp("gripper_requires_torque_off"))
+        self._meshcat_url = gp("meshcat_url")
+        self._ui_link_presets = json.loads(gp("ui_link_presets") or "{}")
+        self._ui_excluded_link_pattern = gp("ui_excluded_link_pattern")
         self._torque_enable_service = gp("torque_enable_service")
         self._torque_status_topic = gp("torque_status_topic")
         self._move_to_joint_angles_topic = gp("move_to_joint_angles_topic")
@@ -226,8 +329,9 @@ class StudyControlPanelNode(Node):
         self._safety_status_topic = gp("safety_status_topic")
         self._joint_states_topic = gp("joint_states_topic")
         self._joint_names = list(gp("joint_names"))
-        urdf_path = gp("urdf_path")
-        locked_joint_names = list(gp("locked_joint_names"))
+        urdf_path = os.path.expanduser(gp("urdf_path"))
+        # [""] stands in for "none" (a YAML [] can't be typed as a string array).
+        locked_joint_names = [n for n in gp("locked_joint_names") if n]
         self._tip_link_name = gp("tip_link_name")
         self._reset_spring_name = gp("reset_spring_name")
         self._reset_spring_stiffness = float(gp("reset_spring_stiffness"))
@@ -256,9 +360,23 @@ class StudyControlPanelNode(Node):
         # ------------------------------------------------------------
         # FK model (kinematics only -- no SRDF/collision needed here)
         # ------------------------------------------------------------
-        self._arm = URDFArmConfiguration.from_urdf(
-            urdf_path, srdf_path="", locked_joint_names=locked_joint_names,
+        # Same source preference as virtual_spring_node: /robot_description
+        # if something publishes it, else urdf_path. FK here must use the
+        # same model the springs do, or "use current position" targets land
+        # off by any frame offset between the two (e.g. the UR cell's cart).
+        urdf_xml = (
+            fetch_robot_description(self, float(gp("robot_description_timeout_sec")))
+            if gp("prefer_robot_description") else None
         )
+        if urdf_xml is not None:
+            self.get_logger().info("FK model loaded from /robot_description.")
+            self._arm = URDFArmConfiguration.from_xml_string(
+                urdf_xml, srdf_path="", locked_joint_names=locked_joint_names,
+            )
+        else:
+            self._arm = URDFArmConfiguration.from_urdf(
+                urdf_path, srdf_path="", locked_joint_names=locked_joint_names,
+            )
         self._joint_order: Optional[list[int]] = None  # built on first /joint_states msg
 
         # ------------------------------------------------------------
@@ -275,18 +393,20 @@ class StudyControlPanelNode(Node):
             JointState, self._joint_states_topic, self._joint_state_cb, 10,
             callback_group=cb_group,
         )
-        self.create_subscription(
-            String, self._torque_status_topic, self._torque_status_cb, 10,
-            callback_group=cb_group,
-        )
+        if self._torque_backend == "bridge" and self._torque_status_topic:
+            self.create_subscription(
+                String, self._torque_status_topic, self._torque_status_cb, 10,
+                callback_group=cb_group,
+            )
         self.create_subscription(
             String, self._safety_status_topic, self._safety_status_cb, 10,
             callback_group=cb_group,
         )
-        self.create_subscription(
-            String, self._move_status_topic, self._move_status_cb, 10,
-            callback_group=cb_group,
-        )
+        if self._move_status_topic:
+            self.create_subscription(
+                String, self._move_status_topic, self._move_status_cb, 10,
+                callback_group=cb_group,
+            )
 
         # TRANSIENT_LOCAL: matches virtual_spring_node's own QoS for this
         # topic (see its target_qos) -- current target is state, not a
@@ -303,10 +423,23 @@ class StudyControlPanelNode(Node):
         # ------------------------------------------------------------
         # Clients to other nodes' services/actions
         # ------------------------------------------------------------
-        self._torque_enable_client = self.create_client(
-            SetBool, self._torque_enable_service, callback_group=cb_group)
-        self._abort_move_client = self.create_client(
-            Trigger, self._abort_move_service, callback_group=cb_group)
+        self._torque_enable_client = None
+        self._switch_controller_client = None
+        self._list_controllers_client = None
+        if self._torque_backend == "bridge" and self._torque_enable_service:
+            self._torque_enable_client = self.create_client(
+                SetBool, self._torque_enable_service, callback_group=cb_group)
+        if self._torque_backend == "ros2_control":
+            self._switch_controller_client = self.create_client(
+                SwitchController, f"{self._controller_manager}/switch_controller",
+                callback_group=cb_group)
+            self._list_controllers_client = self.create_client(
+                ListControllers, f"{self._controller_manager}/list_controllers",
+                callback_group=cb_group)
+        self._abort_move_client = None
+        if self._abort_move_service:
+            self._abort_move_client = self.create_client(
+                Trigger, self._abort_move_service, callback_group=cb_group)
         self._check_collision_client = self.create_client(
             CheckCollisionAtAngles, self._check_collision_service, callback_group=cb_group)
         self._add_spring_client = self.create_client(
@@ -315,8 +448,10 @@ class StudyControlPanelNode(Node):
             RemoveSpring, self._remove_spring_service, callback_group=cb_group)
         self._spring_params_client = self.create_client(
             GetParameters, self._spring_node_get_parameters_service, callback_group=cb_group)
-        self._move_command_pub = self.create_publisher(
-            Float64MultiArray, self._move_to_joint_angles_topic, 10)
+        self._move_command_pub = None
+        if self._move_to_joint_angles_topic:
+            self._move_command_pub = self.create_publisher(
+                Float64MultiArray, self._move_to_joint_angles_topic, 10)
         self._tip_spring_target_pub = self.create_publisher(
             PointStamped, f"{self._spring_target_topic_prefix}/{self._reset_spring_name}", latched_qos)
 
@@ -328,6 +463,24 @@ class StudyControlPanelNode(Node):
         self._study_start_status_pub = self.create_publisher(
             String, "~/study_start_status", latched_qos)
         self._publish_study_start_status()
+
+        # ~/robot_profile (latched JSON): everything the UI needs to wire
+        # itself to this robot -- topic/service names, joint names, which
+        # controls exist -- so web/index.html carries no robot-specific names.
+        self._robot_profile_pub = self.create_publisher(
+            String, "~/robot_profile", latched_qos)
+        self._robot_profile_pub.publish(String(data=json.dumps(self._robot_profile())))
+
+        # ros2_control backend only: list_controllers polled into the same
+        # ENABLED/DISABLED vocabulary the Kinova bridges publish, so the UI
+        # and _require_torque_disabled treat every robot alike.
+        self._torque_status_pub = None
+        if self._torque_backend == "ros2_control":
+            self._torque_status_pub = self.create_publisher(String, "~/torque_status", 10)
+            self._list_controllers_pending = False
+            self.create_timer(
+                float(gp("ros2_control_poll_sec")), self._poll_controllers,
+                callback_group=cb_group)
 
         # ------------------------------------------------------------
         # Services this node exposes
@@ -404,19 +557,21 @@ class StudyControlPanelNode(Node):
         if self._joint_order is None:
             pinocchio_names = self._arm.joint_names
             ros_names = list(msg.name)
-            try:
-                self._joint_order = [ros_names.index(n) for n in pinocchio_names]
-            except ValueError as e:
+            order, missing = resolve_joint_indices(ros_names, pinocchio_names)
+            if missing:
                 self.get_logger().error(
                     f"Joint name mismatch between {self._joint_states_topic} and "
-                    f"the URDF: {e}. ROS names: {ros_names}, URDF names: {pinocchio_names}"
+                    f"the URDF: {missing} not found. ROS names: {ros_names}, "
+                    f"URDF names: {pinocchio_names}",
+                    throttle_duration_sec=10.0,
                 )
                 return
+            self._joint_order = order
 
-        if len(msg.position) != self._arm.n_dof:
+        if len(msg.position) != len(msg.name) or max(self._joint_order) >= len(msg.position):
             return
         pos = np.array(msg.position)
-        vel = np.array(msg.velocity) if msg.velocity else np.zeros(self._arm.n_dof)
+        vel = np.array(msg.velocity) if msg.velocity else np.zeros(len(msg.position))
         self._arm.update_from_angles(pos[self._joint_order], vel[self._joint_order])
 
     def _torque_status_cb(self, msg: String) -> None:
@@ -427,6 +582,65 @@ class StudyControlPanelNode(Node):
 
     def _move_status_cb(self, msg: String) -> None:
         self._move_status_freshness.update(msg.data, self._now())
+
+    # ------------------------------------------------------------
+    # Robot profile + ros2_control torque status
+    # ------------------------------------------------------------
+
+    def _robot_profile(self) -> dict:
+        ros2_control = self._torque_backend == "ros2_control"
+        torque_status_topic = (
+            f"{self.get_fully_qualified_name()}/torque_status" if ros2_control
+            else self._torque_status_topic
+        )
+        has_torque = ros2_control or bool(self._torque_enable_service)
+        return {
+            "robot": self._robot,
+            "robot_label": self._robot_label,
+            "spring_launch_file": self._spring_launch_file,
+            "torque_bridge_name": self._torque_bridge_name,
+            "torque_backend": self._torque_backend,
+            "torque_status_topic": torque_status_topic,
+            "move_status_topic": self._move_status_topic,
+            "joint_states_topic": self._joint_states_topic,
+            "joint_names": self._joint_names,
+            "gripper_command_service": self._gripper_command_service,
+            "gripper_activate_service": self._gripper_activate_service,
+            "clear_faults_service": self._clear_faults_service,
+            "meshcat_url": self._meshcat_url,
+            "link_presets": self._ui_link_presets,
+            "excluded_link_pattern": self._ui_excluded_link_pattern,
+            "study_data_dir": self._workspace_study_data_dir,
+            "features": {
+                "torque": has_torque,
+                "move": bool(self._move_to_joint_angles_topic and self._move_status_topic),
+                "abort_move": bool(self._abort_move_service),
+                "gripper": bool(self._gripper_command_service),
+                "gripper_requires_torque_off": self._gripper_requires_torque_off,
+                "clear_faults": bool(self._clear_faults_service),
+            },
+        }
+
+    def _poll_controllers(self) -> None:
+        """Timer callback (ros2_control backend). Asynchronous on purpose:
+        a blocking _call_sync here would park an executor thread every tick
+        whenever controller_manager is down."""
+        if self._list_controllers_pending or not self._list_controllers_client.service_is_ready():
+            return
+        self._list_controllers_pending = True
+        future = self._list_controllers_client.call_async(ListControllers.Request())
+        future.add_done_callback(self._on_list_controllers)
+
+    def _on_list_controllers(self, future) -> None:
+        self._list_controllers_pending = False
+        try:
+            resp = future.result()
+        except Exception:
+            return
+        states = {c.name: c.state for c in resp.controller}
+        status = "ENABLED" if states.get(self._effort_controller) == "active" else "DISABLED"
+        self._torque_status_freshness.update(status, self._now())
+        self._torque_status_pub.publish(String(data=status))
 
     # ------------------------------------------------------------
     # Publish helper
@@ -447,17 +661,61 @@ class StudyControlPanelNode(Node):
     # ------------------------------------------------------------
 
     def _set_torque(self, data: bool) -> tuple[bool, str]:
+        if self._torque_backend == "ros2_control":
+            return self._switch_controllers(data)
+        if self._torque_enable_client is None:
+            return False, f"The {self._robot_label} has no torque on/off control configured."
         req = SetBool.Request()
         req.data = data
         resp = self._call_sync(self._torque_enable_client, req)
         if resp is None:
-            return False, f"{self._torque_enable_service} unavailable -- is gen3_torque_node running?"
+            return False, (
+                f"{self._torque_enable_service} unavailable -- is "
+                f"{self._torque_bridge_name} running?"
+            )
         return resp.success, resp.message
 
+    def _switch_controllers(self, torque_on: bool) -> tuple[bool, str]:
+        """Torque on: effort controller in, position controller out
+        (STRICT, so a failure leaves both as they were). Off: the reverse."""
+        effort, position = self._effort_controller, self._position_controller
+        req = SwitchController.Request()
+        req.activate_controllers = [effort] if torque_on else [position]
+        req.deactivate_controllers = [position] if torque_on else [effort]
+        req.strictness = SwitchController.Request.STRICT
+        req.activate_asap = True
+        req.timeout.sec = 3  # the default 0 waits forever on a stuck controller
+        resp = self._call_sync(self._switch_controller_client, req)
+        if resp is None:
+            return False, (
+                f"{self._controller_manager}/switch_controller unavailable -- is "
+                f"the {self._robot_label} driver running?"
+            )
+        if not resp.ok:
+            message = getattr(resp, "message", "") or "see the controller_manager log"
+            return False, (
+                f"switch_controller refused activating {req.activate_controllers} / "
+                f"deactivating {req.deactivate_controllers}: {message}"
+            )
+        # Reflect the switch now rather than up to one poll period later,
+        # so _require_torque_disabled and the UI badge don't lag it.
+        status = "ENABLED" if torque_on else "DISABLED"
+        self._torque_status_freshness.update(status, self._now())
+        self._torque_status_pub.publish(String(data=status))
+        return True, (
+            f"Torque control {'enabled' if torque_on else 'disabled'} "
+            f"({req.activate_controllers[0]} active)."
+        )
+
     def _abort_move(self) -> tuple[bool, str]:
+        if self._abort_move_client is None:
+            return True, "no move to abort on this robot"
         resp = self._call_sync(self._abort_move_client, Trigger.Request(), timeout_sec=2.0)
         if resp is None:
-            return False, f"{self._abort_move_service} unavailable -- is gen3_torque_node running?"
+            return False, (
+                f"{self._abort_move_service} unavailable -- is "
+                f"{self._torque_bridge_name} running?"
+            )
         return resp.success, resp.message
 
     def _move_to_joint_angles(self, angles: list[float]) -> tuple[bool, str]:
@@ -477,6 +735,11 @@ class StudyControlPanelNode(Node):
         UI's live move-status display (gen3_torque_control/move_status),
         not this call's return.
         """
+        if self._move_command_pub is None:
+            return False, (
+                f"The {self._robot_label} has no move-to-joint-angles interface "
+                "configured in this panel."
+            )
         check_resp = self._call_sync(
             self._check_collision_client,
             CheckCollisionAtAngles.Request(joint_angles_rad=angles),
@@ -517,7 +780,7 @@ class StudyControlPanelNode(Node):
         else:
             return False, (
                 f"No {self._move_status_topic} update after publishing -- is "
-                f"gen3_torque_node running?{danger_note}"
+                f"{self._torque_bridge_name} running?{danger_note}"
             )
 
         status = self._move_status_freshness.value
@@ -626,7 +889,7 @@ class StudyControlPanelNode(Node):
         if not self._torque_status_freshness.is_fresh(now, self._joint_state_freshness_sec):
             return (
                 f"No recent {self._torque_status_topic} -- cannot confirm torque "
-                "control is off. Is gen3_torque_node running?"
+                f"control is off. Is {self._torque_bridge_name} running?"
             )
         if self._torque_status_freshness.value == "ENABLED":
             return "Torque control is enabled. Turn it off before moving."
@@ -681,18 +944,17 @@ class StudyControlPanelNode(Node):
         now = self._now()
         if not self._joint_state_freshness.is_fresh(now, self._joint_state_freshness_sec):
             response.success = False
-            response.message = f"No recent {self._joint_states_topic} -- is gen3_torque_node running?"
+            response.message = f"No recent {self._joint_states_topic} -- is {self._torque_bridge_name} running?"
             return response
 
         msg: JointState = self._joint_state_freshness.value
-        by_name = dict(zip(msg.name, msg.position))
-        missing = [n for n in self._joint_names if n not in by_name]
+        indices, missing = resolve_joint_indices(list(msg.name), self._joint_names)
         if missing:
             response.success = False
             response.message = f"Missing joints in {self._joint_states_topic}: {missing}"
             return response
 
-        angles = [by_name[n] for n in self._joint_names]
+        angles = [msg.position[i] for i in indices]
         save_preset(self._study_start_preset_path, self._joint_names, angles)
         self._publish_study_start_status()
 
@@ -782,7 +1044,7 @@ class StudyControlPanelNode(Node):
             response.success = False
             response.message = (
                 f"{self._spring_node_get_parameters_service} unavailable -- is "
-                "gen3_spring.launch.py (virtual_spring_node) running?"
+                f"{self._spring_launch_file} (virtual_spring_node) running?"
             )
             return response
 
@@ -846,7 +1108,7 @@ class StudyControlPanelNode(Node):
         now = self._now()
         if not self._joint_state_freshness.is_fresh(now, self._joint_state_freshness_sec):
             response.success = False
-            response.message = f"No recent {self._joint_states_topic} -- is gen3_torque_node running?"
+            response.message = f"No recent {self._joint_states_topic} -- is {self._torque_bridge_name} running?"
             response.point = [0.0, 0.0, 0.0]
             return response
 
