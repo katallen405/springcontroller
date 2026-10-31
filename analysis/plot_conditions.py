@@ -8,9 +8,11 @@ three robot control conditions (KT / Position / Pose, shown on-chart as
 "Adm." / "Pos.-only" / "Pose" -- see DISPLAY_LABELS): a diverging stacked
 bar for fluency (a single 5-point item, centered on the neutral rating of
 3) and a boxplot for adapts/helpfulness (each a mean of several items).
-Each chart stars the KT-vs-Pose comparison when it's significant (Holm-
-corrected paired t-test, gated on a significant omnibus RM-ANOVA -- see
-kt_pose_star()).
+Each chart draws a significance bracket for every condition pair that's
+significant (Holm-corrected paired t-test, gated on a significant omnibus
+RM-ANOVA -- see significant_pairs()), stacked so brackets never overlap.
+This used to annotate KT-vs-Pose only, which hid a significant
+Position-vs-Pose helpfulness result that the paper's tables report.
 
 Deliberately separate from analyze.py: re-plotting doesn't require
 re-parsing the raw Qualtrics export, and this script's conventions mirror
@@ -94,9 +96,10 @@ FLUENCY_LEVEL_COLORS = {
     5: "#D55E00",
 }
 
-# The only pairwise comparison charts annotate with a significance bracket.
-STAR_PAIR = ("KT", "Pose")
 PAIRS = [("KT", "Position"), ("KT", "Pose"), ("Position", "Pose")]
+
+# Vertical spacing between stacked boxplot brackets, in score units.
+BRACKET_STEP = 0.35
 
 
 def p_to_stars(p):
@@ -109,23 +112,45 @@ def p_to_stars(p):
     return None
 
 
-def kt_pose_star(df, measure):
+def significant_pairs(df, measure):
     """Mirrors analyze.py's run_rm_anova_and_posthoc: an omnibus RM-ANOVA
     gate, then Holm-corrected paired t-tests across all 3 condition pairs.
-    Returns the star string for the KT-vs-Pose comparison specifically, or
-    None if either the omnibus test or that corrected pairwise p-value
-    isn't significant."""
+    Returns [(cond_a, cond_b, stars), ...] for every pair whose corrected
+    p-value is significant -- empty if the omnibus test isn't."""
     _, complete = wide_for_measure(df, measure)
     if len(complete) < 3:
-        return None
+        return []
     long = complete.reset_index().melt(id_vars="participant_id", value_vars=CONDITIONS,
                                         var_name="condition", value_name=measure)
     omnibus = AnovaRM(long, depvar=measure, subject="participant_id", within=["condition"]).fit()
     if omnibus.anova_table["Pr > F"].iloc[0] >= 0.05:
-        return None
+        return []
     pvals = [ttest_rel(complete[a], complete[b]).pvalue for a, b in PAIRS]
     _, corrected, _, _ = multipletests(pvals, method="holm")
-    return p_to_stars(dict(zip(PAIRS, corrected))[STAR_PAIR])
+    return [(a, b, p_to_stars(p)) for (a, b), p in zip(PAIRS, corrected) if p_to_stars(p)]
+
+
+def bracket_levels(pairs):
+    """
+    Stacking level (0 = innermost) for each (cond_a, cond_b, stars) pair,
+    so overlapping brackets never share a level. Narrow spans are placed
+    first, so a bracket between neighbors sits inside one that spans all
+    three conditions. Returns [(i1, i2, stars, level), ...] with i1 < i2
+    as indices into CONDITIONS.
+    """
+    spans = sorted(
+        ((min(CONDITIONS.index(a), CONDITIONS.index(b)),
+          max(CONDITIONS.index(a), CONDITIONS.index(b)), stars) for a, b, stars in pairs),
+        key=lambda s: (s[1] - s[0], s[0]),
+    )
+    placed = []
+    for i1, i2, stars in spans:
+        # Brackets sharing an endpoint overlap too (their end ticks would
+        # land on the same box), hence <= rather than <.
+        taken = {lvl for j1, j2, _, lvl in placed if j1 <= i2 and i1 <= j2}
+        level = next(lvl for lvl in range(len(PAIRS) + 1) if lvl not in taken)
+        placed.append((i1, i2, stars, level))
+    return placed
 
 
 def add_significance_bracket(ax, x1, x2, y, stars, fontsize):
@@ -160,11 +185,14 @@ def make_boxplot(df, measure, out_path, dpi=150, title=True, font_scale=1.0):
     ax.tick_params(axis="y", labelsize=base_fontsize)
     ax.set_ylim(0.5, 5.5)
 
-    stars = kt_pose_star(df, measure)
-    if stars:
-        kt_i, pose_i = CONDITIONS.index("KT") + 1, CONDITIONS.index("Pose") + 1
-        y = max(data[kt_i - 1].max(initial=0), data[pose_i - 1].max(initial=0)) + 0.15
-        add_significance_bracket(ax, kt_i, pose_i, y, stars, base_fontsize)
+    placed = bracket_levels(significant_pairs(df, measure))
+    if placed:
+        # All brackets start above the tallest data point among the boxes
+        # they could span, so stacked levels stay evenly spaced.
+        top = max(data[i].max(initial=0) for i1, i2, _, _ in placed for i in range(i1, i2 + 1))
+        for i1, i2, stars, level in placed:
+            add_significance_bracket(ax, i1 + 1, i2 + 1, top + 0.15 + level * BRACKET_STEP,
+                                     stars, base_fontsize)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
@@ -227,15 +255,16 @@ def make_fluency_diverging(df, out_path, dpi=150, title=True, font_scale=1.0):
     if title:
         ax.set_title(MEASURE_TITLES.get(measure, measure), fontsize=base_fontsize)
 
-    stars = kt_pose_star(df, measure)
-    if stars:
-        kt_y, pose_y = CONDITIONS.index("KT"), CONDITIONS.index("Pose")
-        bracket_x = xlim * 1.05
-        tick = xlim * 0.025
-        ax.plot([bracket_x, bracket_x], [kt_y, pose_y], color="black", linewidth=1, clip_on=False)
-        ax.plot([bracket_x - tick, bracket_x], [kt_y, kt_y], color="black", linewidth=1, clip_on=False)
-        ax.plot([bracket_x - tick, bracket_x], [pose_y, pose_y], color="black", linewidth=1, clip_on=False)
-        ax.text(bracket_x + tick, (kt_y + pose_y) / 2, stars, ha="left", va="center", fontsize=base_fontsize)
+    tick = xlim * 0.025
+    for y1, y2, stars, level in bracket_levels(significant_pairs(df, measure)):
+        # Vertical brackets to the right of the bars; each stacking level
+        # moves further right, leaving room for the previous level's stars
+        # (which widen with font_scale).
+        bracket_x = xlim * (1.05 + (0.06 + 0.06 * font_scale) * level)
+        ax.plot([bracket_x, bracket_x], [y1, y2], color="black", linewidth=1, clip_on=False)
+        ax.plot([bracket_x - tick, bracket_x], [y1, y1], color="black", linewidth=1, clip_on=False)
+        ax.plot([bracket_x - tick, bracket_x], [y2, y2], color="black", linewidth=1, clip_on=False)
+        ax.text(bracket_x + tick, (y1 + y2) / 2, stars, ha="left", va="center", fontsize=base_fontsize)
 
     # Place the legend below the (already-drawn) x-axis label rather than at
     # a fixed offset -- a fixed fraction of axes height doesn't scale with
