@@ -133,6 +133,37 @@ def test_load_and_select_periods(tmp_path):
     assert mine[0]["end"] - mine[0]["start"] == pytest.approx(43.0)
 
 
+def test_load_periods_corrected_format_skips_zero_length(tmp_path):
+    f = tmp_path / "adjustment_times.csv"
+    f.write_text(
+        "Participant,Condition,Side,Adjustment Start,Adjustment End,Total Adjustment Time\n"
+        "p1,Pose,1,2026-09-05T12:41:32,2026-09-05T12:42:48,76\n"
+        "p10,Pose,2,2026-09-09T14:55:06,2026-09-09T14:55:06,0\n"
+    )
+    with pytest.warns(UserWarning, match="zero-length"):
+        periods = jk.load_periods(str(f), "America/New_York")
+    assert [(p["participant_id"], p["side"]) for p in periods] == [("p1", "1")]
+    assert periods[0]["end"] - periods[0]["start"] == pytest.approx(76.0)
+
+
+def test_select_periods_matches_p_prefixed_ids():
+    periods = [
+        {"participant_id": "p1", "condition": "Pose", "side": "1", "start": 0.0, "end": 1.0},
+        {"participant_id": "p10", "condition": "Pose", "side": "1", "start": 0.0, "end": 1.0},
+    ]
+    # Bag folders are named 1..24; the times file uses p1..p24.
+    assert len(jk.select_periods(periods, "1", "pose")) == 1
+    assert len(jk.select_periods(periods, "10", "pose")) == 1
+    assert jk.select_periods(periods, "2", "pose") == []
+
+
+def test_load_periods_missing_column_raises(tmp_path):
+    f = tmp_path / "bad.csv"
+    f.write_text("who,condition,side,start,end\n")
+    with pytest.raises(KeyError, match="participant_id"):
+        jk.load_periods(str(f), "America/New_York")
+
+
 def test_parse_bag_name():
     assert jk.parse_bag_name("/data/test4/pose_2026_09_04-15_35_37/") == ("test4", "pose")
     assert jk.parse_bag_name("/data/test4/KT_2026_09_04-15_35_37") == ("test4", "KT")

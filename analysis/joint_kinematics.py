@@ -39,8 +39,8 @@ Path lengths use the SG-smoothed (deriv=0) signals rather than the raw
 samples, since summing |delta| over raw 100 Hz samples accumulates sensor
 noise even when the arm is still.
 
-Adjustment periods come from a --periods CSV. ASSUMED format until the
-real (video-corrected) file's format is confirmed -- see load_periods():
+Adjustment periods come from a --periods CSV (see load_periods(); it also
+accepts the video-corrected adjustment_times.csv headers). Simple format:
     participant_id,condition,side,start,end
     test1,pose,1,2026-09-04T15:35:37.5,2026-09-04T15:36:20
 start/end are local wall-clock ISO times (interpreted in --tz); condition
@@ -187,26 +187,61 @@ def to_epoch(iso: str, tz: str) -> float:
 
 def load_periods(path: str, tz: str) -> list[dict]:
     """
-    ASSUMED format -- adapt this one function once the real corrected
-    times file's format is known: CSV with columns participant_id,
-    condition, side, start, end.
+    Two CSV layouts are accepted (header names matched case-insensitively):
+      * simple:    participant_id, condition, side, start, end
+      * corrected: Participant, Condition, Side, Adjustment Start,
+                   Adjustment End[, Total Adjustment Time]
+                   (the video-corrected adjustment_times.csv; the total
+                   column is ignored, it is recomputed from start/end)
+    Zero-length (end <= start) periods are skipped with a warning: a
+    participant request to freeze at once leaves nothing to analyze.
     """
+    aliases = {
+        "participant_id": ("participant_id", "participant"),
+        "condition": ("condition",),
+        "side": ("side",),
+        "start": ("start", "adjustment start"),
+        "end": ("end", "adjustment end"),
+    }
     periods = []
-    with open(os.path.expanduser(path), newline="") as f:
-        for row in csv_module.DictReader(f):
-            periods.append({
-                "participant_id": row["participant_id"].strip(),
-                "condition": row["condition"].strip(),
-                "side": row["side"].strip(),
-                "start": to_epoch(row["start"], tz),
-                "end": to_epoch(row["end"], tz),
-            })
+    with open(os.path.expanduser(path), newline="", encoding="utf-8-sig") as f:
+        reader = csv_module.DictReader(f)
+        header = {(h or "").strip().lower(): h for h in (reader.fieldnames or [])}
+        col = {}
+        for key, names in aliases.items():
+            found = next((header[n] for n in names if n in header), None)
+            if found is None:
+                raise KeyError(f"periods file {path} has no {names[0]!r} column "
+                               f"(headers: {list(reader.fieldnames or [])})")
+            col[key] = found
+        for row in reader:
+            period = {
+                "participant_id": row[col["participant_id"]].strip(),
+                "condition": row[col["condition"]].strip(),
+                "side": row[col["side"]].strip(),
+                "start": to_epoch(row[col["start"]], tz),
+                "end": to_epoch(row[col["end"]], tz),
+            }
+            if period["end"] <= period["start"]:
+                warnings.warn(
+                    f"skipping zero-length period: {period['participant_id']} "
+                    f"{period['condition']} side {period['side']} "
+                    f"({row[col['start']].strip()} -> {row[col['end']].strip()})")
+                continue
+            periods.append(period)
     return periods
+
+
+def _norm_participant(pid: str) -> str:
+    """'p7' and '7' name the same participant: the corrected times file
+    uses p1..p24, the bag folders 1..24."""
+    pid = pid.strip().lower()
+    return pid[1:] if pid[:1] == "p" and pid[1:].isdigit() else pid
 
 
 def select_periods(periods: list[dict], participant_id: str, condition: str) -> list[dict]:
     return [p for p in periods
-            if p["participant_id"] == participant_id
+            if _norm_participant(p["participant_id"]) == _norm_participant(participant_id)
             and p["condition"].lower() == condition.lower()]
 
 
