@@ -205,6 +205,54 @@ PointStamped`), same topic Cartesian springs use. Add/remove at runtime via
 `~/add_pose_spring` (`springcontroller_interfaces/AddPoseSpring`)
 and the existing `~/remove_spring`.
 
+### Follow a planned trajectory (FollowJointTrajectory)
+
+`virtual_spring_node` serves `/spring_trajectory_controller/follow_joint_trajectory`
+(`control_msgs/FollowJointTrajectory`), so MoveIt can execute a plan
+*compliantly*: a 6-DOF end-effector spring's anchor slides along the plan
+(anchor = FK of the planned joints, with the planned velocity as
+feed-forward), and the arm follows it while staying pushable. A weak
+nullspace pull toward the planned joint angles keeps the elbow on the plan.
+Code: `trajectory_spring.py` (math, ROS-free) and `trajectory_action.py`
+(action server).
+
+- **Requires torque control ENABLED** and the spring ramp finished; MoveIt
+  never switches modes. A goal is aborted with the reason otherwise. In
+  `gen2_moveit_config` the controller is `spring_trajectory_controller`
+  (`default: false` — select it per execution).
+- **Held back = it waits.** If the end effector is more than
+  `trajectory_spring.pause_error_m` (0.08 m) / `pause_error_rad` (0.5) off
+  the anchor, trajectory time stops and the anchor waits; it resumes below
+  60 % of those. Held longer than `pause_timeout_sec` (10 s) → aborted, and
+  the anchor re-seeds where the arm is (it never snaps toward where the plan
+  had got to).
+- **Collision clamp / `~/enable(false)` / torque disabled** mid-trajectory →
+  aborted, anchor re-seeded at the current pose. DANGER scaling applies to
+  this spring like any other; gravity comp is never touched.
+- **When it ends** the spring keeps holding the final pose (`HOLDING`) until
+  the next goal or `ros2 service call /virtual_spring_node/trajectory/release
+  std_srvs/srv/Trigger`, which re-anchors any Cartesian spring on the same
+  link (e.g. the Gen2 tip-hold spring) at the current position and
+  cross-fades back to it. Those springs are faded out (not disabled) while a
+  trajectory runs.
+- Goals whose planned end-effector speed exceeds
+  `trajectory_spring.max_ee_speed_mps` (0.25) are rejected — plan with a
+  lower velocity scaling.
+- Status: `~/trajectory/state` (JSON: state, trajectory time, errors).
+
+Parameters (`trajectory_spring.*`): `link` (default: first of
+`end_effector_link`, `j2s7s300_ee_link`, `tool0` in the URDF), `local_point`,
+`stiffness` 300 N/m, `damping` 30 N·s/m, `rot_stiffness` 10 N·m/rad,
+`rot_damping` 0.2 N·m·s/rad, `null_stiffness` 2, `null_damping` 0.5,
+`max_force` 40 N, `max_moment` 5 N·m, `goal_tolerance_rad` 0.05,
+`goal_time_tolerance_sec` 2, `start_tolerance_rad` 0.05, `crossfade_sec` 1.
+
+**Keep `rot_damping` low.** Torque is held for a whole control tick, so a
+damper on a low-inertia joint overshoots once b·Δt/I ≳ 2. On the Gen2
+(100 Hz; joint 7 carries only the gripper) `rot_damping` = 1.0 drives the
+wrist into a ~9 rad/s limit cycle in simulation; 0.05–0.2 tracks within
+~1 mm. Raise it on hardware only in small steps.
+
 ## Launch
 
 ### Kinova Gen3 (via gen3_torque_control node)
@@ -526,6 +574,19 @@ torques = spring.compute_torques(arm)
 colcon test --packages-select springcontroller
 colcon test-result --verbose
 ```
+
+The tests live in `test/` at the repository root, so plain pytest from the
+repo root also works (`test/conftest.py` puts this source tree ahead of any
+installed copy):
+
+```bash
+python3 -m pytest test/
+```
+
+`test_trajectory_spring.py` and `test_trajectory_action_node.py` include
+closed-loop simulations (pinocchio forward dynamics; the node test runs the
+real `virtual_spring_node` on sim time against a simulated Gen2) — no
+hardware.
 
 ## CLI reference
 

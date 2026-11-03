@@ -156,11 +156,17 @@ class TrackingPoseSpring:
     Same compute_torques(arm) interface as VirtualSpring, so it sits in a
     SpringCollection and inherits spring_scale, the DANGER scaling and the
     COLLISION clamp. Produces zero torque until an anchor is set.
+
+    rot_damping is limited by the control rate: the torque is held for a
+    whole tick, so a damper on a low-inertia joint overshoots once
+    b·Δt/I ≳ 2. On the Gen2 (100 Hz, wrist joint 7 carrying only the
+    gripper) rot_damping = 1.0 N·m·s/rad drives joint 7 into a ~9 rad/s
+    limit cycle in simulation; 0.05–0.2 tracks within ~1 mm.
     """
 
     def __init__(self, link_name: str, local_point: Sequence[float] = (0.0, 0.0, 0.0),
                  stiffness: float = 300.0, damping: float = 30.0,
-                 rot_stiffness: float = 10.0, rot_damping: float = 1.0,
+                 rot_stiffness: float = 10.0, rot_damping: float = 0.2,
                  null_stiffness: float = 2.0, null_damping: float = 0.5,
                  max_force: float = 40.0, max_moment: float = 5.0,
                  enabled: bool = True, name: str = "trajectory_spring") -> None:

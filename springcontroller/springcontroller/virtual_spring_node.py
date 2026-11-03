@@ -281,6 +281,8 @@ from springcontroller.virtual_spring import (
     VirtualSpring, JointSpring, PoseSpring, SpringCollection,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
+from springcontroller.trajectory_action import TrajectoryActionGlue
+from rclpy.executors import MultiThreadedExecutor
 from springcontroller.external_torque_observer import (
     ExternalTorqueObserver, amplification_torque,
 )
@@ -1095,6 +1097,12 @@ class VirtualSpringNode(Node):
             UpdateCollisionThresholds, "~/update_collision_thresholds",
             self._update_collision_thresholds_cb,
         )
+        # FollowJointTrajectory → moving end-effector spring (see
+        # trajectory_action.py). Its torque is added in _joint_state_cb with
+        # the other springs', before the collision clamp/DANGER scaling.
+        self._springs_on = True     # last ~/enable / collision-clamp state
+        self._traj = TrajectoryActionGlue(self, self._arm, self._springs)
+
     def _load_arm(self) -> URDFArmConfiguration:
         """
         Load URDF from /robot_description topic if available
@@ -1648,6 +1656,25 @@ class VirtualSpringNode(Node):
                     spring_scale = min(spring_scale, max(0.0, reenable_elapsed / self._spring_ramp_duration))
             torques = self._springs.compute_total_torques(
                 self._arm, self._add_grav_comp, spring_scale
+            )
+            # Trajectory-following spring: spring-side torque like any
+            # other, so the clamps below scale/zero it and never gravity.
+            torque_ok = self._last_torque_status in (None, "ENABLED")
+            last_collision = self._last_collision_status
+            if not torque_ok:
+                traj_reason = "Torque control is not ENABLED -- enable it first."
+            elif spring_scale < 1.0:
+                traj_reason = "Springs are still ramping in -- try again in a moment."
+            elif not self._springs_on:
+                traj_reason = "Springs are disabled (~/enable or collision clamp)."
+            elif last_collision is not None and (last_collision.in_collision
+                                                 or last_collision.in_danger):
+                traj_reason = "Arm is in collision/DANGER -- not starting a trajectory."
+            else:
+                traj_reason = ""
+            torques = torques + spring_scale * self._traj.tick(
+                now.nanoseconds / 1e9, ready=not traj_reason, not_ready_reason=traj_reason,
+                springs_enabled=self._springs_on and torque_ok,
             )
 
             # Gravity comp must never be scaled by anything except the
@@ -2303,6 +2330,7 @@ class VirtualSpringNode(Node):
         """
         for spring in self._springs:
             spring.enabled = enabled
+        self._springs_on = enabled
         if auto:
             self._springs_auto_disabled = not enabled
             if not enabled:
@@ -3157,8 +3185,14 @@ class VirtualSpringNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = VirtualSpringNode()
+    # Multi-threaded so the trajectory action's blocking execute callback
+    # (its own reentrant group) runs beside the control loop; every other
+    # callback stays in the node's default mutually exclusive group, so
+    # they still never run concurrently with each other.
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
