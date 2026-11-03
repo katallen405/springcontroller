@@ -5,7 +5,7 @@ fluency_summary.py
 Collapse joint_kinematics.py's summary.csv (one row per period x joint) into
 fluency numbers per participant x condition, then compare conditions.
 
-Per period (one side):
+Per period (one side; a side split across bags gives one row per bag):
     rms_acc, rms_jerk    RMS across the 7 joints: sqrt(mean_j rms_j^2)
     peak_acc, peak_jerk  max across the 7 joints of each joint's peak |.|
 Per participant x condition (the two sides):
@@ -41,21 +41,25 @@ CANON = {"kt": "KT", "pose": "Pose", "position": "Position"}
 
 
 def load_periods(path: str) -> dict:
-    """{(participant, condition, side): [joint rows]} from summary.csv."""
+    """{(participant, condition, side, bag): [joint rows]} from summary.csv.
+    A side recorded across several bags (e.g. the arm was restarted
+    mid-period) gives one entry per bag; each is a segment weighted by its
+    own duration when pooled."""
     periods = defaultdict(list)
     with open(path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             cond = CANON.get(row["condition"].strip().lower(), row["condition"].strip())
-            periods[(row["participant_id"].strip(), cond, row["side"].strip())].append(row)
+            periods[(row["participant_id"].strip(), cond, row["side"].strip(),
+                     row["bag"].strip())].append(row)
     return periods
 
 
 def per_period(periods: dict) -> list[dict]:
     out = []
-    for (pid, cond, side), rows in sorted(periods.items()):
+    for (pid, cond, side, bag), rows in sorted(periods.items()):
         f = lambda k: np.array([float(r[k]) for r in rows])
         out.append({
-            "participant_id": pid, "condition": cond, "side": side,
+            "participant_id": pid, "condition": cond, "side": side, "bag": bag,
             "n_joints": len(rows),
             "duration_s": float(rows[0]["duration_s"]),
             "rms_acc": float(np.sqrt(np.mean(f("rms_acc") ** 2))),
@@ -74,7 +78,8 @@ def per_participant_condition(period_rows: list[dict]) -> list[dict]:
     for (pid, cond), rs in sorted(groups.items()):
         d = np.array([r["duration_s"] for r in rs])
         row = {"participant_id": pid, "condition": cond,
-               "n_sides": len(rs), "total_duration_s": float(d.sum())}
+               "n_sides": len({r["side"] for r in rs}), "n_segments": len(rs),
+               "total_duration_s": float(d.sum())}
         for m in ("rms_acc", "rms_jerk"):
             row[m] = float(np.sqrt(np.sum(d * np.array([r[m] for r in rs]) ** 2) / d.sum()))
         for m in ("peak_acc", "peak_jerk"):
