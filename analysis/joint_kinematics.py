@@ -477,16 +477,25 @@ def main():
     os.makedirs(os.path.join(args.out, "plots"), exist_ok=True)
 
     rows = []
+    skipped = []   # (label, reason) for everything not analyzed, listed at the end
     for bag_path in find_bags(args.bags):
         bag_name = os.path.basename(os.path.normpath(bag_path))
         participant_id, condition = parse_bag_name(bag_path)
         mine = select_periods(periods, participant_id, condition)
         if not mine:
             print(f"{participant_id}/{bag_name}: no periods in --periods file, skipped")
+            skipped.append((f"{participant_id}/{bag_name}", "no periods in --periods file"))
             continue
-        bag = read_bag(bag_path)
+        try:
+            bag = read_bag(bag_path)
+        except Exception as e:  # unreadable bag (missing .mcap, bad topic...): keep going
+            reason = f"could not read bag ({type(e).__name__}: {e})"
+            print(f"{participant_id}/{bag_name}: {reason}, skipped")
+            skipped.append((f"{participant_id}/{bag_name}", reason))
+            continue
         if bag["t"].size == 0:
             print(f"{participant_id}/{bag_name}: no {JOINT_STATES_TOPIC} messages, skipped")
+            skipped.append((f"{participant_id}/{bag_name}", f"no {JOINT_STATES_TOPIC} messages"))
             continue
         windows = moving_windows(bag["move_status_events"], bag["t"][-1])
         for p in mine:
@@ -497,6 +506,7 @@ def main():
                                    args.sg_window_ms / 1000.0, args.sg_order)
             except ValueError as e:
                 print(f"{label}: {e}, skipped")
+                skipped.append((label, str(e)))
                 continue
             rows += summary_rows(bag_name, p, r)
             write_timeseries(os.path.join(args.out, "timeseries", f"{label}.csv"), r)
@@ -513,6 +523,10 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {len(rows)} rows to {summary_path}")
+    if skipped:
+        print(f"\n{len(skipped)} bag(s)/period(s) NOT analyzed:")
+        for label, reason in skipped:
+            print(f"  {label}: {reason}")
     return 0 if rows else 1
 
 

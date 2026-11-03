@@ -164,6 +164,39 @@ def test_load_periods_missing_column_raises(tmp_path):
         jk.load_periods(str(f), "America/New_York")
 
 
+def test_main_skips_unreadable_bag_and_continues(tmp_path, monkeypatch, capsys):
+    data = tmp_path / "data"
+    for name in ("KT_2026_09_05-12_00_00", "pose_2026_09_05-12_10_00"):
+        d = data / "1" / name
+        d.mkdir(parents=True)
+        (d / "metadata.yaml").write_text("")
+    periods = tmp_path / "periods.csv"
+    periods.write_text(
+        "participant_id,condition,side,start,end\n"
+        "p1,KT,1,2026-09-05T12:00:10,2026-09-05T12:00:20\n"
+        "p1,Pose,1,2026-09-05T12:10:10,2026-09-05T12:10:20\n")
+
+    t = np.arange(0.0, 10.0, DT)
+    good = {"t": t, "q": np.zeros((t.size, 7)), "qd": np.zeros((t.size, 7)),
+            "ee_t": t, "ee_p": np.zeros((t.size, 3)), "move_status_events": []}
+
+    def fake_read_bag(path):
+        if "pose_" in path:
+            raise RuntimeError("No storage could be initialized. Abort")
+        return good
+
+    monkeypatch.setattr(jk, "read_bag", fake_read_bag)
+    # Period times are wall-clock; the fake KT bag holds epoch 0-10 s, so the
+    # KT period yields "fewer than 3 samples" -- still exercises the skip list.
+    monkeypatch.setattr(sys, "argv", ["jk", str(data / "1"), "--periods", str(periods),
+                                      "--out", str(tmp_path / "out")])
+    jk.main()
+    out = capsys.readouterr().out
+    assert "could not read bag" in out and "pose_2026_09_05-12_10_00" in out
+    assert "NOT analyzed" in out
+    assert "KT_2026_09_05-12_00_00" in out  # the other bag was still attempted
+
+
 def test_parse_bag_name():
     assert jk.parse_bag_name("/data/test4/pose_2026_09_04-15_35_37/") == ("test4", "pose")
     assert jk.parse_bag_name("/data/test4/KT_2026_09_04-15_35_37") == ("test4", "KT")
