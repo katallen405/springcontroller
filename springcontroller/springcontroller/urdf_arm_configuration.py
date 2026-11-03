@@ -129,6 +129,9 @@ class URDFArmConfiguration:
         # Separate Data for get_dynamics() so its passes can't disturb the
         # kinematics/Jacobians cached in self._data by update().
         self._dyn_data = self._model.createData()
+        # Separate Data for fk_and_jacobian_at() -- evaluating a *planned*
+        # configuration must not overwrite the live one in self._data.
+        self._plan_data = self._model.createData()
         self._danger_threshold = danger_threshold
 
         # Collision model — loaded separately so kinematic-only use still works
@@ -316,16 +319,41 @@ class URDFArmConfiguration:
         return T
 
     def get_jacobian(self, link_name: str, local_point: np.ndarray) -> np.ndarray:
+        return self._point_jacobian(self._data, self._model.getFrameId(link_name),
+                                    local_point)
+
+    def fk_and_jacobian_at(
+        self, angles: np.ndarray, link_name: str, local_point: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(position, rotation, 6xn Jacobian) of local_point on link_name at
+        the given joint angles, without touching the live state that
+        update() caches -- for evaluating a planned configuration."""
+        q = self._angles_to_q(np.asarray(angles, dtype=float))
+        data = self._plan_data
+        pin.forwardKinematics(self._model, data, q)
+        pin.updateFramePlacements(self._model, data)
+        pin.computeJointJacobians(self._model, data, q)
         frame_id = self._model.getFrameId(link_name)
+        T = data.oMf[frame_id]
+        p = T.rotation @ np.asarray(local_point, dtype=float) + T.translation
+        return p, T.rotation.copy(), self._point_jacobian(data, frame_id, local_point)
+
+    def continuous_joint_mask(self) -> np.ndarray:
+        """True for each DOF that is an unbounded (continuous) revolute joint."""
+        return np.array([self._model.joints[i + 1].nq == 2
+                         for i in range(self._model.njoints - 1)])
+
+    def _point_jacobian(self, data: "pin.Data", frame_id: int,
+                        local_point: np.ndarray) -> np.ndarray:
         J = pin.getFrameJacobian(
             self._model,
-            self._data,
+            data,
             frame_id,
             pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
         ).copy()
 
-        T = self._data.oMf[frame_id]
-        p_world = T.rotation @ local_point
+        T = data.oMf[frame_id]
+        p_world = T.rotation @ np.asarray(local_point, dtype=float)
         px, py, pz = p_world
         skew_p = np.array([
             [ 0,  -pz,  py],
