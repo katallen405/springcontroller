@@ -8,6 +8,8 @@ whatever the node publishes on ~/joint_torques (gravity compensation
 included). No hardware.
 """
 
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +49,26 @@ def _dur(t):
     return Duration(sec=int(t), nanosec=int(round((t - int(t)) * 1e9)))
 
 
+def assert_isolated_graph(seconds=1.5):
+    """Refuse to run if anything else is visible on this ROS graph: the
+    harness publishes /joint_states and /clock, which a real
+    virtual_spring_node on the same domain would act on (conftest.py sets a
+    private domain)."""
+    probe = rclpy.create_node("traj_isolation_probe")
+    end = time.monotonic() + seconds
+    others = set()
+    while time.monotonic() < end:
+        rclpy.spin_once(probe, timeout_sec=0.1)
+        others = {n for n in probe.get_node_names() if n != "traj_isolation_probe"}
+        if others:
+            break
+    probe.destroy_node()
+    if others:
+        rclpy.shutdown()
+        pytest.fail(f"Other ROS nodes visible on domain {os.environ.get('ROS_DOMAIN_ID')}: "
+                    f"{sorted(others)} -- refusing to publish.", pytrace=False)
+
+
 class Harness:
     def __init__(self):
         # use_sim_time is switched on only after construction: startup's
@@ -61,6 +83,7 @@ class Harness:
                 "-p", "joint_limit_repulsion_enabled:=false",
                 "-p", "repulsion_enabled:=false"]
         rclpy.init(args=args)
+        assert_isolated_graph()
         self.node = VirtualSpringNode()
         self.node.set_parameters([rclpy.parameter.Parameter(
             "use_sim_time", rclpy.parameter.Parameter.Type.BOOL, True)])
