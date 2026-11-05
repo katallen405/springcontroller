@@ -77,7 +77,7 @@ from launch.actions import (
     TimerAction,
 )
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 # armviz.py needs meshcat/pinocchio, so it's run with this venv's python
@@ -139,9 +139,29 @@ def generate_launch_description():
         description="Path to the springs configuration YAML.",
     )
 
+    # Which Gen3 driver is running underneath:
+    #   gen3_torque_control -- kinova_torque_control_node (started separately)
+    #   ros2_kortex         -- Kinova's ros2_kortex with the effort-mode fork
+    #                          (katallen405/ros2_kortex, effort-torque-mode),
+    #                          started separately with
+    #                          effort_controller:=effort_controller. This launch
+    #                          then adds gen3_torque_control's
+    #                          ros2_kortex_torque_switch, which serves the same
+    #                          enable/status interface via controller switches.
+    driver = LaunchConfiguration("driver")
+    driver_arg = DeclareLaunchArgument(
+        "driver",
+        default_value="gen3_torque_control",
+        choices=["gen3_torque_control", "ros2_kortex"],
+        description="Gen3 driver underneath: gen3_torque_control or ros2_kortex (effort fork).",
+    )
+    is_ros2_kortex = PythonExpression(["'", driver, "' == 'ros2_kortex'"])
+
     joint_states_topic_arg = DeclareLaunchArgument(
         "joint_states_topic",
-        default_value="/kinova/joint_states_lowlevel",
+        default_value=PythonExpression([
+            "'/joint_states' if '", driver,
+            "' == 'ros2_kortex' else '/kinova/joint_states_lowlevel'"]),
         description=(
             "Topic gen3_torque_node actually publishes joint states on when "
             "started with its documented -r joint_states:=... remap (see "
@@ -546,9 +566,22 @@ def generate_launch_description():
             {
                 "joint_order":   GEN3_JOINT_ORDER,
                 "torque_topic":  "/virtual_spring_node/joint_torques",
-                "command_topic": "/kinova/joint_torque_command",
+                "command_topic": PythonExpression([
+                    "'/effort_controller/commands' if '", driver,
+                    "' == 'ros2_kortex' else '/kinova/joint_torque_command'"]),
             }
         ],
+    )
+
+    # driver:=ros2_kortex only: gen3_torque_control/enable + /status as
+    # controller_manager switches (see gen3_torque_control README).
+    torque_switch_node = Node(
+        package="gen3_torque_control",
+        executable="ros2_kortex_torque_switch",
+        name="ros2_kortex_torque_switch",
+        output="screen",
+        emulate_tty=True,
+        condition=IfCondition(is_ros2_kortex),
     )
 
     # Waits for virtual_spring_node to actually be alive and publishing
@@ -963,6 +996,7 @@ def generate_launch_description():
         # gen3_torque_node's own bare `ros2 run`, which still needs the
         # shell-level export -- see README).
         SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
+        driver_arg,
         urdf_path_arg,
         config_arg,
         joint_states_topic_arg,
@@ -994,6 +1028,7 @@ def generate_launch_description():
         video_jpeg_quality_arg,
         virtual_spring_node,
         torque_relay_node,
+        torque_switch_node,
         enable_torque_control,
         load_collision_scene,
         meshcat_server_process,

@@ -257,6 +257,16 @@ wrist into a ~9 rad/s limit cycle in simulation; 0.05–0.2 tracks within
 
 ### Kinova Gen3 (via gen3_torque_control node)
 
+`gen3_spring.launch.py driver:=ros2_kortex` instead targets Kinova's
+`ros2_kortex` driver with the effort-mode fork (`katallen405/ros2_kortex`,
+branch `effort-torque-mode`, launched with
+`effort_controller:=effort_controller`): joint states come from
+`/joint_states`, `torque_relay` publishes to `/effort_controller/commands`,
+and `gen3_torque_control`'s `ros2_kortex_torque_switch` provides the same
+enable/status interface. That path is **not yet tested on the arm** (see the
+fork's `kortex_driver/TESTING_EFFORT_MODE.md`). The default,
+`driver:=gen3_torque_control`, is unchanged.
+
 `ROS_LOCALHOST_ONLY=1` must be set wherever `gen3_torque_node` runs (this
 should already be the case if it's set in your shell profile, e.g.
 `~/.bashrc` -- see `gen3_spring.launch.py`'s copy of this same setting for
