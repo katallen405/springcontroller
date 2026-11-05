@@ -1,5 +1,22 @@
+# Kinova Gen3 (the default; `robot:=gen3`). The Gen2 and UR3e equivalents
+# are study_control_panel_gen2.yaml / study_control_panel_ur3e.yaml.
 study_control_panel_node:
   ros__parameters:
+    robot: gen3
+    robot_label: Kinova Gen3
+    spring_launch_file: gen3_spring.launch.py
+    torque_bridge_name: gen3_torque_control
+    torque_backend: bridge
+    gripper_command_service: /gen3_torque_control/gripper_command
+    clear_faults_service: /gen3_torque_control/clear_faults
+    meshcat_url: http://localhost:7101/static/
+    ui_link_presets: >-
+      {"block":   {"link_name": "end_effector_link",      "local_point": [0, 0, 0.15]},
+       "wrist_3": {"link_name": "half_arm_2_link",        "local_point": [0, 0, 0]},
+       "elbow_4": {"link_name": "forearm_link",           "local_point": [0, 0, 0]},
+       "elbow_6": {"link_name": "spherical_wrist_2_link", "local_point": [0, 0, 0]},
+       "wrist_7": {"link_name": "bracelet_link",          "local_point": [0, 0, 0]}}
+    ui_excluded_link_pattern: robotiq
     torque_enable_service: /gen3_torque_control/enable
     torque_status_topic: /gen3_torque_control/status
     # Position moves go through gen3_torque_control's own high-level move
@@ -28,6 +45,7 @@ study_control_panel_node:
       - joint_5
       - joint_6
       - joint_7
+    prefer_robot_description: true
     urdf_path: /home/katallen/sandbox/src/springcontroller/springcontroller/flat_urdf_files/gen3_kinova_flat.urdf
     locked_joint_names:
       - robotiq_85_left_knuckle_joint
