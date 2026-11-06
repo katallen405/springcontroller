@@ -981,6 +981,31 @@ viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
 viz.loadViewerModel()
 
+
+def _colour_bare_dae_meshes():
+    """meshcat builds a .dae mesh from the file's own materials and ignores
+    the material pinocchio sends with it, so the URDF colour never reaches a
+    .dae. Meshes with no material of their own (the Gen2 Jaco2's arm halves
+    and spherical wrists) then render in three.js's default white -- which
+    made the Gen2 look like a Gen3. Recolour exactly those with their URDF
+    colour; meshes that carry their own materials keep them."""
+    for geom in visual_model.geometryObjects:
+        path = geom.meshPath
+        if not path.lower().endswith(".dae"):
+            continue
+        try:
+            with open(path, errors="ignore") as f:
+                if "<material" in f.read():
+                    continue
+        except OSError:
+            continue
+        rgba = [float(c) for c in geom.meshColor]
+        viz.viewer[viz.getViewerNodeName(geom, pin.GeometryType.VISUAL)].set_property(
+            "color", rgba)
+
+
+_colour_bare_dae_meshes()
+
 # Bootstrap from parameters, retrying for a bit rather than a single
 # immediate attempt: gen3_spring.launch.py starts armviz with no ordering
 # guarantee against virtual_spring_node (unlike enable_torque_control/
