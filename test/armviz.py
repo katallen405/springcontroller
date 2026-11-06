@@ -977,18 +977,16 @@ node.create_subscription(
     Float64MultiArray, COLLISION_THRESHOLDS_TOPIC, collision_thresholds_cb, _latched_qos
 )
 
-viz = MeshcatVisualizer(model, collision_model, visual_model)
-viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
-viz.loadViewerModel()
-
-
-def _colour_bare_dae_meshes():
+def _draw_bare_dae_from_triangles():
     """meshcat builds a .dae mesh from the file's own materials and ignores
     the material pinocchio sends with it, so the URDF colour never reaches a
     .dae. Meshes with no material of their own (the Gen2 Jaco2's arm halves
     and spherical wrists) then render in three.js's default white -- which
-    made the Gen2 look like a Gen3. Recolour exactly those with their URDF
-    colour; meshes that carry their own materials keep them."""
+    made the Gen2 look like a Gen3. (Recolouring them afterwards with
+    set_property("color") did not take.) Clearing meshPath makes pinocchio
+    draw exactly those from the triangle mesh it already loaded, sent with the
+    URDF material. They are Y_UP with no node transforms, so placement is the
+    same either way; meshes with their own materials keep the .dae path."""
     for geom in visual_model.geometryObjects:
         path = geom.meshPath
         if not path.lower().endswith(".dae"):
@@ -999,12 +997,14 @@ def _colour_bare_dae_meshes():
                     continue
         except OSError:
             continue
-        rgba = [float(c) for c in geom.meshColor]
-        viz.viewer[viz.getViewerNodeName(geom, pin.GeometryType.VISUAL)].set_property(
-            "color", rgba)
+        geom.meshPath = ""
 
 
-_colour_bare_dae_meshes()
+_draw_bare_dae_from_triangles()
+
+viz = MeshcatVisualizer(model, collision_model, visual_model)
+viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
+viz.loadViewerModel()
 
 # Bootstrap from parameters, retrying for a bit rather than a single
 # immediate attempt: gen3_spring.launch.py starts armviz with no ordering
