@@ -99,6 +99,13 @@ def generate_launch_description():
             "gravity_payload", default_value="[0.55, 0.0, 0.0, 0.0]",
             description="Passed to gen2_torque_node when start_bridge:=true."),
         DeclareLaunchArgument(
+            "gripper_force", default_value="64",
+            description="Robotiq grip force 0..255, passed to gen2_torque_node when "
+                        "start_bridge:=true. Lower is quieter while holding."),
+        DeclareLaunchArgument(
+            "gripper_speed", default_value="128",
+            description="Robotiq speed 0..255, passed to gen2_torque_node when start_bridge:=true."),
+        DeclareLaunchArgument(
             "enable_torque_control", default_value="false",
             description="Auto-enable torque once virtual_spring_node is publishing (see "
                         "test/wait_and_enable_torque.py). Default false: enable deliberately."),
@@ -126,7 +133,10 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(PathJoinSubstitution([
             FindPackageShare("gen2_torque_control"), "launch",
             "gen2_torque_control.launch.py"])),
-        launch_arguments={"gravity_payload": LaunchConfiguration("gravity_payload")}.items(),
+        launch_arguments={
+            name: LaunchConfiguration(name)
+            for name in ("gravity_payload", "gripper_force", "gripper_speed")
+        }.items(),
         condition=IfCondition(LaunchConfiguration("start_bridge")),
     )
 
