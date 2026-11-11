@@ -19,11 +19,15 @@ study_control_panel_node:
     gripper_command_service: /gen2_torque_control/gripper_command
     gripper_activate_service: /gen2_torque_control/gripper_activate
     gripper_requires_torque_off: false
+    # Refuses unless the arm is in the candle pose, still, with torque off.
+    zero_torque_sensors_service: /gen2_torque_control/zero_torque_sensors
     meshcat_url: http://localhost:7101/static/
     ui_link_presets: >-
       {"tip": {"link_name": "j2s7s300_ee_link", "local_point": [0, 0, 0]}}
     ui_excluded_link_pattern: "^gripper_finger"
     check_collision_service: /virtual_spring_node/check_collision_at
+    # Candle = every joint at pi (Kinova's own angles), arm straight up.
+    candle_joint_angles: [3.141592653589793, 3.141592653589793, 3.141592653589793, 3.141592653589793, 3.141592653589793, 3.141592653589793, 3.141592653589793]
     move_confirm_timeout_sec: 3.0
     add_spring_service: /virtual_spring_node/add_spring
     remove_spring_service: /virtual_spring_node/remove_spring

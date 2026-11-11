@@ -47,6 +47,7 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 from std_msgs.msg import String, Float64MultiArray
@@ -185,6 +186,11 @@ class StudyControlPanelNode(Node):
         # True when the gripper only moves with torque control off (Kortex),
         # so the UI drops out of torque control around a gripper command.
         self.declare_parameter("gripper_requires_torque_off", True)
+        # Trigger that zeroes the arm's joint torque sensors (Gen2:
+        # gen2_torque_control/zero_torque_sensors, which itself refuses
+        # unless the arm is still, in the candle pose, with torque off).
+        # "" = none.
+        self.declare_parameter("zero_torque_sensors_service", "")
         self.declare_parameter("meshcat_url", "http://localhost:7101/static/")
         # JSON object {preset_name: {"link_name": ..., "local_point": [x,y,z]}}
         # for the UI's link dropdowns (a ROS parameter can't hold a dict).
@@ -207,6 +213,11 @@ class StudyControlPanelNode(Node):
         self.declare_parameter("move_status_topic", "/gen3_torque_control/move_status")
         self.declare_parameter("abort_move_service", "/gen3_torque_control/abort_move")
         self.declare_parameter("check_collision_service", "/virtual_spring_node/check_collision_at")
+        # Joint angles (rad, one per joint_names entry) of the robot's
+        # "candle" pose -- arm straight up -- for ~/move_to_candle. Same
+        # collision-checked path as move_to_study_start. Unset = no candle
+        # move on this robot (the UI greys the button out).
+        self.declare_parameter("candle_joint_angles", Parameter.Type.DOUBLE_ARRAY)
         # How long to wait for a move_status update confirming a move
         # actually started, NOT how long to wait for it to finish -- a real
         # move can take many seconds to tens of seconds, far longer than
@@ -313,6 +324,7 @@ class StudyControlPanelNode(Node):
         self._clear_faults_service = gp("clear_faults_service")
         self._gripper_activate_service = gp("gripper_activate_service")
         self._gripper_requires_torque_off = bool(gp("gripper_requires_torque_off"))
+        self._zero_torque_sensors_service = gp("zero_torque_sensors_service")
         self._meshcat_url = gp("meshcat_url")
         self._ui_link_presets = json.loads(gp("ui_link_presets") or "{}")
         self._ui_excluded_link_pattern = gp("ui_excluded_link_pattern")
@@ -329,6 +341,12 @@ class StudyControlPanelNode(Node):
         self._safety_status_topic = gp("safety_status_topic")
         self._joint_states_topic = gp("joint_states_topic")
         self._joint_names = list(gp("joint_names"))
+        candle = gp("candle_joint_angles")
+        self._candle_joint_angles = [float(a) for a in candle] if candle else []
+        if self._candle_joint_angles and len(self._candle_joint_angles) != len(self._joint_names):
+            raise ValueError(
+                f"candle_joint_angles has {len(self._candle_joint_angles)} entries but "
+                f"joint_names has {len(self._joint_names)}")
         urdf_path = os.path.expanduser(gp("urdf_path"))
         # [""] stands in for "none" (a YAML [] can't be typed as a string array).
         locked_joint_names = [n for n in gp("locked_joint_names") if n]
@@ -493,6 +511,8 @@ class StudyControlPanelNode(Node):
                              self._soft_estop_cb, callback_group=cb_group)
         self.create_service(Trigger, "~/move_to_study_start",
                              self._move_to_study_start_cb, callback_group=cb_group)
+        self.create_service(Trigger, "~/move_to_candle",
+                            self._move_to_candle_cb, callback_group=cb_group)
         self.create_service(MoveToJointAngles, "~/move_to_joint_angles",
                              self._move_to_joint_angles_cb, callback_group=cb_group)
         self.create_service(Trigger, "~/set_current_as_study_start",
@@ -607,6 +627,7 @@ class StudyControlPanelNode(Node):
             "gripper_command_service": self._gripper_command_service,
             "gripper_activate_service": self._gripper_activate_service,
             "clear_faults_service": self._clear_faults_service,
+            "zero_torque_sensors_service": self._zero_torque_sensors_service,
             "meshcat_url": self._meshcat_url,
             "link_presets": self._ui_link_presets,
             "excluded_link_pattern": self._ui_excluded_link_pattern,
@@ -618,6 +639,8 @@ class StudyControlPanelNode(Node):
                 "gripper": bool(self._gripper_command_service),
                 "gripper_requires_torque_off": self._gripper_requires_torque_off,
                 "clear_faults": bool(self._clear_faults_service),
+                "candle": bool(self._candle_joint_angles),
+                "zero_torque_sensors": bool(self._zero_torque_sensors_service),
             },
         }
 
@@ -920,6 +943,21 @@ class StudyControlPanelNode(Node):
         angles = [float(by_name[n]) for n in self._joint_names]
 
         response.success, response.message = self._move_to_joint_angles(angles)
+        return response
+
+    def _move_to_candle_cb(self, request, response):
+        if not self._candle_joint_angles:
+            response.success = False
+            response.message = f"No candle pose configured for the {self._robot_label}."
+            return response
+
+        err = self._require_torque_disabled()
+        if err is not None:
+            response.success = False
+            response.message = err
+            return response
+
+        response.success, response.message = self._move_to_joint_angles(list(self._candle_joint_angles))
         return response
 
     def _move_to_joint_angles_cb(self, request, response):

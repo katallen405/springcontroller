@@ -184,3 +184,52 @@ def test_ur3e_move_refused_without_publishing(ur3e):
     resp = ur3e._move_to_joint_angles_cb(req, MoveToJointAngles.Response())
     assert not resp.success
     assert "no move-to-joint-angles interface" in resp.message
+
+
+# ---------------------------------------------------------------------
+# Candle move + zero torque sensors (Gen2 only for now)
+# ---------------------------------------------------------------------
+
+def test_candle_and_zero_torque_wiring_per_robot(any_robot_node):
+    robot, node = any_robot_node
+    p = node._robot_profile()
+    expected = {
+        # robot: (candle move, zero torque sensors service)
+        "gen3": (False, ""),
+        "gen2": (True, "/gen2_torque_control/zero_torque_sensors"),
+        "ur3e": (False, ""),
+    }[robot]
+    assert (p["features"]["candle"], p["zero_torque_sensors_service"]) == expected
+    assert p["features"]["zero_torque_sensors"] is bool(expected[1])
+
+
+@pytest.fixture
+def gen2(tmp_path):
+    n = node_for("gen2", tmp_path)
+    yield n
+    n.destroy_node()
+
+
+def test_gen2_move_to_candle_moves_every_joint_to_pi(gen2):
+    gen2._torque_status_freshness.update("DISABLED", gen2._now())
+    moves = []
+    gen2._move_to_joint_angles = lambda angles: (moves.append(angles), (True, "ok"))[1]
+    resp = gen2._move_to_candle_cb(Trigger.Request(), Trigger.Response())
+    assert resp.success, resp.message
+    assert moves == [[pytest.approx(3.141592653589793)] * 7]
+
+
+def test_gen2_move_to_candle_refused_with_torque_on(gen2):
+    gen2._torque_status_freshness.update("ENABLED", gen2._now())
+    gen2._move_to_joint_angles = lambda angles: pytest.fail("no move expected")
+    resp = gen2._move_to_candle_cb(Trigger.Request(), Trigger.Response())
+    assert not resp.success
+    assert "Turn it off" in resp.message
+
+
+def test_move_to_candle_refused_without_candle_pose(ur3e):
+    ur3e._torque_status_freshness.update("DISABLED", ur3e._now())
+    ur3e._move_to_joint_angles = lambda angles: pytest.fail("no move expected")
+    resp = ur3e._move_to_candle_cb(Trigger.Request(), Trigger.Response())
+    assert not resp.success
+    assert "No candle pose" in resp.message

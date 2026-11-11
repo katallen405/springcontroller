@@ -349,6 +349,14 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <div class="msg-box hidden" id="start-msg" role="status" aria-live="polite"></div>
 
+        <p class="hint" style="margin-top:12px">Candle pose: arm straight up. Zero the torque sensors there, once the arm has been still for about a second (torque control off).</p>
+        <p class="hint hidden" id="candle-unavailable"></p>
+        <div class="btn-row">
+          <button class="action on" id="btn-move-candle" onclick="moveToCandle()">Move to candle position</button>
+          <button class="action off" id="btn-zero-torque" onclick="zeroTorqueSensors()">Zero torque sensors</button>
+        </div>
+        <div class="msg-box hidden" id="candle-msg" role="status" aria-live="polite"></div>
+
         <p class="hint" style="margin-top:12px">Move to joint angles (radians, <span id="mv-joint-range">one box per joint</span>). Requires torque control off; checked for collision before moving.</p>
         <div class="spring-form">
           <div class="row" style="flex-wrap:nowrap" id="mv-joints"></div>
@@ -532,6 +540,7 @@ const svcEnablePosition   = { name: NODE + '/enable_position_control',      type
 const svcEnableTorque     = { name: NODE + '/enable_torque_control',        type: 'springcontroller_ui_interfaces/srv/EnableTorqueControl' };
 const svcSoftEstop        = { name: NODE + '/soft_estop',                   type: 'std_srvs/srv/Trigger' };
 const svcMoveToStart      = { name: NODE + '/move_to_study_start',          type: 'std_srvs/srv/Trigger' };
+const svcMoveToCandle     = { name: NODE + '/move_to_candle',               type: 'std_srvs/srv/Trigger' };
 const svcMoveToJointAngles = { name: NODE + '/move_to_joint_angles',        type: 'springcontroller_ui_interfaces/srv/MoveToJointAngles' };
 const svcSetCurrentStart  = { name: NODE + '/set_current_as_study_start',   type: 'std_srvs/srv/Trigger' };
 const svcResetSprings     = { name: NODE + '/reset_springs',                type: 'std_srvs/srv/Trigger' };
@@ -553,6 +562,7 @@ const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
 const svcGripperCommand   = { name: '', type: 'std_srvs/srv/SetBool' };
 const svcClearFaults      = { name: '', type: 'std_srvs/srv/Trigger' };
 const svcGripperActivate  = { name: '', type: 'std_srvs/srv/Trigger' };
+const svcZeroTorque       = { name: '', type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
 const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
@@ -754,6 +764,16 @@ function softEstop() {
 
 // ---- study start -----------------------------------------------------
 function moveToStudyStart() { callTrigger(svcMoveToStart, 'Move to study start', 'start-msg'); }
+function moveToCandle() { callTrigger(svcMoveToCandle, 'Move to candle', 'candle-msg'); }
+function zeroTorqueSensors() { callTrigger(svcZeroTorque, 'Zero torque sensors', 'candle-msg'); }
+
+// Candle/zero buttons: each needs its own robot feature, and both need
+// torque control off (the driver refuses otherwise).
+function updateCandleButtons(torqueOn) {
+  const f = (robotProfile && robotProfile.features) || {};
+  document.getElementById('btn-move-candle').disabled = torqueOn || !(f.move && f.candle);
+  document.getElementById('btn-zero-torque').disabled = torqueOn || !f.zero_torque_sensors;
+}
 
 function setCurrentAsStudyStart() {
   if (!confirm('This overwrites the saved study-start preset with the arm\'s current position. Continue?')) return;
@@ -2066,6 +2086,7 @@ function handleTorqueStatus(msg) {
   const canMove = !!(robotProfile && robotProfile.features.move);
   ['btn-move-study-start', 'btn-move-joint-angles']
     .forEach(function(id) { document.getElementById(id).disabled = isEnabled || !canMove; });
+  updateCandleButtons(isEnabled);
 }
 // Backs maybeRecoverSpringsAfterGripperCycle's post-gripper-cycle checks
 // (see gripper section) -- kept as a plain variable rather than re-reading
@@ -2161,6 +2182,7 @@ function handleRobotProfile(msg) {
   svcGripperCommand.name = p.gripper_command_service || '';
   svcClearFaults.name = p.clear_faults_service || '';
   svcGripperActivate.name = p.gripper_activate_service || '';
+  svcZeroTorque.name = p.zero_torque_sensors_service || '';
   document.getElementById('gripper-activate-row').classList.toggle(
     'hidden', !(f.gripper && svcGripperActivate.name));
   LINK_PRESETS = p.link_presets || {};
@@ -2181,6 +2203,12 @@ function handleRobotProfile(msg) {
     .forEach(function(id) { document.getElementById(id).disabled = !f.move; });
   setUnavailable('move-unavailable', f.move ? '' :
     'Moves not available: the ' + label + ' has no collision-checked joint move in this panel.');
+  updateCandleButtons(false);
+  const candleGaps = [];
+  if (!(f.move && f.candle)) candleGaps.push('move to candle');
+  if (!f.zero_torque_sensors) candleGaps.push('zero torque sensors');
+  setUnavailable('candle-unavailable', candleGaps.length ?
+    'Not available on the ' + label + ': ' + candleGaps.join(', ') + '.' : '');
   buildJointAngleInputs(p.joint_names || []);
 
   // Re-subscribe the robot-specific topics (the profile is latched, so a
