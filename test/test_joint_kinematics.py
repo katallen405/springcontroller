@@ -277,3 +277,14 @@ def test_make_ee_fk_on_study_urdf():
     assert np.allclose(fk(rolled[None])[0], p0, atol=1e-4)
     # Folded vs stretched out: the arm is ~1 m long when straight up.
     assert np.linalg.norm(fk(np.zeros((1, 7)))[0]) > 0.9
+
+
+def test_find_bags_skips_plain_files(tmp_path):
+    """A shell glob over a data folder also hands over stray files
+    (e.g. an editor's #lock# file); those are ignored, not a crash."""
+    part = tmp_path / "1"
+    (part / "KT_2026_09_05-12_00_00").mkdir(parents=True)
+    (part / "KT_2026_09_05-12_00_00" / "metadata.yaml").write_text("")
+    stray = tmp_path / "#condition_order.csv#"
+    stray.write_text("x")
+    assert jk.find_bags([str(part), str(stray)]) == [str(part / "KT_2026_09_05-12_00_00")]

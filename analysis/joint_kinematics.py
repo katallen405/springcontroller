@@ -194,10 +194,14 @@ def moving_windows(move_status_events, last_t: float):
 
 def find_bags(paths: list[str]) -> list[str]:
     """Each path is either a bag folder (has metadata.yaml) or a folder of
-    them (e.g. one participant's directory)."""
+    them (e.g. one participant's directory). Plain files are skipped, so a
+    shell glob like data/* can't trip over a stray CSV or editor lock file."""
     bags = []
     for p in paths:
         p = os.path.expanduser(p)
+        if not os.path.isdir(p):
+            print(f"{p}: not a directory, ignored")
+            continue
         if os.path.isfile(os.path.join(p, "metadata.yaml")):
             bags.append(p)
             continue
