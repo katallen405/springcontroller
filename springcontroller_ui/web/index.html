@@ -188,15 +188,13 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
 <header class="conn-bar">
   <button class="action estop" onclick="softEstop()" style="padding:8px 16px;font-size:14px">ABORT MOVE/DISABLE TORQUE</button>
-  <h1 class="app-title">Study Control Panel</h1>
+  <h1 class="app-title">Study Control Panel <span id="robot-label" class="val unknown">robot: not connected</span></h1>
   <span class="dot" id="dot" aria-hidden="true"></span>
   <span class="status-text" id="conn-label" role="status" aria-live="polite">Disconnected</span>
   <label class="sr-only" for="ws-url">Rosbridge WebSocket URL</label>
   <input type="text" id="ws-url" value="ws://localhost:9090" style="width:190px">
   <button id="btn-connect">Connect</button>
   <button id="btn-disconnect">Disconnect</button>
-  <label for="robot-ip" style="font-size:13px;color:#666;margin-left:10px;padding-left:10px;border-left:1px solid #ddd">Robot IP:</label>
-  <input type="text" id="robot-ip" value="192.168.1.10" style="width:120px">
   <div class="status-line" style="margin-top:0;flex-basis:100%;display:flex;gap:16px;flex-wrap:wrap">
     <span>torque control: <span class="val" id="torque-state">unknown</span></span>
     <span>move status: <span class="val" id="move-state">unknown</span></span>
@@ -232,9 +230,11 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
             <span class="toggle-state val unknown" id="springs-toggle-state">?</span>
           </div>
         </div>
+        <p class="hint hidden" id="torque-unavailable"></p>
         <div class="btn-row" style="margin-top:8px">
-          <button class="action off" onclick="clearFaults()">Clear faults</button>
+          <button class="action off" id="btn-clear-faults" onclick="clearFaults()">Clear faults</button>
         </div>
+        <p class="hint hidden" id="clear-faults-unavailable"></p>
         <label class="chk" style="margin-top:8px">
           <input type="checkbox" id="allow-danger" autocomplete="off"> Override safety interlock
         </label>
@@ -244,10 +244,17 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
 
       <details class="panel" open>
         <summary>Gripper control</summary>
+        <p class="hint hidden" id="gripper-unavailable"></p>
         <p class="hint" id="gripper-hint">If torque control is on, it's automatically disabled to move the gripper and re-enabled afterward (see GRIPPER_MOVE_WAIT_MS below for the re-enable delay).</p>
         <div class="btn-row">
           <button class="action on" id="btn-gripper-open" onclick="gripperCommand(false)">Open gripper</button>
           <button class="action off" id="btn-gripper-close" onclick="gripperCommand(true)">Close gripper</button>
+        </div>
+        <div class="hidden" id="gripper-activate-row">
+          <p class="hint">Needed once after the gripper powers up. Activating sweeps the jaws fully open and closed -- keep hands and objects clear.</p>
+          <div class="btn-row">
+            <button class="action off" id="btn-gripper-activate" onclick="gripperActivate()">Activate gripper</button>
+          </div>
         </div>
         <div class="msg-box hidden" id="gripper-msg" role="status" aria-live="polite"></div>
       </details>
@@ -334,6 +341,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
       <details class="panel" open>
         <summary>Position mode controls</summary>
 
+        <p class="hint hidden" id="move-unavailable"></p>
         <p class="status-line">Study start preset: <span class="val" id="start-defined">unknown</span></p>
         <div class="btn-row" style="margin-top:8px">
           <button class="action on" id="btn-move-study-start" onclick="moveToStudyStart()">Move to study start</button>
@@ -341,17 +349,9 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
         </div>
         <div class="msg-box hidden" id="start-msg" role="status" aria-live="polite"></div>
 
-        <p class="hint" style="margin-top:12px">Move to joint angles (radians, joint_1..joint_7). Requires torque control off; checked for collision before moving.</p>
+        <p class="hint" style="margin-top:12px">Move to joint angles (radians, <span id="mv-joint-range">one box per joint</span>). Requires torque control off; checked for collision before moving.</p>
         <div class="spring-form">
-          <div class="row" style="flex-wrap:nowrap">
-            <label>j1 <input class="joint-angle-input" type="number" step="0.01" id="mv-j1" value="0"></label>
-            <label>j2 <input class="joint-angle-input" type="number" step="0.01" id="mv-j2" value="0"></label>
-            <label>j3 <input class="joint-angle-input" type="number" step="0.01" id="mv-j3" value="0"></label>
-            <label>j4 <input class="joint-angle-input" type="number" step="0.01" id="mv-j4" value="0"></label>
-            <label>j5 <input class="joint-angle-input" type="number" step="0.01" id="mv-j5" value="0"></label>
-            <label>j6 <input class="joint-angle-input" type="number" step="0.01" id="mv-j6" value="0"></label>
-            <label>j7 <input class="joint-angle-input" type="number" step="0.01" id="mv-j7" value="0"></label>
-          </div>
+          <div class="row" style="flex-wrap:nowrap" id="mv-joints"></div>
           <div class="btn-row">
             <button class="action on" id="btn-move-joint-angles" onclick="moveToJointAngles()">Move</button>
             <button class="action off" id="btn-use-current-angles" onclick="fetchCurrentJointAngles()">Use current joint angles</button>
@@ -367,10 +367,10 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
     <details class="panel" open>
       <summary>Meshcat view</summary>
       <div class="meshcat-row">
-        <span class="status-line" id="meshcat-label">Needs <code>gen3_spring.launch.py armviz:=true</code>:</span>
+        <span class="status-line" id="meshcat-label">Needs <code><span id="meshcat-launch-file">the robot's spring launch file</span> armviz:=true</code>:</span>
         <button class="copy-btn" onclick="reloadMeshcat()">Reload</button>
       </div>
-      <iframe class="meshcat" id="meshcat-frame" src="http://localhost:7101/static/" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
+      <iframe class="meshcat" id="meshcat-frame" src="about:blank" title="Meshcat 3D robot view" aria-labelledby="meshcat-label"></iframe>
     </details>
 
     <details class="panel">
@@ -401,7 +401,7 @@ iframe.meshcat { width: 100%; height: min(85vh, 900px); border: 1px solid #ddd; 
           <label>local z <input type="number" step="0.01" id="wc-lz" value="0.15"></label>
         </div>
         <div class="row">
-          <label>data directory <input type="text" id="wc-datadir" value="~/gen3_study_data" style="width:220px"></label>
+          <label>data directory <input type="text" id="wc-datadir" value="" style="width:220px"></label>
         </div>
         <div class="btn-row">
           <button class="action on" onclick="previewWorkspaceCenter()">Preview workspace center</button>
@@ -547,10 +547,12 @@ const svcLogEvent                = { name: NODE + '/log_event',                 
 // 'position' 1 time in 3. Used by refreshStudyOrder() below to render all
 // three of a participant's assigned first/second/third_condition fields.
 const CONDITION_LABELS = { KT: 'KT', position: 'Position', pose: 'Pose' };
-// Straight to gen3_torque_control, like svcAddSpring below goes straight to
-// virtual_spring_node -- no orchestration_node involvement needed.
-const svcGripperCommand   = { name: '/gen3_torque_control/gripper_command', type: 'std_srvs/srv/SetBool' };
-const svcClearFaults      = { name: '/gen3_torque_control/clear_faults',    type: 'std_srvs/srv/Trigger' };
+// Straight to the robot's driver, like svcAddSpring below goes straight to
+// virtual_spring_node -- no orchestration_node involvement needed. Names
+// come from the robot profile (handleRobotProfile); '' = this robot has none.
+const svcGripperCommand   = { name: '', type: 'std_srvs/srv/SetBool' };
+const svcClearFaults      = { name: '', type: 'std_srvs/srv/Trigger' };
+const svcGripperActivate  = { name: '', type: 'std_srvs/srv/Trigger' };
 
 const svcSpringsEnable    = { name: '/virtual_spring_node/enable',          type: 'std_srvs/srv/SetBool' };
 const svcRepulsionEnable  = { name: '/virtual_spring_node/set_repulsion_enabled', type: 'std_srvs/srv/SetBool' };
@@ -564,6 +566,11 @@ const targetTopicPrefix   = '/virtual_spring_node/target/';
 
 let ros = null;
 let lastJointState = null;
+// Published (latched) by study_control_panel_node from its robot config --
+// every robot-specific topic/service/joint name this page uses. null until
+// the first message after connecting.
+let robotProfile = null;
+let robotTopics = [];
 let currentSprings = [];
 const WORKSPACE_DEMO_SPRING_NAME = 'workspace_demo';
 const WORKSPACE_DEMO_EYE_SPRING_NAME = 'workspace_demo_eye';
@@ -763,10 +770,14 @@ function handleStudyStartStatus(msg) {
 
 // ---- move to position -----------------------------------------------------
 function moveToJointAngles() {
-  const ids = ['mv-j1', 'mv-j2', 'mv-j3', 'mv-j4', 'mv-j5', 'mv-j6', 'mv-j7'];
-  const angles = ids.map(function(id) { return parseFloat(document.getElementById(id).value); });
+  const inputs = document.querySelectorAll('#mv-joints input');
+  if (inputs.length === 0) {
+    showMsg('move-to-angles-msg', false, 'No robot profile yet -- connect first.');
+    return;
+  }
+  const angles = Array.prototype.map.call(inputs, function(el) { return parseFloat(el.value); });
   if (angles.some(function(a) { return !isFinite(a); })) {
-    showMsg('move-to-angles-msg', false, 'All 7 joint angles must be numbers.');
+    showMsg('move-to-angles-msg', false, 'All ' + angles.length + ' joint angles must be numbers.');
     return;
   }
   callService(svcMoveToJointAngles, { joint_angles_rad: angles },
@@ -774,7 +785,7 @@ function moveToJointAngles() {
     function(err) { showMsg('move-to-angles-msg', false, 'Move failed: ' + err); });
 }
 
-// Fills the 7 boxes from the latest /kinova/joint_states_lowlevel message
+// Fills the joint boxes from the latest joint_states_topic message
 // (see lastJointState, set by the raw subscription in connectRos) purely
 // for reference/as a starting point to edit from -- deliberately explicit
 // (a button, not a live-updating readout) so values can't shift under the
@@ -784,13 +795,14 @@ function fetchCurrentJointAngles() {
     showMsg('move-to-angles-msg', false, 'No joint state received yet -- is the robot/torque node running?');
     return;
   }
-  for (let i = 1; i <= 7; i++) {
-    const idx = lastJointState.name.indexOf('joint_' + i);
+  const names = robotProfile.joint_names;
+  for (let i = 0; i < names.length; i++) {
+    const idx = jointStateIndex(lastJointState.name, names[i]);
     if (idx === -1) {
-      showMsg('move-to-angles-msg', false, "joint_" + i + " not found in the latest joint state.");
+      showMsg('move-to-angles-msg', false, names[i] + ' not found in the latest joint state.');
       return;
     }
-    document.getElementById('mv-j' + i).value = lastJointState.position[idx].toFixed(4);
+    document.getElementById('mv-j' + (i + 1)).value = lastJointState.position[idx].toFixed(4);
   }
   showMsg('move-to-angles-msg', true, 'Filled with current joint angles.');
 }
@@ -818,8 +830,9 @@ const GRIPPER_MOVE_WAIT_MS = 2000;
 let gripperCycleInProgress = false;
 
 function setGripperButtonsEnabled(enabled) {
-  document.getElementById('btn-gripper-open').disabled = !enabled;
-  document.getElementById('btn-gripper-close').disabled = !enabled;
+  const hasGripper = !!(robotProfile && robotProfile.features.gripper);
+  document.getElementById('btn-gripper-open').disabled = !(enabled && hasGripper);
+  document.getElementById('btn-gripper-close').disabled = !(enabled && hasGripper);
 }
 
 function gripperCommand(close) {
@@ -827,8 +840,11 @@ function gripperCommand(close) {
   gripperCycleInProgress = true;
   setGripperButtonsEnabled(false);
 
+  // Only Kortex needs torque control off to move its gripper; a gripper on
+  // its own connection (the UR3e's Hand-E) is commanded straight away.
+  const needsTorqueOff = !!(robotProfile && robotProfile.features.gripper_requires_torque_off);
   const wasTorqueEnabled = document.getElementById('torque-toggle-switch').checked;
-  if (!wasTorqueEnabled) {
+  if (!wasTorqueEnabled || !needsTorqueOff) {
     sendGripperCommand(close, false);
     return;
   }
@@ -847,6 +863,12 @@ function gripperCommand(close) {
     gripperCycleInProgress = false;
     setGripperButtonsEnabled(true);
   });
+}
+
+function gripperActivate() {
+  callService(svcGripperActivate, {},
+    function(resp) { showMsg('gripper-msg', resp.success, resp.message || (resp.success ? 'Activating.' : 'Failed.')); },
+    function(err) { showMsg('gripper-msg', false, 'Gripper activate failed: ' + err); });
 }
 
 function sendGripperCommand(close, reenableTorqueAfter) {
@@ -1104,13 +1126,8 @@ const FAVORITE_LINK_PATTERN = /tool|tcp|end.?effector|gripper|hand/i;
 // more of these yet -- just this one, hardcoded, since that's all that's
 // needed right now (world-space named locations were considered and
 // pushed past this study's 2026-09-18 deadline).
-const LINK_PRESETS = {
-  block: { link_name: 'end_effector_link', local_point: [0, 0, 0.15] },
-  wrist_3: { link_name: 'half_arm_2_link', local_point: [0, 0, 0] },
-  elbow_4: { link_name: 'forearm_link', local_point: [0, 0, 0] },
-  elbow_6: { link_name: 'spherical_wrist_2_link', local_point: [0, 0, 0] },
-  wrist_7: { link_name: 'bracelet_link', local_point: [0, 0, 0] },
-};
+// Per robot: ui_link_presets in the panel's config, via the robot profile.
+let LINK_PRESETS = {};
 
 // Every backend call needs a real URDF frame name -- resolves a dropdown's
 // selected value through LINK_PRESETS if it's a preset, otherwise passes a
@@ -1130,9 +1147,10 @@ function applyLinkPresetIfSelected(linkSelId, lxId, lyId, lzId) {
 }
 
 // No spring attachments on the gripper for this project -- filtered out
-// entirely (not just deprioritized out of "favorites") so a robotiq_*
-// link can't be selected via either dropdown group.
-const EXCLUDED_LINK_PATTERN = /robotiq/i;
+// entirely (not just deprioritized out of "favorites") so a gripper link
+// can't be selected via either dropdown group. Per robot
+// (ui_excluded_link_pattern, via the robot profile); null = exclude nothing.
+let EXCLUDED_LINK_PATTERN = null;
 
 function populateLinkDropdown() {
   callService(svcListLinkNames, {}, function(resp) {
@@ -1143,7 +1161,9 @@ function populateLinkDropdown() {
     // rosbridge reconnect re-fires this same handler) should clear it
     // rather than leave it sitting on screen forever.
     document.getElementById('spring-msg').classList.add('hidden');
-    const names = (resp.link_names || []).filter(function(n) { return !EXCLUDED_LINK_PATTERN.test(n); });
+    const names = (resp.link_names || []).filter(function(n) {
+      return !(EXCLUDED_LINK_PATTERN && EXCLUDED_LINK_PATTERN.test(n));
+    });
     const favorites = names.filter(function(n) { return FAVORITE_LINK_PATTERN.test(n); });
     const rest = names.filter(function(n) { return !FAVORITE_LINK_PATTERN.test(n); });
     const addOption = function(parent, name, label) {
@@ -1903,8 +1923,8 @@ function finalizeWithNewParticipantId() {
 }
 
 function reloadMeshcat() {
-  const f = document.getElementById('meshcat-frame');
-  f.src = f.src;
+  if (!robotProfile) return;  // handleRobotProfile loads it once known
+  document.getElementById('meshcat-frame').src = robotProfile.meshcat_url;
 }
 
 // ---- session timer & event log -------------------------------------------
@@ -2043,8 +2063,9 @@ function handleTorqueStatus(msg) {
   // back into) torque control itself, so they stay clickable regardless
   // of torque state; it manages its own disabled state while a cycle is
   // in flight (see gripperCycleInProgress).
+  const canMove = !!(robotProfile && robotProfile.features.move);
   ['btn-move-study-start', 'btn-move-joint-angles']
-    .forEach(function(id) { document.getElementById(id).disabled = isEnabled; });
+    .forEach(function(id) { document.getElementById(id).disabled = isEnabled || !canMove; });
 }
 // Backs maybeRecoverSpringsAfterGripperCycle's post-gripper-cycle checks
 // (see gripper section) -- kept as a plain variable rather than re-reading
@@ -2069,12 +2090,12 @@ function handleSafetyStatus(msg) {
     updateSpringsToggleSwitch(false);
   }
 
-  // virtual_spring_node appends this once it notices gen3_torque_control's
+  // virtual_spring_node appends this once it notices the torque bridge's
   // own status-topic publisher has disappeared from the DDS graph (node
   // crashed/killed). Overrides the torque-state badge so it can't keep
   // showing a stale "ENABLED" while nothing is actually applying torque.
   const tEl = document.getElementById('torque-state');
-  if ((msg.data || '').includes('gen3_torque_control UNREACHABLE')) {
+  if (robotProfile && (msg.data || '').includes(robotProfile.torque_bridge_name + ' UNREACHABLE')) {
     tEl.textContent = 'UNREACHABLE (last seen: ' + lastTorqueStatusRaw + ')';
     tEl.className = 'val inactive';
   }
@@ -2083,6 +2104,106 @@ function handleMoveStatus(msg) {
   const el = document.getElementById('move-state');
   el.textContent = msg.data;
   el.className = 'val ' + (msg.data === 'MOVING' ? 'active' : (msg.data === 'SUCCEEDED' ? 'ok' : 'inactive'));
+}
+
+// ---- robot profile ----------------------------------------------------
+// Index of `name` in a JointState's names: exact, else the one name ending
+// in it (the UR driver's tf_prefix -- same rule as the orchestration node).
+function jointStateIndex(msgNames, name) {
+  const exact = msgNames.indexOf(name);
+  if (exact !== -1) return exact;
+  const hits = [];
+  msgNames.forEach(function(m, i) { if (m.endsWith(name)) hits.push(i); });
+  return hits.length === 1 ? hits[0] : -1;
+}
+
+// Shows `text` under a control this robot doesn't have (or hides it when
+// text is ''), next to the disabled control itself -- never color alone.
+function setUnavailable(elId, text) {
+  const el = document.getElementById(elId);
+  el.textContent = text;
+  el.classList.toggle('hidden', !text);
+}
+
+function buildJointAngleInputs(jointNames) {
+  const row = document.getElementById('mv-joints');
+  row.innerHTML = '';
+  jointNames.forEach(function(name, i) {
+    const label = document.createElement('label');
+    label.textContent = 'j' + (i + 1) + ' ';
+    const input = document.createElement('input');
+    input.className = 'joint-angle-input';
+    input.type = 'number'; input.step = '0.01'; input.value = '0';
+    input.id = 'mv-j' + (i + 1);
+    input.setAttribute('aria-label', name + ' (rad)');
+    label.appendChild(input);
+    row.appendChild(label);
+  });
+  document.getElementById('mv-joint-range').textContent =
+    jointNames[0] + '..' + jointNames[jointNames.length - 1];
+}
+
+function handleRobotProfile(msg) {
+  let p;
+  try { p = JSON.parse(msg.data); } catch (e) { return; }
+  robotProfile = p;
+  const f = p.features || {};
+  const label = p.robot_label || p.robot;
+
+  const labelEl = document.getElementById('robot-label');
+  labelEl.textContent = 'robot: ' + label;
+  labelEl.className = 'val active';
+  document.title = 'Study Control Panel (' + label + ')';
+  document.getElementById('meshcat-launch-file').textContent = p.spring_launch_file;
+  const dataDir = document.getElementById('wc-datadir');
+  if (!dataDir.value) dataDir.value = p.study_data_dir || '';
+
+  svcGripperCommand.name = p.gripper_command_service || '';
+  svcClearFaults.name = p.clear_faults_service || '';
+  svcGripperActivate.name = p.gripper_activate_service || '';
+  document.getElementById('gripper-activate-row').classList.toggle(
+    'hidden', !(f.gripper && svcGripperActivate.name));
+  LINK_PRESETS = p.link_presets || {};
+  EXCLUDED_LINK_PATTERN = p.excluded_link_pattern ? new RegExp(p.excluded_link_pattern, 'i') : null;
+
+  document.getElementById('torque-toggle-switch').disabled = !f.torque;
+  setUnavailable('torque-unavailable', f.torque ? '' :
+    'Not available: the ' + label + ' has no torque on/off control in this panel.');
+  document.getElementById('btn-clear-faults').disabled = !f.clear_faults;
+  setUnavailable('clear-faults-unavailable', f.clear_faults ? '' :
+    'Clear faults: not available on the ' + label + '.');
+  setGripperButtonsEnabled(!gripperCycleInProgress);
+  setUnavailable('gripper-unavailable', f.gripper ? '' :
+    'Not available: no gripper control for the ' + label + ' yet.');
+  document.getElementById('gripper-hint').classList.toggle(
+    'hidden', !(f.gripper && f.gripper_requires_torque_off));
+  ['btn-move-study-start', 'btn-move-joint-angles']
+    .forEach(function(id) { document.getElementById(id).disabled = !f.move; });
+  setUnavailable('move-unavailable', f.move ? '' :
+    'Moves not available: the ' + label + ' has no collision-checked joint move in this panel.');
+  buildJointAngleInputs(p.joint_names || []);
+
+  // Re-subscribe the robot-specific topics (the profile is latched, so a
+  // reconnect delivers it again).
+  robotTopics.forEach(function(t) { if (t) t.unsubscribe(); });
+  robotTopics = [];
+  if (p.torque_status_topic) {
+    robotTopics.push(sub(p.torque_status_topic, 'std_msgs/msg/String', handleTorqueStatus));
+  }
+  if (p.move_status_topic) {
+    robotTopics.push(sub(p.move_status_topic, 'std_msgs/msg/String', handleMoveStatus));
+  }
+  // Raw joint state, subscribed directly (rosbridge doesn't apply any
+  // node's remaps -- it subscribes to exactly the topic name given, same
+  // as `ros2 topic echo`) -- only consumer is fetchCurrentJointAngles's
+  // "Use current joint angles" button, so this doesn't need its own
+  // handler beyond stashing the latest message.
+  robotTopics.push(sub(p.joint_states_topic, 'sensor_msgs/msg/JointState', function(m) {
+    lastJointState = m;
+  }));
+
+  populateLinkDropdown();
+  reloadMeshcat();
 }
 
 // ---- connection -----------------------------------------------------
@@ -2129,19 +2250,10 @@ function connectRos() {
       document.getElementById('ct-caution').value = data[1];
       document.getElementById('ct-max-force').value = data[2];
     });
-    sub('/gen3_torque_control/status', 'std_msgs/msg/String', handleTorqueStatus);
     sub('/virtual_spring_node/safety_status', 'std_msgs/msg/String', handleSafetyStatus);
-    sub('/gen3_torque_control/move_status', 'std_msgs/msg/String', handleMoveStatus);
-    // Raw joint state, subscribed directly (rosbridge doesn't apply any
-    // node's remaps -- it subscribes to exactly the topic name given, same
-    // as `ros2 topic echo`) -- only consumer is fetchCurrentJointAngles's
-    // "Use current joint angles" button, so this doesn't need its own
-    // handler beyond stashing the latest message.
-    sub('/kinova/joint_states_lowlevel', 'sensor_msgs/msg/JointState', function(msg) {
-      lastJointState = msg;
-    });
-
-    populateLinkDropdown();
+    // Torque status, move status, joint states and the link dropdowns are
+    // robot-specific -- handleRobotProfile sets them up once it arrives.
+    sub(NODE + '/robot_profile', 'std_msgs/msg/String', handleRobotProfile);
     fetchLoadedConfigPath();
 
     // The meshcat iframe keeps its own websocket straight to meshcat-server
