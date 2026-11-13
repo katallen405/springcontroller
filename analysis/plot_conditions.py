@@ -169,7 +169,9 @@ def make_boxplot(df, measure, out_path, dpi=150, title=True, font_scale=1.0):
     data = [df.loc[df["condition"] == c, measure].dropna().values for c in CONDITIONS]
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    bp = ax.boxplot(data, labels=CONDITIONS, patch_artist=True, showmeans=True)
+    # showfliers=False: every participant is already drawn as a jittered
+    # dot below, so matplotlib's own outlier circles would draw them twice.
+    bp = ax.boxplot(data, labels=CONDITIONS, patch_artist=True, showmeans=True, showfliers=False)
     for patch, cond in zip(bp["boxes"], CONDITIONS):
         patch.set_facecolor(CONDITION_COLORS[cond])
         patch.set_alpha(0.7)
