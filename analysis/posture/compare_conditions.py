@@ -51,11 +51,11 @@ CATEGORY_COLORS = {
     UNCLASSIFIED: "#999999",
 }
 
-# Mirrors CONDITIONS in ~/sandbox/src/springcontroller/analysis/plot_conditions.py
+# Mirrors CONDITIONS in ../plot_conditions.py
 PREFERRED_CONDITION_ORDER = ["KT", "Position", "Pose"]
 
 # Display labels for chart tick labels only -- mirrors DISPLAY_LABELS in
-# ~/sandbox/src/springcontroller/analysis/plot_conditions.py. Keys stay
+# ../plot_conditions.py. Keys stay
 # "KT"/"Position"/"Pose" everywhere else since those match the filename
 # tokens parsed by extract_condition().
 DISPLAY_LABELS = {

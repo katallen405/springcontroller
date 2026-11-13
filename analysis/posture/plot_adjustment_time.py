@@ -10,7 +10,7 @@ participant's own value plotted as a jittered point so the spread behind
 the mean stays visible.
 
 Bar colors and condition order mirror CONDITION_COLORS/CONDITIONS in
-~/sandbox/src/springcontroller/analysis/plot_conditions.py (Okabe-Ito,
+../plot_conditions.py (Okabe-Ito,
 one color per condition), which already compares this same study's
 KT/Position/Pose conditions. Tick labels use DISPLAY_LABELS from
 compare_conditions.py ("Adm."/"Pos.-only"/"Pose").

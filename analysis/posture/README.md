@@ -1,11 +1,17 @@
-# posture_analysis
+# Posture analysis (`analysis/posture/`)
 
 Post-hoc posture extraction for the `gen3_study` HRI study: pulls video out
 of a rosbag2 (mcap) recording and estimates whether the participant is
 hunching forward or leaning to a side while working with the robot arm.
 
-This is separate from the live study code (`~/sandbox/src/springcontroller`)
-on purpose -- it only ever reads finished bags, never runs during a session.
+Lives in `springcontroller/analysis/posture/` (formerly the standalone
+`~/posture_analysis` repo; its history came along via `git subtree`). Like
+the rest of `analysis/`, it only ever reads finished bags and logs, never
+runs during a session, and it isn't part of any colcon package. Run the
+scripts from this folder: they import each other as plain modules.
+
+Participant-data derivatives (videos, images, CSVs) are blocked by this
+folder's own `.gitignore` -- keep outputs out of the repo.
 
 ## Quick Reference
 
@@ -141,8 +147,7 @@ reassigned low-to-high severity (`neutral` -> `lean` -> `hunch` ->
 `hunch+lean`); `unclassified` stays a neutral gray since it isn't a posture
 zone at all (no signal, not "good posture") and borrowing one of the four
 zone hues for it would visually imply otherwise. Condition row order
-mirrors `CONDITIONS` in
-`~/sandbox/src/springcontroller/analysis/plot_conditions.py`.
+mirrors `CONDITIONS` in `../plot_conditions.py`.
 
 Writes `condition_comparison.png` and `condition_comparison_summary.csv`
 (one row per condition, with `n_sessions`/`n_frames` alongside the
@@ -251,8 +256,7 @@ value overlaid as a jittered point so the spread/outliers behind the mean
 stay visible. Unlike `compare_conditions.py`'s stacked bars (a percentage
 breakdown that sums to 100%), this is a single continuous measure per
 condition, so bar colors and condition order instead mirror
-`CONDITION_COLORS`/`CONDITIONS` in
-`~/sandbox/src/springcontroller/analysis/plot_conditions.py` (Okabe-Ito,
+`CONDITION_COLORS`/`CONDITIONS` in `../plot_conditions.py` (Okabe-Ito,
 one color per condition), which already compares KT/Position/Pose for this
 same study. Takes the same `--no-title`/`--font-scale` flags as
 `compare_conditions.py`, and writes `adjustment_time_comparison.png` next

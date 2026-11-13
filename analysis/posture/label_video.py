@@ -27,7 +27,7 @@ With no --topic, it writes one labeled video per study camera that's actually
 present in the bag (/camera and /camera2's image_raw_throttled/compressed
 topics -- same defaults as extract_posture.py's --face-topic/--shoulder-topic).
 A bag missing one camera (e.g. the loose-USB-cable bags noted in
-posture_analysis/README.md) just gets skipped for that topic, not an error.
+analysis/posture/README.md) just gets skipped for that topic, not an error.
 """
 import argparse
 import datetime as dt

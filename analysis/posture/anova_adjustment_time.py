@@ -16,7 +16,7 @@ and of the post-hoc comparisons if they ran, for dropping into a paper.
 --exclude PID:CONDITION[:SIDE] (repeatable) drops invalid trials before
 the sides are summed, e.g. p10:Pose (experimenter error: the arm wasn't
 reset to the start pose before the condition began, leaving nothing to
-adjust). Same syntax as springcontroller/analysis/exclusions.py. A
+adjust). Same syntax as ../exclusions.py. A
 participant missing a condition is dropped from the ANOVA by pingouin,
 so excluding one condition removes that participant from the test.
 
