@@ -160,8 +160,36 @@ def add_significance_bracket(ax, x1, x2, y, stars, fontsize):
     ymin, ymax = ax.get_ylim()
     tick = (ymax - ymin) * 0.02
     ax.plot([x1, x1, x2, x2], [y, y + tick, y + tick, y], color="black", linewidth=1, clip_on=False)
-    ax.text((x1 + x2) / 2, y + tick, stars, ha="center", va="bottom", fontsize=fontsize)
+    # An asterisk's ink sits high in its line box, so anchoring the text box's
+    # bottom (va="bottom") on the bracket floats the stars most of a line
+    # above it. Anchoring the baseline puts them just above the line at any
+    # --font-scale.
+    text = ax.annotate(stars, xy=((x1 + x2) / 2, y + tick), ha="center", va="baseline",
+                       fontsize=fontsize, annotation_clip=False)
     ax.set_ylim(ymin, max(ymax, y + tick * 4))
+    return text
+
+
+def fit_headroom(ax, texts, pad_pt=2.0):
+    """Raise the y-axis top just enough that every text artist (star labels)
+    fits inside the axes. A text's height above its anchor is fixed in
+    points, but how much data range that takes depends on ylim itself, so
+    solve for the top directly instead of adding a fixed margin."""
+    if not texts:
+        return
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ymin, ymax = ax.get_ylim()
+    axes_h_pt = ax.get_window_extent(renderer).height * 72 / fig.dpi
+    for t in texts:
+        anchor_px = ax.transData.transform((0, t.xy[1]))[1]
+        above_pt = (t.get_window_extent(renderer).y1 - anchor_px) * 72 / fig.dpi + pad_pt
+        frac = above_pt / axes_h_pt
+        if frac >= 1:
+            continue
+        ymax = max(ymax, (t.xy[1] - ymin * frac) / (1 - frac))
+    ax.set_ylim(ymin, ymax)
 
 
 def make_boxplot(df, measure, out_path, dpi=150, title=True, font_scale=1.0):
@@ -192,9 +220,10 @@ def make_boxplot(df, measure, out_path, dpi=150, title=True, font_scale=1.0):
         # All brackets start above the tallest data point among the boxes
         # they could span, so stacked levels stay evenly spaced.
         top = max(data[i].max(initial=0) for i1, i2, _, _ in placed for i in range(i1, i2 + 1))
-        for i1, i2, stars, level in placed:
-            add_significance_bracket(ax, i1 + 1, i2 + 1, top + 0.15 + level * BRACKET_STEP,
-                                     stars, base_fontsize)
+        texts = [add_significance_bracket(ax, i1 + 1, i2 + 1, top + 0.15 + level * BRACKET_STEP,
+                                          stars, base_fontsize)
+                 for i1, i2, stars, level in placed]
+        fit_headroom(ax, texts)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
