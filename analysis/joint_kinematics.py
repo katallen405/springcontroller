@@ -59,13 +59,24 @@ matches the bag folder's prefix (KT / position / pose); side is free text.
 
 Usage:
     python3 analysis/joint_kinematics.py <bag_dir_or_participant_dir>... \\
-        --periods periods.csv --out OUT_DIR [--tz America/New_York] \\
+        (--periods periods.csv | --whole-bags) --out OUT_DIR [--tz America/New_York] \\
         [--pad SECONDS] [--sg-window-ms MS] [--sg-order N] \\
         [--motion-threshold RAD_PER_S] [--urdf PATH] [--ee-frame LINK]
 
 Example:
     python3 analysis/joint_kinematics.py ~/gen3_study_data/test4 \\
         --periods test4_periods.csv --out kinematics_test4
+
+--whole-bags skips the periods file and treats each bag's full joint-state
+span as one period (side "all"), e.g. to get complete data that doesn't
+depend on the logged adjustment times. Add --gap-periods <adjustment CSV> to
+label which adjustment period each joint-state gap falls in.
+
+Every run also writes gaps.csv: one row per joint-state gap longer than
+GAP_WARN_FACTOR x the sample interval (start/end wall-clock time, length,
+and whether it overlaps an adjustment period). Analysis interpolates
+straight across these, which can inflate PEAK acc/jerk near a gap's ends
+(RMS barely moves), so check gaps that land inside adjustment periods.
 """
 
 from __future__ import annotations
@@ -83,6 +94,8 @@ from scipy.signal import savgol_filter
 
 JOINT_STATES_TOPIC = "/kinova/joint_states_lowlevel"
 MOVE_STATUS_TOPIC = "/gen3_torque_control/move_status"
+TORQUE_STATUS_TOPIC = "/gen3_torque_control/status"           # "ENABLED" / "DISABLED"
+SPRINGS_UPDATED_TOPIC = "/virtual_spring_node/springs_updated"  # JSON list of spring names
 JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 GAP_WARN_FACTOR = 5.0
 DEFAULT_MOTION_THRESHOLD = 0.02   # rad/s, max over joints of |qd|
@@ -95,10 +108,18 @@ DEFAULT_EE_FRAME = "end_effector_link"
 
 def read_bag(bag_path: str) -> dict:
     """
-    Joint states and move_status from one bag. ROS imports
-    live in here so the rest of this module (and its tests) import without
-    rclpy. Only the two topics above are deserialized -- the bag's audio
-    and camera topics are filtered out at the reader.
+    Joint states, move_status, torque status and spring-roster changes
+    from one bag. ROS imports live in here so the rest of this module (and
+    its tests) import without rclpy. Only the topics above are deserialized
+    -- the bag's audio and camera topics are filtered out at the reader.
+
+    "events" is a time-ordered list of (t, kind, value):
+      torque   "ENABLED"/"DISABLED", only when it changes. Spring-driven
+               motion can only happen while ENABLED.
+      springs  the loaded spring names (JSON list), every update. The
+               topic is latched (TRANSIENT_LOCAL), so the first one may be
+               a replay of a roster set before recording began; it's
+               marked kind "springs (latched at bag start)".
 
     Times are header stamps where set, falling back to the bag receive
     time when a stamp is zero.
@@ -114,7 +135,8 @@ def read_bag(bag_path: str) -> dict:
         rosbag2_py.ConverterOptions("", ""),
     )
     reader.set_filter(rosbag2_py.StorageFilter(
-        topics=[JOINT_STATES_TOPIC, MOVE_STATUS_TOPIC]))
+        topics=[JOINT_STATES_TOPIC, MOVE_STATUS_TOPIC, TORQUE_STATUS_TOPIC,
+                SPRINGS_UPDATED_TOPIC]))
 
     def stamp_or(header, t_ns):
         s = header.stamp.sec + header.stamp.nanosec / 1e9
@@ -122,8 +144,12 @@ def read_bag(bag_path: str) -> dict:
 
     js_t, js_q, js_qd = [], [], []
     move_status_events = []
+    events = []
+    last_torque = None
+    first_t = None
     while reader.has_next():
         topic, data, t_ns = reader.read_next()
+        first_t = t_ns / 1e9 if first_t is None else first_t
         if topic == JOINT_STATES_TOPIC:
             msg = deserialize_message(data, JointState)
             order = [list(msg.name).index(n) for n in JOINT_NAMES]
@@ -134,10 +160,22 @@ def read_bag(bag_path: str) -> dict:
         elif topic == MOVE_STATUS_TOPIC:
             msg = deserialize_message(data, String)
             move_status_events.append((t_ns / 1e9, msg.data))
+        elif topic == TORQUE_STATUS_TOPIC:
+            value = deserialize_message(data, String).data
+            if value != last_torque:
+                events.append((t_ns / 1e9, "torque", value))
+                last_torque = value
+        elif topic == SPRINGS_UPDATED_TOPIC:
+            value = deserialize_message(data, String).data
+            latched = not any(k.startswith("springs") for _, k, _ in events) \
+                and t_ns / 1e9 - first_t < 1.0
+            events.append((t_ns / 1e9, "springs (latched at bag start)" if latched
+                           else "springs", value))
 
     return {
         "t": np.asarray(js_t), "q": np.asarray(js_q), "qd": np.asarray(js_qd),
         "move_status_events": move_status_events,
+        "events": events,
     }
 
 
@@ -316,6 +354,19 @@ def resample_uniform(t: np.ndarray, x: np.ndarray, dt: float | None = None):
     return grid, out, dt
 
 
+def find_gaps(t: np.ndarray, dt: float | None = None) -> list[tuple[float, float]]:
+    """[(last sample before, first sample after), ...] for every joint-state
+    gap longer than GAP_WARN_FACTOR x the median sample interval -- the
+    stretches resample_uniform() bridges with a straight line."""
+    t = np.sort(t)
+    if t.size < 2:
+        return []
+    steps = np.diff(t)
+    dt = float(np.median(steps)) if dt is None else dt
+    idx = np.flatnonzero(steps > GAP_WARN_FACTOR * dt)
+    return [(float(t[i]), float(t[i + 1])) for i in idx]
+
+
 def sg_window_samples(window_s: float, dt: float, order: int) -> int:
     """Odd window length in samples, at least order + 2 (savgol needs
     window > order, and odd)."""
@@ -381,8 +432,13 @@ def analyze_period(bag: dict, start: float, end: float, windows,
 
     t_raw = bag["t"][in_period]
     q_raw = np.unwrap(bag["q"][in_period], axis=0)
-    t, q, dt = resample_uniform(t_raw, q_raw)
-    _, qd_reported, _ = resample_uniform(t_raw, bag["qd"][in_period], dt)
+    # Gaps are reported explicitly (result["gaps"], gaps.csv), so
+    # resample_uniform's generic per-call warning would only duplicate them.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*gap\(s\)")
+        t, q, dt = resample_uniform(t_raw, q_raw)
+        _, qd_reported, _ = resample_uniform(t_raw, bag["qd"][in_period], dt)
+    gaps = find_gaps(t_raw, dt)
 
     window = sg_window_samples(window_s, dt, order)
     q_s, qd, qdd, qddd = derivatives(q, dt, window, order)
@@ -394,6 +450,8 @@ def analyze_period(bag: dict, start: float, end: float, windows,
     result = {
         "t": t, "q": q_s, "qd": qd, "qdd": qdd, "qddd": qddd,
         "moving": moving, "commanded": commanded, "dt": dt, "window": window,
+        "gaps": gaps, "n_gaps": len(gaps),
+        "longest_gap_s": max((b - a for a, b in gaps), default=0.0),
         "motion_threshold": motion_threshold,
         "duration_s": float(t[-1] - t[0]),
         "frac_time_robot_moving": float(moving.mean()),
@@ -442,6 +500,7 @@ SUMMARY_FIELDS = [
     "ee_displacement_m", "ee_path_length_m",
     "ee_path_length_moving_m", "ee_path_length_not_moving_m",
     "sg_window_samples", "dt_s", "motion_threshold_rad_s",
+    "n_gaps", "longest_gap_s",
 ]
 
 
@@ -509,13 +568,70 @@ def plot_period(path: str, title: str, r: dict) -> None:
     plt.close(fig)
 
 
+EVENT_FIELDS = ["bag", "participant_id", "condition", "time", "epoch_s", "kind", "value"]
+GAP_FIELDS = ["label", "bag", "participant_id", "condition", "side", "gap_start",
+              "gap_end", "length_s", "seconds_into_period", "adjustment_overlap"]
+
+
+def gap_rows(label: str, bag_name: str, period: dict, r: dict, tz: str,
+             adjustment_periods: list[dict] | None) -> list[dict]:
+    """One gaps.csv row per gap. adjustment_overlap says whether the gap
+    touches an adjustment period: for a --periods run, the period itself
+    without --pad ("inside" / "partial" / "outside"); for --whole-bags with
+    --gap-periods, the overlapping periods by name ("none" if no overlap);
+    blank when there's nothing to compare against."""
+    def iso(x):
+        return datetime.datetime.fromtimestamp(x, ZoneInfo(tz)).isoformat(timespec="milliseconds")
+
+    rows = []
+    for a, b in r["gaps"]:
+        if adjustment_periods is None:
+            overlap = ""
+        elif period["side"] == "all":
+            hits = [f"{p['condition']} side {p['side']}" for p in adjustment_periods
+                    if a < p["end"] and b > p["start"]]
+            overlap = "; ".join(hits) if hits else "none"
+        else:
+            lo, hi = adjustment_periods[0]["start"], adjustment_periods[0]["end"]
+            overlap = ("inside" if a >= lo and b <= hi
+                       else "partial" if a < hi and b > lo else "outside")
+        rows.append({"label": label, "bag": bag_name,
+                     "participant_id": period["participant_id"],
+                     "condition": period["condition"], "side": period["side"],
+                     "gap_start": iso(a), "gap_end": iso(b), "length_s": round(b - a, 3),
+                     "seconds_into_period": round(a - float(r["t"][0]), 3),
+                     "adjustment_overlap": overlap})
+    return rows
+
+
+def whole_bag_period(participant_id: str, condition: str, t: np.ndarray) -> dict:
+    """The --whole-bags stand-in for a periods-file row: the bag's full
+    joint-state span, labeled like the periods file would be (participant
+    'pN', canonical condition name) so downstream scripts group it the same
+    way. side is 'all' since a whole bag usually spans both sides."""
+    canon = {"kt": "KT", "pose": "Pose", "position": "Position"}
+    pid = f"p{participant_id}" if participant_id.isdigit() else participant_id
+    return {"participant_id": pid, "condition": canon.get(condition.lower(), condition),
+            "side": "all", "start": float(t.min()), "end": float(t.max())}
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("bags", nargs="+",
                         help="Bag folder(s), or folder(s) containing bag folders.")
-    parser.add_argument("--periods", required=True, help="Adjustment periods CSV.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--periods", help="Adjustment periods CSV.")
+    source.add_argument("--whole-bags", action="store_true",
+                        help="Ignore adjustment times: analyze each bag from its first "
+                             "to its last joint-state sample, as one period with side "
+                             "'all'. Gives the full data independent of the logged "
+                             "event times.")
+    parser.add_argument("--gap-periods",
+                        help="With --whole-bags: an adjustment-periods CSV used only to label "
+                             "which adjustment period (if any) each joint-state gap in "
+                             "gaps.csv overlaps.")
     parser.add_argument("--out", required=True, help="Output directory.")
     parser.add_argument("--tz", default="America/New_York",
                         help="Time zone of the periods file's wall-clock times.")
@@ -536,19 +652,25 @@ def main():
     args = parser.parse_args()
     if args.sg_order < 3:
         parser.error("--sg-order must be >= 3 for jerk")
+    if args.gap_periods and not args.whole_bags:
+        parser.error("--gap-periods only applies with --whole-bags (a --periods run "
+                     "already labels each gap against its own period)")
 
-    periods = load_periods(args.periods, args.tz)
+    periods = None if args.whole_bags else load_periods(args.periods, args.tz)
+    gap_periods = load_periods(args.gap_periods, args.tz) if args.gap_periods else None
     ee_fk = make_ee_fk(args.urdf, args.ee_frame)
     os.makedirs(os.path.join(args.out, "timeseries"), exist_ok=True)
     os.makedirs(os.path.join(args.out, "plots"), exist_ok=True)
 
     rows = []
+    gaps_out = []
+    events_out = []
     skipped = []   # (label, reason) for everything not analyzed, listed at the end
     for bag_path in find_bags(args.bags):
         bag_name = os.path.basename(os.path.normpath(bag_path))
         participant_id, condition = parse_bag_name(bag_path)
-        mine = select_periods(periods, participant_id, condition)
-        if not mine:
+        mine = None if args.whole_bags else select_periods(periods, participant_id, condition)
+        if mine == []:
             print(f"{participant_id}/{bag_name}: no periods in --periods file, skipped")
             skipped.append((f"{participant_id}/{bag_name}", "no periods in --periods file"))
             continue
@@ -564,6 +686,15 @@ def main():
             skipped.append((f"{participant_id}/{bag_name}", f"no {JOINT_STATES_TOPIC} messages"))
             continue
         windows = moving_windows(bag["move_status_events"], bag["t"][-1])
+        pid_label = f"p{participant_id}" if participant_id.isdigit() else participant_id
+        for et, kind, value in bag.get("events", []):
+            events_out.append({
+                "bag": bag_name, "participant_id": pid_label, "condition": condition,
+                "time": datetime.datetime.fromtimestamp(et, ZoneInfo(args.tz)).isoformat(
+                    timespec="milliseconds"),
+                "epoch_s": f"{et:.3f}", "kind": kind, "value": value})
+        if args.whole_bags:
+            mine = [whole_bag_period(participant_id, condition, bag["t"])]
         for p in mine:
             start, end = p["start"] - args.pad, p["end"] + args.pad
             label = f"{participant_id}_{bag_name}_side{p['side']}"
@@ -576,6 +707,12 @@ def main():
                 skipped.append((label, str(e)))
                 continue
             rows += summary_rows(bag_name, p, r)
+            if args.whole_bags:
+                adj = (select_periods(gap_periods, participant_id, condition)
+                       if gap_periods is not None else None)
+            else:
+                adj = [p]
+            gaps_out += gap_rows(label, bag_name, p, r, args.tz, adj)
             write_timeseries(os.path.join(args.out, "timeseries", f"{label}.csv"), r)
             plot_period(os.path.join(args.out, "plots", f"{label}.png"), label, r)
             print(f"{label}: {r['duration_s']:.1f} s, "
@@ -583,7 +720,9 @@ def main():
                   f"({r['joint_path_length_moving_rad']:.3f} while moving, "
                   f"{100 * r['frac_time_robot_moving']:.0f}% of time moving), "
                   f"EE disp {r['ee_displacement_m']:.3f} m, "
-                  f"min acc x-check r {np.nanmin(r['per_joint']['acc_vel_xcheck_r']):.2f}")
+                  f"min acc x-check r {np.nanmin(r['per_joint']['acc_vel_xcheck_r']):.2f}"
+                  + (f", {r['n_gaps']} gap(s), longest {r['longest_gap_s']:.2f} s"
+                     if r["n_gaps"] else ""))
 
     summary_path = os.path.join(args.out, "summary.csv")
     with open(summary_path, "w", newline="") as f:
@@ -591,6 +730,21 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {len(rows)} rows to {summary_path}")
+    events_path = os.path.join(args.out, "events.csv")
+    with open(events_path, "w", newline="") as f:
+        w = csv_module.DictWriter(f, fieldnames=EVENT_FIELDS)
+        w.writeheader()
+        w.writerows(events_out)
+    print(f"Wrote {len(events_out)} torque/spring event(s) to {events_path}")
+    gaps_path = os.path.join(args.out, "gaps.csv")
+    with open(gaps_path, "w", newline="") as f:
+        w = csv_module.DictWriter(f, fieldnames=GAP_FIELDS)
+        w.writeheader()
+        w.writerows(gaps_out)
+    print(f"Wrote {len(gaps_out)} joint-state gap(s) to {gaps_path}"
+          + (f" ({sum(g['adjustment_overlap'] not in ('none', 'outside') for g in gaps_out)}"
+             " touching an adjustment period)"
+             if gaps_out and all(g["adjustment_overlap"] for g in gaps_out) else ""))
     if skipped:
         print(f"\n{len(skipped)} bag(s)/period(s) NOT analyzed:")
         for label, reason in skipped:

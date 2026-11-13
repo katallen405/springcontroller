@@ -5,6 +5,7 @@ Unit tests for analysis/joint_kinematics.py's signal processing, using
 synthetic signals with known derivatives -- no ROS, no bag files.
 """
 
+import csv
 import os
 import sys
 import warnings
@@ -288,3 +289,112 @@ def test_find_bags_skips_plain_files(tmp_path):
     stray = tmp_path / "#condition_order.csv#"
     stray.write_text("x")
     assert jk.find_bags([str(part), str(stray)]) == [str(part / "KT_2026_09_05-12_00_00")]
+
+
+def test_whole_bags_mode_ignores_periods(tmp_path, monkeypatch, capsys):
+    """--whole-bags analyzes each bag's full span with no periods file,
+    labeled 'pN' / canonical condition / side 'all'."""
+    data = tmp_path / "data"
+    d = data / "7" / "pose_2026_09_08-15_39_03"
+    d.mkdir(parents=True)
+    (d / "metadata.yaml").write_text("")
+    t = np.arange(1000.0, 1010.0, DT)
+    q = np.zeros((t.size, 7))
+    q[:, 3] = 0.1 * np.sin(t - 1000)
+    bag = {"t": t, "q": q, "qd": np.gradient(q, DT, axis=0), "move_status_events": []}
+    monkeypatch.setattr(jk, "read_bag", lambda path: bag)
+    monkeypatch.setattr(jk, "make_ee_fk", lambda urdf, frame: None)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["jk", str(data / "7"), "--whole-bags", "--out", str(out)])
+    assert jk.main() == 0
+    rows = list(csv.DictReader(open(out / "summary.csv")))
+    assert len(rows) == 7
+    assert {(r["participant_id"], r["condition"], r["side"]) for r in rows} == {("p7", "Pose", "all")}
+    assert float(rows[0]["duration_s"]) == pytest.approx(10.0 - DT, abs=2 * DT)
+    assert (out / "timeseries" / "7_pose_2026_09_08-15_39_03_sideall.csv").exists()
+
+
+def test_periods_and_whole_bags_are_mutually_exclusive(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path), "--whole-bags",
+                                      "--periods", "x.csv", "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit):
+        jk.main()
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path), "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit):
+        jk.main()
+
+
+def test_find_gaps_reports_only_long_gaps():
+    t = np.concatenate([np.arange(0.0, 1.0, DT), np.arange(1.5, 2.0, DT), [2.0 + 0.02]])
+    gaps = jk.find_gaps(t)
+    assert len(gaps) == 1  # the 0.02 s step is under 5x dt; the ~0.5 s one isn't
+    a, b = gaps[0]
+    assert a == pytest.approx(1.0 - DT) and b == pytest.approx(1.5)
+
+
+def _bag_with_gap(t0=100.0):
+    t = np.concatenate([np.arange(t0, t0 + 4.0, DT), np.arange(t0 + 6.0, t0 + 10.0, DT)])
+    q = np.zeros((t.size, 7))
+    q[:, 3] = 0.1 * np.sin(t - t0)
+    return {"t": t, "q": q, "qd": np.gradient(q, axis=0) / DT, "move_status_events": []}
+
+
+def test_analyze_period_records_gaps_without_warning():
+    bag = _bag_with_gap()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the gap must be reported, not warned about
+        r = jk.analyze_period(bag, 100.0, 110.0, windows=[], window_s=0.15, order=ORDER)
+    assert r["n_gaps"] == 1
+    assert r["longest_gap_s"] == pytest.approx(2.0 + DT, abs=2 * DT)
+
+
+def test_gap_rows_label_overlap_in_both_modes():
+    bag = _bag_with_gap()
+    r = jk.analyze_period(bag, 100.0, 110.0, windows=[], window_s=0.15, order=ORDER)
+    tz = "America/New_York"
+    # --periods run: the gap (~104-106) sits inside the unpadded period.
+    period = {"participant_id": "p1", "condition": "Pose", "side": "1", "start": 101.0, "end": 109.0}
+    (row,) = jk.gap_rows("x", "b", period, r, tz, [period])
+    assert row["adjustment_overlap"] == "inside"
+    assert row["seconds_into_period"] == pytest.approx(4.0, abs=2 * DT)
+    # Only in the --pad margin -> outside.
+    later = dict(period, start=106.5, end=109.0)
+    assert jk.gap_rows("x", "b", period, r, tz, [later])[0]["adjustment_overlap"] == "outside"
+    # --whole-bags with --gap-periods: named overlaps, or "none".
+    whole = {"participant_id": "p1", "condition": "Pose", "side": "all", "start": 100.0, "end": 110.0}
+    adj = [{"condition": "Pose", "side": "1", "start": 103.0, "end": 105.0},
+           {"condition": "Pose", "side": "2", "start": 107.0, "end": 109.0}]
+    assert jk.gap_rows("x", "b", whole, r, tz, adj)[0]["adjustment_overlap"] == "Pose side 1"
+    assert jk.gap_rows("x", "b", whole, r, tz, adj[1:])[0]["adjustment_overlap"] == "none"
+    assert jk.gap_rows("x", "b", whole, r, tz, None)[0]["adjustment_overlap"] == ""
+
+
+def test_whole_bags_writes_gaps_csv_with_gap_periods(tmp_path, monkeypatch):
+    d = tmp_path / "data" / "7" / "pose_2026_09_08-15_39_03"
+    d.mkdir(parents=True)
+    (d / "metadata.yaml").write_text("")
+    t0 = 1788895000.0  # 2026-09-08, America/New_York
+    bag = _bag_with_gap(t0)
+    monkeypatch.setattr(jk, "read_bag", lambda path: bag)
+    monkeypatch.setattr(jk, "make_ee_fk", lambda urdf, frame: None)
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    iso = lambda x: _dt.datetime.fromtimestamp(x, ZoneInfo("America/New_York")).replace(tzinfo=None).isoformat()
+    periods = tmp_path / "adj.csv"
+    periods.write_text("participant_id,condition,side,start,end\n"
+                       f"p7,Pose,1,{iso(t0 + 3)},{iso(t0 + 5)}\n")
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path / "data" / "7"), "--whole-bags",
+                                      "--gap-periods", str(periods), "--out", str(out)])
+    assert jk.main() == 0
+    (g,) = list(csv.DictReader(open(out / "gaps.csv")))
+    assert g["adjustment_overlap"] == "Pose side 1" and g["side"] == "all"
+    s = list(csv.DictReader(open(out / "summary.csv")))
+    assert s[0]["n_gaps"] == "1"
+
+
+def test_gap_periods_requires_whole_bags(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path), "--periods", "p.csv",
+                                      "--gap-periods", "p.csv", "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit):
+        jk.main()
