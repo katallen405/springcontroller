@@ -23,7 +23,15 @@ nonparametric Friedman test per measure, to check the two agree.
 Usage:
   ~/.springcontroller_venv/bin/python plot_kinematics_conditions.py \\
       --input ~/CQHRI_joint_kinematics/summary.csv \\
-      --output ~/CQHRI_joint_kinematics/comparison
+      --output ~/CQHRI_joint_kinematics/comparison \\
+      --exclude p10:Pose
+
+--exclude PID:CONDITION[:SIDE] (repeatable) drops invalid periods before
+anything is averaged, e.g. p10:Pose (experimenter error: the arm wasn't
+reset to the start pose before the condition began). The paired tests
+use only participants with all three conditions, so excluding one
+condition removes that participant from the tests. Their other
+conditions still appear as dots.
 """
 
 import argparse
@@ -54,6 +62,35 @@ MEASURES = [
 PER_PERIOD = ["duration_s", "frac_time_robot_moving", "joint_path_length_rad",
               "ee_path_length_m", "ee_displacement_m"]
 PER_JOINT = {"rms_jerk": "mean_rms_jerk", "rms_acc": "mean_rms_acc"}
+
+
+def parse_exclusion(spec: str) -> tuple:
+    parts = spec.split(":")
+    if len(parts) not in (2, 3) or not all(parts):
+        raise argparse.ArgumentTypeError(
+            f"--exclude {spec!r}: expected PID:CONDITION or PID:CONDITION:SIDE")
+    pid = parts[0].lower()
+    pid = pid if pid.startswith("p") else f"p{pid}"
+    return (pid, parts[1].lower(), parts[2] if len(parts) == 3 else None)
+
+
+def apply_exclusions(summary: pd.DataFrame, exclusions: list) -> pd.DataFrame:
+    """Drop summary rows matching any (pid, condition, side-or-None).
+    An exclusion that matches nothing is an error, so a typo can't
+    silently leave a bad period in."""
+    pid = summary["participant_id"].astype(str).str.lower()
+    pid = pid.where(pid.str.startswith("p"), "p" + pid)
+    cond = summary["condition"].astype(str).str.lower()
+    side = summary["side"].astype(str)
+    drop = pd.Series(False, index=summary.index)
+    for p, c, sd in exclusions:
+        hit = (pid == p) & (cond == c) & ((side == sd) if sd else True)
+        if not hit.any():
+            raise SystemExit(f"--exclude {p}:{c}{':' + sd if sd else ''} matches no rows")
+        sides = sorted(summary.loc[hit, "side"].astype(str).unique())
+        print(f"Excluded {p} {c} side(s) {', '.join(sides)}")
+        drop |= hit
+    return summary[~drop]
 
 
 def tidy_from_summary(summary: pd.DataFrame) -> pd.DataFrame:
@@ -126,11 +163,15 @@ def main():
     ap.add_argument("--output", required=True, help="Folder for charts + stats CSV")
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--format", default="png")
+    ap.add_argument("--exclude", action="append", default=[], type=parse_exclusion,
+                    metavar="PID:CONDITION[:SIDE]",
+                    help="Drop an invalid period (repeatable), e.g. p10:Pose.")
     args = ap.parse_args()
 
+    summary = apply_exclusions(pd.read_csv(Path(args.input).expanduser()), args.exclude)
+    tidy = tidy_from_summary(summary)
     out = Path(args.output).expanduser()
     out.mkdir(parents=True, exist_ok=True)
-    tidy = tidy_from_summary(pd.read_csv(Path(args.input).expanduser()))
     for col, _, _, scale in MEASURES:
         tidy[col] = tidy[col] * scale
     tidy.to_csv(out / "kinematics_by_condition.csv", index=False)
@@ -156,8 +197,13 @@ def main():
         draw_box(ax, tidy, col, title, ylabel, fs)
     for ax in axes.flat[len(MEASURES):]:
         ax.axis("off")
-    n = tidy["participant_id"].nunique()
-    fig.suptitle(f"Joint kinematics by condition (n = {n}; sides averaged; "
+    wide = tidy.pivot_table(index="participant_id", columns="condition",
+                            values="duration_s").reindex(columns=CONDITIONS)
+    n_all, n_complete = len(wide), len(wide.dropna())
+    n_txt = f"n = {n_all}" if n_complete == n_all else f"n = {n_all}, {n_complete} in paired tests"
+    excl = ("; excluded " + ", ".join(f"{p} {c}" + (f" side {sd}" if sd else "")
+                                      for p, c, sd in args.exclude)) if args.exclude else ""
+    fig.suptitle(f"Joint kinematics by condition ({n_txt}; sides averaged{excl}; "
                  "* Holm-corrected paired t-test after RM-ANOVA)", fontsize=fs * 1.2)
     fig.tight_layout()
     fig.savefig(out / f"overview.{args.format}", dpi=args.dpi, bbox_inches="tight")
