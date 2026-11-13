@@ -59,13 +59,17 @@ matches the bag folder's prefix (KT / position / pose); side is free text.
 
 Usage:
     python3 analysis/joint_kinematics.py <bag_dir_or_participant_dir>... \\
-        --periods periods.csv --out OUT_DIR [--tz America/New_York] \\
+        (--periods periods.csv | --whole-bags) --out OUT_DIR [--tz America/New_York] \\
         [--pad SECONDS] [--sg-window-ms MS] [--sg-order N] \\
         [--motion-threshold RAD_PER_S] [--urdf PATH] [--ee-frame LINK]
 
 Example:
     python3 analysis/joint_kinematics.py ~/gen3_study_data/test4 \\
         --periods test4_periods.csv --out kinematics_test4
+
+--whole-bags skips the periods file and treats each bag's full joint-state
+span as one period (side "all"), e.g. to get complete data that doesn't
+depend on the logged adjustment times.
 """
 
 from __future__ import annotations
@@ -509,13 +513,30 @@ def plot_period(path: str, title: str, r: dict) -> None:
     plt.close(fig)
 
 
+def whole_bag_period(participant_id: str, condition: str, t: np.ndarray) -> dict:
+    """The --whole-bags stand-in for a periods-file row: the bag's full
+    joint-state span, labeled like the periods file would be (participant
+    'pN', canonical condition name) so downstream scripts group it the same
+    way. side is 'all' since a whole bag usually spans both sides."""
+    canon = {"kt": "KT", "pose": "Pose", "position": "Position"}
+    pid = f"p{participant_id}" if participant_id.isdigit() else participant_id
+    return {"participant_id": pid, "condition": canon.get(condition.lower(), condition),
+            "side": "all", "start": float(t.min()), "end": float(t.max())}
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("bags", nargs="+",
                         help="Bag folder(s), or folder(s) containing bag folders.")
-    parser.add_argument("--periods", required=True, help="Adjustment periods CSV.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--periods", help="Adjustment periods CSV.")
+    source.add_argument("--whole-bags", action="store_true",
+                        help="Ignore adjustment times: analyze each bag from its first "
+                             "to its last joint-state sample, as one period with side "
+                             "'all'. Gives the full data independent of the logged "
+                             "event times.")
     parser.add_argument("--out", required=True, help="Output directory.")
     parser.add_argument("--tz", default="America/New_York",
                         help="Time zone of the periods file's wall-clock times.")
@@ -537,7 +558,7 @@ def main():
     if args.sg_order < 3:
         parser.error("--sg-order must be >= 3 for jerk")
 
-    periods = load_periods(args.periods, args.tz)
+    periods = None if args.whole_bags else load_periods(args.periods, args.tz)
     ee_fk = make_ee_fk(args.urdf, args.ee_frame)
     os.makedirs(os.path.join(args.out, "timeseries"), exist_ok=True)
     os.makedirs(os.path.join(args.out, "plots"), exist_ok=True)
@@ -547,8 +568,8 @@ def main():
     for bag_path in find_bags(args.bags):
         bag_name = os.path.basename(os.path.normpath(bag_path))
         participant_id, condition = parse_bag_name(bag_path)
-        mine = select_periods(periods, participant_id, condition)
-        if not mine:
+        mine = None if args.whole_bags else select_periods(periods, participant_id, condition)
+        if mine == []:
             print(f"{participant_id}/{bag_name}: no periods in --periods file, skipped")
             skipped.append((f"{participant_id}/{bag_name}", "no periods in --periods file"))
             continue
@@ -564,6 +585,8 @@ def main():
             skipped.append((f"{participant_id}/{bag_name}", f"no {JOINT_STATES_TOPIC} messages"))
             continue
         windows = moving_windows(bag["move_status_events"], bag["t"][-1])
+        if args.whole_bags:
+            mine = [whole_bag_period(participant_id, condition, bag["t"])]
         for p in mine:
             start, end = p["start"] - args.pad, p["end"] + args.pad
             label = f"{participant_id}_{bag_name}_side{p['side']}"

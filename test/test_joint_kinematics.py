@@ -5,6 +5,7 @@ Unit tests for analysis/joint_kinematics.py's signal processing, using
 synthetic signals with known derivatives -- no ROS, no bag files.
 """
 
+import csv
 import os
 import sys
 import warnings
@@ -288,3 +289,36 @@ def test_find_bags_skips_plain_files(tmp_path):
     stray = tmp_path / "#condition_order.csv#"
     stray.write_text("x")
     assert jk.find_bags([str(part), str(stray)]) == [str(part / "KT_2026_09_05-12_00_00")]
+
+
+def test_whole_bags_mode_ignores_periods(tmp_path, monkeypatch, capsys):
+    """--whole-bags analyzes each bag's full span with no periods file,
+    labeled 'pN' / canonical condition / side 'all'."""
+    data = tmp_path / "data"
+    d = data / "7" / "pose_2026_09_08-15_39_03"
+    d.mkdir(parents=True)
+    (d / "metadata.yaml").write_text("")
+    t = np.arange(1000.0, 1010.0, DT)
+    q = np.zeros((t.size, 7))
+    q[:, 3] = 0.1 * np.sin(t - 1000)
+    bag = {"t": t, "q": q, "qd": np.gradient(q, DT, axis=0), "move_status_events": []}
+    monkeypatch.setattr(jk, "read_bag", lambda path: bag)
+    monkeypatch.setattr(jk, "make_ee_fk", lambda urdf, frame: None)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["jk", str(data / "7"), "--whole-bags", "--out", str(out)])
+    assert jk.main() == 0
+    rows = list(csv.DictReader(open(out / "summary.csv")))
+    assert len(rows) == 7
+    assert {(r["participant_id"], r["condition"], r["side"]) for r in rows} == {("p7", "Pose", "all")}
+    assert float(rows[0]["duration_s"]) == pytest.approx(10.0 - DT, abs=2 * DT)
+    assert (out / "timeseries" / "7_pose_2026_09_08-15_39_03_sideall.csv").exists()
+
+
+def test_periods_and_whole_bags_are_mutually_exclusive(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path), "--whole-bags",
+                                      "--periods", "x.csv", "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit):
+        jk.main()
+    monkeypatch.setattr(sys, "argv", ["jk", str(tmp_path), "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit):
+        jk.main()
