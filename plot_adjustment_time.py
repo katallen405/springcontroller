@@ -18,6 +18,11 @@ compare_conditions.py ("Adm."/"Pos.-only"/"Pose").
 Stars the KT-vs-Pose comparison when it's significant, using the same
 RM-ANOVA-gated, Holm-corrected post-hoc test as anova_adjustment_time.py
 (see kt_pose_star()).
+
+--exclude PID:CONDITION[:SIDE] (repeatable, e.g. p10:Pose) drops invalid
+trials first; see anova_adjustment_time.py. The excluded participant's
+other conditions are still plotted, but the star's test only uses
+participants with all three conditions.
 """
 import argparse
 from pathlib import Path
@@ -27,7 +32,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from anova_adjustment_time import build_participant_condition_table
+from anova_adjustment_time import add_exclude_argument, build_participant_condition_table
 from compare_conditions import DISPLAY_LABELS, condition_sort_key
 from stats_helpers import rm_anova_with_posthoc
 
@@ -112,12 +117,13 @@ def main():
     ap.add_argument("--out", default=None, help="output PNG (default: <adjustment_times_csv's directory>/adjustment_time_comparison.png)")
     ap.add_argument("--no-title", action="store_true", help="omit the chart title (e.g. for a paper figure with its own caption)")
     ap.add_argument("--font-scale", type=float, default=1.0, help="multiplier on all chart text size (default: 1.0)")
+    add_exclude_argument(ap)
     args = ap.parse_args()
 
     csv_path = Path(args.adjustment_times_csv)
     out_path = Path(args.out) if args.out else csv_path.parent / "adjustment_time_comparison.png"
 
-    per_condition = build_participant_condition_table(csv_path)
+    per_condition = build_participant_condition_table(csv_path, args.exclude)
     plot_adjustment_time(per_condition, out_path, title=not args.no_title, font_scale=args.font_scale)
     print(f"wrote {out_path}")
 
