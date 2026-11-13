@@ -69,7 +69,14 @@ Example:
 
 --whole-bags skips the periods file and treats each bag's full joint-state
 span as one period (side "all"), e.g. to get complete data that doesn't
-depend on the logged adjustment times.
+depend on the logged adjustment times. Add --gap-periods <adjustment CSV> to
+label which adjustment period each joint-state gap falls in.
+
+Every run also writes gaps.csv: one row per joint-state gap longer than
+GAP_WARN_FACTOR x the sample interval (start/end wall-clock time, length,
+and whether it overlaps an adjustment period). Analysis interpolates
+straight across these, which can inflate PEAK acc/jerk near a gap's ends
+(RMS barely moves), so check gaps that land inside adjustment periods.
 """
 
 from __future__ import annotations
@@ -320,6 +327,19 @@ def resample_uniform(t: np.ndarray, x: np.ndarray, dt: float | None = None):
     return grid, out, dt
 
 
+def find_gaps(t: np.ndarray, dt: float | None = None) -> list[tuple[float, float]]:
+    """[(last sample before, first sample after), ...] for every joint-state
+    gap longer than GAP_WARN_FACTOR x the median sample interval -- the
+    stretches resample_uniform() bridges with a straight line."""
+    t = np.sort(t)
+    if t.size < 2:
+        return []
+    steps = np.diff(t)
+    dt = float(np.median(steps)) if dt is None else dt
+    idx = np.flatnonzero(steps > GAP_WARN_FACTOR * dt)
+    return [(float(t[i]), float(t[i + 1])) for i in idx]
+
+
 def sg_window_samples(window_s: float, dt: float, order: int) -> int:
     """Odd window length in samples, at least order + 2 (savgol needs
     window > order, and odd)."""
@@ -385,8 +405,13 @@ def analyze_period(bag: dict, start: float, end: float, windows,
 
     t_raw = bag["t"][in_period]
     q_raw = np.unwrap(bag["q"][in_period], axis=0)
-    t, q, dt = resample_uniform(t_raw, q_raw)
-    _, qd_reported, _ = resample_uniform(t_raw, bag["qd"][in_period], dt)
+    # Gaps are reported explicitly (result["gaps"], gaps.csv), so
+    # resample_uniform's generic per-call warning would only duplicate them.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*gap\(s\)")
+        t, q, dt = resample_uniform(t_raw, q_raw)
+        _, qd_reported, _ = resample_uniform(t_raw, bag["qd"][in_period], dt)
+    gaps = find_gaps(t_raw, dt)
 
     window = sg_window_samples(window_s, dt, order)
     q_s, qd, qdd, qddd = derivatives(q, dt, window, order)
@@ -398,6 +423,8 @@ def analyze_period(bag: dict, start: float, end: float, windows,
     result = {
         "t": t, "q": q_s, "qd": qd, "qdd": qdd, "qddd": qddd,
         "moving": moving, "commanded": commanded, "dt": dt, "window": window,
+        "gaps": gaps, "n_gaps": len(gaps),
+        "longest_gap_s": max((b - a for a, b in gaps), default=0.0),
         "motion_threshold": motion_threshold,
         "duration_s": float(t[-1] - t[0]),
         "frac_time_robot_moving": float(moving.mean()),
@@ -446,6 +473,7 @@ SUMMARY_FIELDS = [
     "ee_displacement_m", "ee_path_length_m",
     "ee_path_length_moving_m", "ee_path_length_not_moving_m",
     "sg_window_samples", "dt_s", "motion_threshold_rad_s",
+    "n_gaps", "longest_gap_s",
 ]
 
 
@@ -513,6 +541,41 @@ def plot_period(path: str, title: str, r: dict) -> None:
     plt.close(fig)
 
 
+GAP_FIELDS = ["label", "bag", "participant_id", "condition", "side", "gap_start",
+              "gap_end", "length_s", "seconds_into_period", "adjustment_overlap"]
+
+
+def gap_rows(label: str, bag_name: str, period: dict, r: dict, tz: str,
+             adjustment_periods: list[dict] | None) -> list[dict]:
+    """One gaps.csv row per gap. adjustment_overlap says whether the gap
+    touches an adjustment period: for a --periods run, the period itself
+    without --pad ("inside" / "partial" / "outside"); for --whole-bags with
+    --gap-periods, the overlapping periods by name ("none" if no overlap);
+    blank when there's nothing to compare against."""
+    def iso(x):
+        return datetime.datetime.fromtimestamp(x, ZoneInfo(tz)).isoformat(timespec="milliseconds")
+
+    rows = []
+    for a, b in r["gaps"]:
+        if adjustment_periods is None:
+            overlap = ""
+        elif period["side"] == "all":
+            hits = [f"{p['condition']} side {p['side']}" for p in adjustment_periods
+                    if a < p["end"] and b > p["start"]]
+            overlap = "; ".join(hits) if hits else "none"
+        else:
+            lo, hi = adjustment_periods[0]["start"], adjustment_periods[0]["end"]
+            overlap = ("inside" if a >= lo and b <= hi
+                       else "partial" if a < hi and b > lo else "outside")
+        rows.append({"label": label, "bag": bag_name,
+                     "participant_id": period["participant_id"],
+                     "condition": period["condition"], "side": period["side"],
+                     "gap_start": iso(a), "gap_end": iso(b), "length_s": round(b - a, 3),
+                     "seconds_into_period": round(a - float(r["t"][0]), 3),
+                     "adjustment_overlap": overlap})
+    return rows
+
+
 def whole_bag_period(participant_id: str, condition: str, t: np.ndarray) -> dict:
     """The --whole-bags stand-in for a periods-file row: the bag's full
     joint-state span, labeled like the periods file would be (participant
@@ -537,6 +600,10 @@ def main():
                              "to its last joint-state sample, as one period with side "
                              "'all'. Gives the full data independent of the logged "
                              "event times.")
+    parser.add_argument("--gap-periods",
+                        help="With --whole-bags: an adjustment-periods CSV used only to label "
+                             "which adjustment period (if any) each joint-state gap in "
+                             "gaps.csv overlaps.")
     parser.add_argument("--out", required=True, help="Output directory.")
     parser.add_argument("--tz", default="America/New_York",
                         help="Time zone of the periods file's wall-clock times.")
@@ -557,13 +624,18 @@ def main():
     args = parser.parse_args()
     if args.sg_order < 3:
         parser.error("--sg-order must be >= 3 for jerk")
+    if args.gap_periods and not args.whole_bags:
+        parser.error("--gap-periods only applies with --whole-bags (a --periods run "
+                     "already labels each gap against its own period)")
 
     periods = None if args.whole_bags else load_periods(args.periods, args.tz)
+    gap_periods = load_periods(args.gap_periods, args.tz) if args.gap_periods else None
     ee_fk = make_ee_fk(args.urdf, args.ee_frame)
     os.makedirs(os.path.join(args.out, "timeseries"), exist_ok=True)
     os.makedirs(os.path.join(args.out, "plots"), exist_ok=True)
 
     rows = []
+    gaps_out = []
     skipped = []   # (label, reason) for everything not analyzed, listed at the end
     for bag_path in find_bags(args.bags):
         bag_name = os.path.basename(os.path.normpath(bag_path))
@@ -599,6 +671,12 @@ def main():
                 skipped.append((label, str(e)))
                 continue
             rows += summary_rows(bag_name, p, r)
+            if args.whole_bags:
+                adj = (select_periods(gap_periods, participant_id, condition)
+                       if gap_periods is not None else None)
+            else:
+                adj = [p]
+            gaps_out += gap_rows(label, bag_name, p, r, args.tz, adj)
             write_timeseries(os.path.join(args.out, "timeseries", f"{label}.csv"), r)
             plot_period(os.path.join(args.out, "plots", f"{label}.png"), label, r)
             print(f"{label}: {r['duration_s']:.1f} s, "
@@ -606,7 +684,9 @@ def main():
                   f"({r['joint_path_length_moving_rad']:.3f} while moving, "
                   f"{100 * r['frac_time_robot_moving']:.0f}% of time moving), "
                   f"EE disp {r['ee_displacement_m']:.3f} m, "
-                  f"min acc x-check r {np.nanmin(r['per_joint']['acc_vel_xcheck_r']):.2f}")
+                  f"min acc x-check r {np.nanmin(r['per_joint']['acc_vel_xcheck_r']):.2f}"
+                  + (f", {r['n_gaps']} gap(s), longest {r['longest_gap_s']:.2f} s"
+                     if r["n_gaps"] else ""))
 
     summary_path = os.path.join(args.out, "summary.csv")
     with open(summary_path, "w", newline="") as f:
@@ -614,6 +694,15 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {len(rows)} rows to {summary_path}")
+    gaps_path = os.path.join(args.out, "gaps.csv")
+    with open(gaps_path, "w", newline="") as f:
+        w = csv_module.DictWriter(f, fieldnames=GAP_FIELDS)
+        w.writeheader()
+        w.writerows(gaps_out)
+    print(f"Wrote {len(gaps_out)} joint-state gap(s) to {gaps_path}"
+          + (f" ({sum(g['adjustment_overlap'] not in ('none', 'outside') for g in gaps_out)}"
+             " touching an adjustment period)"
+             if gaps_out and all(g["adjustment_overlap"] for g in gaps_out) else ""))
     if skipped:
         print(f"\n{len(skipped)} bag(s)/period(s) NOT analyzed:")
         for label, reason in skipped:
