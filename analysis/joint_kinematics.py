@@ -94,6 +94,8 @@ from scipy.signal import savgol_filter
 
 JOINT_STATES_TOPIC = "/kinova/joint_states_lowlevel"
 MOVE_STATUS_TOPIC = "/gen3_torque_control/move_status"
+TORQUE_STATUS_TOPIC = "/gen3_torque_control/status"           # "ENABLED" / "DISABLED"
+SPRINGS_UPDATED_TOPIC = "/virtual_spring_node/springs_updated"  # JSON list of spring names
 JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 GAP_WARN_FACTOR = 5.0
 DEFAULT_MOTION_THRESHOLD = 0.02   # rad/s, max over joints of |qd|
@@ -106,10 +108,18 @@ DEFAULT_EE_FRAME = "end_effector_link"
 
 def read_bag(bag_path: str) -> dict:
     """
-    Joint states and move_status from one bag. ROS imports
-    live in here so the rest of this module (and its tests) import without
-    rclpy. Only the two topics above are deserialized -- the bag's audio
-    and camera topics are filtered out at the reader.
+    Joint states, move_status, torque status and spring-roster changes
+    from one bag. ROS imports live in here so the rest of this module (and
+    its tests) import without rclpy. Only the topics above are deserialized
+    -- the bag's audio and camera topics are filtered out at the reader.
+
+    "events" is a time-ordered list of (t, kind, value):
+      torque   "ENABLED"/"DISABLED", only when it changes. Spring-driven
+               motion can only happen while ENABLED.
+      springs  the loaded spring names (JSON list), every update. The
+               topic is latched (TRANSIENT_LOCAL), so the first one may be
+               a replay of a roster set before recording began; it's
+               marked kind "springs (latched at bag start)".
 
     Times are header stamps where set, falling back to the bag receive
     time when a stamp is zero.
@@ -125,7 +135,8 @@ def read_bag(bag_path: str) -> dict:
         rosbag2_py.ConverterOptions("", ""),
     )
     reader.set_filter(rosbag2_py.StorageFilter(
-        topics=[JOINT_STATES_TOPIC, MOVE_STATUS_TOPIC]))
+        topics=[JOINT_STATES_TOPIC, MOVE_STATUS_TOPIC, TORQUE_STATUS_TOPIC,
+                SPRINGS_UPDATED_TOPIC]))
 
     def stamp_or(header, t_ns):
         s = header.stamp.sec + header.stamp.nanosec / 1e9
@@ -133,8 +144,12 @@ def read_bag(bag_path: str) -> dict:
 
     js_t, js_q, js_qd = [], [], []
     move_status_events = []
+    events = []
+    last_torque = None
+    first_t = None
     while reader.has_next():
         topic, data, t_ns = reader.read_next()
+        first_t = t_ns / 1e9 if first_t is None else first_t
         if topic == JOINT_STATES_TOPIC:
             msg = deserialize_message(data, JointState)
             order = [list(msg.name).index(n) for n in JOINT_NAMES]
@@ -145,10 +160,22 @@ def read_bag(bag_path: str) -> dict:
         elif topic == MOVE_STATUS_TOPIC:
             msg = deserialize_message(data, String)
             move_status_events.append((t_ns / 1e9, msg.data))
+        elif topic == TORQUE_STATUS_TOPIC:
+            value = deserialize_message(data, String).data
+            if value != last_torque:
+                events.append((t_ns / 1e9, "torque", value))
+                last_torque = value
+        elif topic == SPRINGS_UPDATED_TOPIC:
+            value = deserialize_message(data, String).data
+            latched = not any(k.startswith("springs") for _, k, _ in events) \
+                and t_ns / 1e9 - first_t < 1.0
+            events.append((t_ns / 1e9, "springs (latched at bag start)" if latched
+                           else "springs", value))
 
     return {
         "t": np.asarray(js_t), "q": np.asarray(js_q), "qd": np.asarray(js_qd),
         "move_status_events": move_status_events,
+        "events": events,
     }
 
 
@@ -541,6 +568,7 @@ def plot_period(path: str, title: str, r: dict) -> None:
     plt.close(fig)
 
 
+EVENT_FIELDS = ["bag", "participant_id", "condition", "time", "epoch_s", "kind", "value"]
 GAP_FIELDS = ["label", "bag", "participant_id", "condition", "side", "gap_start",
               "gap_end", "length_s", "seconds_into_period", "adjustment_overlap"]
 
@@ -636,6 +664,7 @@ def main():
 
     rows = []
     gaps_out = []
+    events_out = []
     skipped = []   # (label, reason) for everything not analyzed, listed at the end
     for bag_path in find_bags(args.bags):
         bag_name = os.path.basename(os.path.normpath(bag_path))
@@ -657,6 +686,13 @@ def main():
             skipped.append((f"{participant_id}/{bag_name}", f"no {JOINT_STATES_TOPIC} messages"))
             continue
         windows = moving_windows(bag["move_status_events"], bag["t"][-1])
+        pid_label = f"p{participant_id}" if participant_id.isdigit() else participant_id
+        for et, kind, value in bag.get("events", []):
+            events_out.append({
+                "bag": bag_name, "participant_id": pid_label, "condition": condition,
+                "time": datetime.datetime.fromtimestamp(et, ZoneInfo(args.tz)).isoformat(
+                    timespec="milliseconds"),
+                "epoch_s": f"{et:.3f}", "kind": kind, "value": value})
         if args.whole_bags:
             mine = [whole_bag_period(participant_id, condition, bag["t"])]
         for p in mine:
@@ -694,6 +730,12 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {len(rows)} rows to {summary_path}")
+    events_path = os.path.join(args.out, "events.csv")
+    with open(events_path, "w", newline="") as f:
+        w = csv_module.DictWriter(f, fieldnames=EVENT_FIELDS)
+        w.writeheader()
+        w.writerows(events_out)
+    print(f"Wrote {len(events_out)} torque/spring event(s) to {events_path}")
     gaps_path = os.path.join(args.out, "gaps.csv")
     with open(gaps_path, "w", newline="") as f:
         w = csv_module.DictWriter(f, fieldnames=GAP_FIELDS)
