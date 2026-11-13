@@ -6,8 +6,12 @@ Sensitivity and movement-amount checks on the fluency (acceleration/jerk)
 comparison between conditions, from joint_kinematics.py's summary.csv and
 the hand-coded freeze_error_candidates.csv.
 
+Periods named with --exclude PID:CONDITION[:SIDE] (e.g. p10:Pose, an
+experimenter error) are dropped from everything below first, including
+all_periods and the speed/ratio tables.
+
 Three analysis versions, each run on the same data:
-    all_periods                     every period
+    all_periods                     every period (after --exclude)
     excl_all_robot_error_periods    drop any (participant, condition, side)
                                     with a row coded robot_error
     excl_robot_only_error_periods   as above, but keep periods whose
@@ -38,7 +42,8 @@ pauses -- a rough measure of movement amount.
 
 Usage:
     python3 analysis/fluency_sensitivity.py kinematics_out/summary.csv \\
-        --coded freeze_error_candidates.csv --out fluency_sensitivity
+        --coded freeze_error_candidates.csv --out fluency_sensitivity \\
+        --exclude p10:Pose
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from scipy.stats import t as t_dist
 from scipy.stats import wilcoxon
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import exclusions as ex_mod  # noqa: E402
 import fluency_summary as fs  # noqa: E402
 
 CONDITIONS = fs.CONDITIONS
@@ -69,6 +75,19 @@ def load_segments(summary_csv: str) -> list[dict]:
         rows = periods[(s["participant_id"], s["condition"], s["side"], s["bag"])]
         s["path_rad"] = float(rows[0]["joint_path_length_rad"])
     return segs
+
+
+def apply_exclusions(segs: list[dict], exclusions: list) -> list[dict]:
+    """Drop segments matching any --exclude. One that matches nothing is
+    an error, so a typo can't silently keep an invalid period."""
+    for ex in exclusions:
+        hit = [s for s in segs if ex_mod.matches(ex, s["participant_id"], s["condition"], s["side"])]
+        if not hit:
+            raise SystemExit(f"--exclude {ex_mod.describe(ex)} matches no periods")
+        print(f"excluded {ex_mod.describe(ex)}: {len(hit)} segment(s)", file=sys.stderr)
+    return [s for s in segs
+            if not any(ex_mod.matches(ex, s["participant_id"], s["condition"], s["side"])
+                       for ex in exclusions)]
 
 
 def coded_exclusions(coded_csv: str, robot_only: bool) -> set:
@@ -168,10 +187,11 @@ def main() -> int:
     ap.add_argument("--coded", required=True,
                     help="Hand-coded freeze_error_candidates.csv (coded_as column).")
     ap.add_argument("--out", required=True, help="Output directory.")
+    ex_mod.add_argument(ap)
     args = ap.parse_args()
-    os.makedirs(args.out, exist_ok=True)
 
-    segs = load_segments(args.summary_csv)
+    segs = apply_exclusions(load_segments(args.summary_csv), args.exclude)
+    os.makedirs(args.out, exist_ok=True)
     versions = [("all_periods", set()),
                 ("excl_all_robot_error_periods", coded_exclusions(args.coded, False)),
                 ("excl_robot_only_error_periods", coded_exclusions(args.coded, True))]
