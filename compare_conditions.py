@@ -54,6 +54,16 @@ CATEGORY_COLORS = {
 # Mirrors CONDITIONS in ~/sandbox/src/springcontroller/analysis/plot_conditions.py
 PREFERRED_CONDITION_ORDER = ["KT", "Position", "Pose"]
 
+# Display labels for chart tick labels only -- mirrors DISPLAY_LABELS in
+# ~/sandbox/src/springcontroller/analysis/plot_conditions.py. Keys stay
+# "KT"/"Position"/"Pose" everywhere else since those match the filename
+# tokens parsed by extract_condition().
+DISPLAY_LABELS = {
+    "KT": "Baseline",
+    "Position": "Pos.-only",
+    "Pose": "Pose",
+}
+
 SESSION_FILE_SUFFIXES = ("_trialonly", "_posture")
 
 
@@ -84,6 +94,17 @@ def condition_sort_key(condition):
     return (1, condition.lower())
 
 
+def canonical_condition_label(condition):
+    """Display label for a condition parsed from a filename, e.g. 'position' ->
+    'Pos.-only' (see DISPLAY_LABELS). Falls back to the raw string for
+    anything not in PREFERRED_CONDITION_ORDER, so an unrecognized condition
+    still shows up rather than being silently dropped."""
+    for preferred in PREFERRED_CONDITION_ORDER:
+        if preferred.lower() == condition.lower():
+            return DISPLAY_LABELS.get(preferred, preferred)
+    return condition
+
+
 def classify_session_counts(csv_path, hunch_thresh_deg, lean_thresh_deg, shoulder_percentile):
     """Per-frame zone counts for one session (None in place of a zone means
     unclassified). Returns None if the file had no rows."""
@@ -109,7 +130,7 @@ def plot_condition_comparison(conditions, pct_by_condition, out_path, title=True
         left = [l + v for l, v in zip(left, vals)]
 
     ax.set_yticks(y)
-    ax.set_yticklabels(conditions, fontsize=base_fontsize)
+    ax.set_yticklabels([canonical_condition_label(c) for c in conditions], fontsize=base_fontsize)
     ax.invert_yaxis()
     ax.set_xlim(0, 100)
     ax.set_xlabel("% of total frames", fontsize=base_fontsize)
