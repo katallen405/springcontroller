@@ -51,7 +51,9 @@ samples, since summing |delta| over raw 100 Hz samples accumulates sensor
 noise even when the arm is still.
 
 Adjustment periods come from a --periods CSV (see load_periods(); it also
-accepts the video-corrected adjustment_times.csv headers). Simple format:
+accepts the headers of adjustment_times.csv, which posture/adjustment_times.py
+builds from the corrected event logs -- logged button presses, only partly
+filled in from video, so not generally video-verified). Simple format:
     participant_id,condition,side,start,end
     test1,pose,1,2026-09-04T15:35:37.5,2026-09-04T15:36:20
 start/end are local wall-clock ISO times (interpreted in --tz); condition
@@ -238,8 +240,9 @@ def load_periods(path: str, tz: str) -> list[dict]:
       * simple:    participant_id, condition, side, start, end
       * corrected: Participant, Condition, Side, Adjustment Start,
                    Adjustment End[, Total Adjustment Time]
-                   (the video-corrected adjustment_times.csv; the total
-                   column is ignored, it is recomputed from start/end)
+                   (adjustment_times.csv from posture/adjustment_times.py;
+                   the total column is ignored, it is recomputed from
+                   start/end)
     Zero-length (end <= start) periods are skipped with a warning: a
     participant request to freeze at once leaves nothing to analyze.
     """
