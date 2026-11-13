@@ -71,7 +71,8 @@ FILE_RE = re.compile(r"^(?P<pid>[^_]+)_(?P<cond>[^_]+)_.*_side(?P<side>[^_.]+)\.
 CANON = {"kt": "KT", "pose": "Pose", "position": "Position"}
 FIELDS = ["participant_id", "condition", "side", "logged_adjustment_start",
           "verdict", "check_on_video_at", "last_reset_move", "reset_reached_start_pose",
-          "left_start_pose_at", "torque_enabled_at", "deg_from_start_pose_at_torque_enable",
+          "left_start_pose_at", "torque_enabled_at", "left_before_torque_on_s",
+          "deg_from_start_pose_at_torque_enable",
           "springs_at_torque_enable", "deg_from_start_pose_at_logged_start",
           "closest_deg_before_logged_start", "lookback_s"]
 
@@ -149,7 +150,7 @@ def deg_from(q: np.ndarray, poses: list[np.ndarray]) -> np.ndarray:
 
 
 def check_period(t, q, cmd, start: float, end: float, poses, tol_deg: float, tz: str,
-                 events=(), condition: str = "") -> dict:
+                 events=(), condition: str = "", enable_slack_s: float = 2.0) -> dict:
     iso = lambda x: datetime.datetime.fromtimestamp(x, ZoneInfo(tz)).strftime("%H:%M:%S")
     dev = deg_from(q, poses)
     at = dev <= tol_deg
@@ -167,8 +168,9 @@ def check_period(t, q, cmd, start: float, end: float, poses, tol_deg: float, tz:
         row["last_reset_move"] = f"{iso(a)}-{iso(b)}"
         row["reset_reached_start_pose"] = "yes" if at[min(ib + 1, len(at) - 1)] or at[ib] else "no"
     at_runs_before = [(a, b) for a, b in runs(at & before)]
-    if at_runs_before:
-        row["left_start_pose_at"] = iso(t[at_runs_before[-1][1]])
+    left_t = t[at_runs_before[-1][1]] if at_runs_before else None
+    if left_t is not None:
+        row["left_start_pose_at"] = iso(left_t)
 
     # Last torque-ENABLED switch before the logged start (after the reset,
     # if there was one): from here on the springs can move the arm.
@@ -177,8 +179,15 @@ def check_period(t, q, cmd, start: float, end: float, poses, tol_deg: float, tz:
     dev_at_enable = None
     if enables:
         te = enables[-1][0]
-        dev_at_enable = float(dev[min(int(np.searchsorted(t, te)), len(t) - 1)])
+        # The "ENABLED" status is published slightly AFTER torque actually
+        # comes on (in the study bags the springs have typically started
+        # moving the arm 0-1 s earlier), and joint feedback pauses during the
+        # switch. So judge the pose at the last sample before te - slack.
+        ref_t = te - enable_slack_s
+        dev_at_enable = float(dev[max(int(np.searchsorted(t, ref_t, side="right")) - 1, 0)])
         springs = [e[2] for e in events if e[1].startswith("springs") and e[0] <= te]
+        if left_t is not None:
+            row["left_before_torque_on_s"] = round(te - left_t, 1)
         row.update({"torque_enabled_at": iso(te),
                     "deg_from_start_pose_at_torque_enable": round(dev_at_enable, 1),
                     "springs_at_torque_enable": springs[-1] if springs else ""})
@@ -214,6 +223,10 @@ def main() -> int:
     ap.add_argument("--events", default=None,
                     help="events.csv from the same joint_kinematics.py run "
                          "(default: next to the timeseries folder, if present)")
+    ap.add_argument("--enable-slack-s", type=float, default=2.0,
+                    help="leaving the start pose within this many seconds before the "
+                         "torque-ENABLED status message counts as the springs starting "
+                         "(the status lags the actual switch); default 2")
     ap.add_argument("--tz", default="America/New_York")
     ap.add_argument("--out", default=None, help="write the table as CSV too")
     args = ap.parse_args()
@@ -243,7 +256,7 @@ def main() -> int:
             continue
         rows.append({**base, **check_period(t, q, cmd, p["start"], p["end"], poses,
                                              args.tol_deg, args.tz, events.get(key, ()),
-                                             key[1])})
+                                             key[1], args.enable_slack_s)})
 
     if args.out:
         with open(os.path.expanduser(args.out), "w", newline="") as f:

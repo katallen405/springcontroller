@@ -48,7 +48,7 @@ def test_never_at_pose_is_no_reset_found():
 
 def test_spring_condition_off_pose_at_torque_enable():
     t, q, cmd = _series([(2, False, 1), (3, True, 0), (10, False, 0)])
-    events = [(1006.0, "springs", '["tip_spring"]'), (1007.0, "torque", "ENABLED")]
+    events = [(1006.0, "springs", '["tip_spring"]'), (1010.0, "torque", "ENABLED")]
     r = rc.check_period(t, q, cmd, start=1012.0, end=1014.0, poses=[POSE], tol_deg=1.15,
                         tz=TZ, events=events, condition="Pose")
     assert r["verdict"] == "off start pose at torque enable"
@@ -64,3 +64,28 @@ def test_alt_pose_counts_as_start_pose():
     t, q, cmd = _series([(5, False, 0)])
     r = rc.check_period(t, q, cmd, start=1003.0, end=1004.0, poses=[POSE, alt], tol_deg=1.15, tz=TZ)
     assert r["verdict"] == "at start pose"
+
+
+def test_pose_at_torque_enable_uses_sample_before_the_feedback_gap():
+    # At the start pose until 1010, feedback gap 1010-1011 (torque switching),
+    # spring has moved the arm by the first sample after the gap.
+    t1, q1, c1 = _series([(2, False, 1), (8, True, 0)])
+    t2 = np.arange(1011.0, 1020.0, DT)
+    t = np.concatenate([t1, t2])
+    q = np.concatenate([q1, np.tile(POSE + 0.5, (t2.size, 1))])
+    cmd = np.concatenate([c1, np.zeros(t2.size, dtype=int)])
+    events = [(1010.9, "torque", "ENABLED")]
+    r = rc.check_period(t, q, cmd, start=1015.0, end=1018.0, poses=[POSE], tol_deg=1.15,
+                        tz=TZ, events=events, condition="Pose")
+    assert r["verdict"] == "reset OK"
+    assert r["deg_from_start_pose_at_torque_enable"] == 0.0
+
+
+def test_leaving_pose_just_before_enable_status_is_spring_start_not_error():
+    # Arm leaves the pose at 1010; "ENABLED" status logged 0.8 s later.
+    t, q, cmd = _series([(2, False, 1), (8, True, 0), (10, False, 0)])
+    events = [(1010.8, "torque", "ENABLED")]
+    r = rc.check_period(t, q, cmd, start=1015.0, end=1018.0, poses=[POSE], tol_deg=1.15,
+                        tz=TZ, events=events, condition="Position")
+    assert r["verdict"] == "reset OK"
+    assert r["left_before_torque_on_s"] == pytest.approx(0.8, abs=0.02)
