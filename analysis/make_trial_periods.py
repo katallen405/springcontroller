@@ -5,7 +5,9 @@ make_trial_periods.py
 Build the --periods CSV for joint_kinematics.py that spans each side from
 ADJUSTMENT START to TRIAL END.
 
-  * start: "Adjustment Start" from the video-corrected adjustment_times.csv
+  * start: "Adjustment Start" from adjustment_times.csv (built from the
+           corrected event logs by posture/adjustment_times.py; logged
+           button presses, not generally video-verified)
   * end:   the last "Trial end" event for that participant/condition/side in
            the corrected event logs (event_log_<N>_corrected.csv)
 
