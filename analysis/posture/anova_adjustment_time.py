@@ -16,53 +16,40 @@ and of the post-hoc comparisons if they ran, for dropping into a paper.
 --exclude PID:CONDITION[:SIDE] (repeatable) drops invalid trials before
 the sides are summed, e.g. p10:Pose (experimenter error: the arm wasn't
 reset to the start pose before the condition began, leaving nothing to
-adjust). Same syntax as ../exclusions.py. A
-participant missing a condition is dropped from the ANOVA by pingouin,
-so excluding one condition removes that participant from the test.
+adjust). Parsing and matching come from ../exclusions.py, shared with
+the other analysis scripts. A participant missing a condition is dropped
+from the ANOVA by pingouin, so excluding one condition removes that
+participant from the test.
 
 Requires pingouin + pandas (see README's ANOVA section for install).
 """
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 from stats_helpers import posthoc_to_latex, rm_anova_to_latex, rm_anova_with_posthoc, warn_if_unbalanced
 
+# exclusions.py lives one level up, in analysis/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import exclusions as ex_mod  # noqa: E402
 
-def parse_exclusion(spec):
-    """'p10:Pose' -> ('p10', 'pose', None); 'p10:Pose:2' -> ('p10', 'pose', '2')."""
-    parts = spec.split(":")
-    if len(parts) not in (2, 3) or not all(p.strip() for p in parts):
-        raise argparse.ArgumentTypeError(
-            f"--exclude {spec!r}: expected PID:CONDITION or PID:CONDITION:SIDE")
-    pid = parts[0].strip().lower()
-    pid = pid if pid.startswith("p") else f"p{pid}"
-    return (pid, parts[1].strip().lower(), parts[2].strip() if len(parts) == 3 else None)
-
-
-def add_exclude_argument(ap):
-    ap.add_argument("--exclude", action="append", default=[], type=parse_exclusion,
-                    metavar="PID:CONDITION[:SIDE]",
-                    help="drop an invalid trial before analysis (repeatable), e.g. p10:Pose")
+# plot_adjustment_time.py imports this name from here.
+add_exclude_argument = ex_mod.add_argument
 
 
 def apply_exclusions(df, exclusions):
     """Drop adjustment_times.csv rows matching any exclusion. One that
     matches nothing is an error, so a typo can't silently keep a bad trial."""
-    pid = df["Participant"].astype(str).str.strip().str.lower()
-    pid = pid.where(pid.str.startswith("p"), "p" + pid)
-    cond = df["Condition"].astype(str).str.strip().str.lower()
+    keys = list(zip(df["Participant"], df["Condition"], df["Side"]))
     side = df["Side"].astype(str).str.strip()
     drop = pd.Series(False, index=df.index)
-    for p, c, sd in exclusions:
-        hit = (pid == p) & (cond == c)
-        if sd is not None:
-            hit &= side == sd
-        label = f"{p}:{c}" + (f":{sd}" if sd else "")
+    for ex in exclusions:
+        hit = pd.Series([ex_mod.matches(ex, *k) for k in keys], index=df.index)
         if not hit.any():
-            raise SystemExit(f"--exclude {label} matches no rows")
-        print(f"excluded {label} (side(s) {', '.join(sorted(side[hit].unique()))})")
+            raise SystemExit(f"--exclude {ex_mod.describe(ex)} matches no rows")
+        print(f"excluded {ex_mod.describe(ex)} (side(s) {', '.join(sorted(side[hit].unique()))})")
         drop |= hit
     return df[~drop]
 
