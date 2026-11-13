@@ -61,7 +61,7 @@ CONDITION_COLORS = {
 # Display labels for chart axes/ticks only -- CONDITIONS/CONDITION_COLORS
 # keys stay "KT"/"Position"/"Pose" since those match the values in the
 # tidy CSV (and the filenames compare_conditions.py/plot_adjustment_time.py
-# parse in ~/posture_analysis).
+# parse in posture/).
 DISPLAY_LABELS = {
     "KT": "Baseline",
     "Position": "Pos.-only",
