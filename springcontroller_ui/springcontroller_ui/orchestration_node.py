@@ -45,6 +45,7 @@ from typing import Optional
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.exceptions import ParameterUninitializedException
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -341,7 +342,13 @@ class StudyControlPanelNode(Node):
         self._safety_status_topic = gp("safety_status_topic")
         self._joint_states_topic = gp("joint_states_topic")
         self._joint_names = list(gp("joint_names"))
-        candle = gp("candle_joint_angles")
+        # Declared with a type but no default (an empty DOUBLE_ARRAY default
+        # can't be declared), so a config that doesn't set it -- Gen3, UR3e --
+        # leaves it uninitialized: that means "no candle pose".
+        try:
+            candle = gp("candle_joint_angles")
+        except ParameterUninitializedException:
+            candle = None
         self._candle_joint_angles = [float(a) for a in candle] if candle else []
         if self._candle_joint_angles and len(self._candle_joint_angles) != len(self._joint_names):
             raise ValueError(
