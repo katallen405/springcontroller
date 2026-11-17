@@ -188,12 +188,19 @@ class TrajectoryActionGlue:
                 cmd.ok, cmd.message = False, not_ready_reason
             else:
                 ref = cmd.kw["reference"]
+                # Prepend the start before checking speeds: a goal with no
+                # t=0 point is otherwise a single held point here, and its
+                # first segment (from the arm to the plan) went unchecked.
+                ref.prepend_start(self.follower.current_angles())
                 too_fast = self._peak_ee_speed(ref)
+                joint_msg = self._joint_speed_violation(ref)
                 if too_fast > self._max_ee_speed:
                     cmd.ok, cmd.message = False, (
                         f"Planned end-effector speed peaks at {too_fast:.2f} m/s, above "
                         f"trajectory_spring.max_ee_speed_mps={self._max_ee_speed:.2f}. "
                         "Plan with a lower velocity scaling.")
+                elif joint_msg:
+                    cmd.ok, cmd.message = False, joint_msg
                 else:
                     cmd.ok, cmd.message = self.follower.start(
                         ref, now, cmd.kw.get("goal_tol"), cmd.kw.get("goal_time_tol"))
@@ -214,6 +221,26 @@ class TrajectoryActionGlue:
                 cmd.ok, cmd.message = True, "Releasing: tracking spring fading out."
         cmd.done.set()
         return outcome
+
+    def _joint_speed_violation(self, ref: JointTrajectoryReference) -> str:
+        """Empty if every joint stays within its URDF velocity limit, else why not.
+
+        The end-effector speed check alone misses wrist motion: spinning
+        joint 7 barely moves the end-effector point.
+        """
+        model = getattr(self._arm, "_model", None)
+        limits = None if model is None else np.asarray(model.velocityLimit, dtype=float)
+        if limits is None or len(limits) != ref.n_joints or not np.all(limits > 0):
+            return ""
+        peak = np.zeros(ref.n_joints)
+        for t in np.arange(0.0, ref.duration + 1e-9, 0.05):
+            peak = np.maximum(peak, np.abs(ref.sample(t)[1]))
+        worst = int(np.argmax(peak / limits))
+        if peak[worst] <= limits[worst]:
+            return ""
+        return (f"Planned speed of {self._arm.joint_names[worst]} peaks at "
+                f"{peak[worst]:.2f} rad/s, above its limit of {limits[worst]:.2f} rad/s. "
+                f"Plan a longer move (at least {ref.duration * peak[worst] / limits[worst]:.1f} s).")
 
     def _peak_ee_speed(self, ref: JointTrajectoryReference) -> float:
         peak = 0.0

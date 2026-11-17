@@ -80,6 +80,20 @@ def test_reference_unwraps_continuous_columns():
     assert ref.positions[1, 1] == pytest.approx(-3.0)              # bounded joint untouched
 
 
+def test_prepend_start_takes_nearest_turn():
+    # First Gen2 hardware goal: the arm reported multi-turn angles, the model
+    # hands prepend_start wrapped ones. Joints 3, 5, 7 used to sweep a full turn.
+    goal = [-1.192, 3.925, -4.164, 5.691, 7.728, 5.045, 5.850]
+    arm_now = np.array([-1.192, 3.948, -4.163, 5.691, 7.728, 5.045, 5.650])
+    mask = np.array([True, False, True, False, True, False, True])
+    ref = JointTrajectoryReference([5.0], [goal], continuous_mask=mask)
+    ref.prepend_start(np.where(mask, wrap_angle(arm_now), arm_now))   # as the model reports
+    np.testing.assert_allclose(ref.positions[0], arm_now, atol=1e-9)
+    for t in np.linspace(0.0, 5.0, 11):
+        q, _ = ref.sample(t)
+        assert np.max(np.abs(q - arm_now)) < 0.21
+
+
 @pytest.mark.parametrize("times,pos,msg", [
     ([], np.zeros((0, 2)), "no points"),
     ([0.0, 0.0], np.zeros((2, 2)), "increasing"),

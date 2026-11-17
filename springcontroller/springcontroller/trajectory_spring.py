@@ -95,8 +95,10 @@ class JointTrajectoryReference:
         if not np.all(np.isfinite(self.positions)) or (
                 self.velocities is not None and not np.all(np.isfinite(self.velocities))):
             raise ValueError("Trajectory contains NaN or infinite values.")
-        if continuous_mask is not None:
-            for j, cont in enumerate(continuous_mask):
+        self.continuous_mask = (None if continuous_mask is None
+                                else np.asarray(continuous_mask, dtype=bool))
+        if self.continuous_mask is not None:
+            for j, cont in enumerate(self.continuous_mask):
                 if cont:
                     self.positions[:, j] = np.unwrap(self.positions[:, j])
 
@@ -109,9 +111,22 @@ class JointTrajectoryReference:
         return self.positions.shape[1]
 
     def prepend_start(self, q_now: np.ndarray) -> None:
-        """A plan whose first point is later than t=0 starts from q_now."""
+        """A plan whose first point is later than t=0 starts from q_now.
+
+        q_now usually comes from the arm model, which reports continuous
+        joints wrapped into (-pi, pi], while the plan may use any turn (the
+        Gen2 reports multi-turn angles, e.g. 7.73 rad). Each continuous joint
+        of q_now is shifted by whole turns to the equivalent angle nearest
+        the plan's first point; otherwise the plan sweeps a full turn.
+        """
         if self.times[0] <= 0.0:
             return
+        q_now = np.array(q_now, dtype=float)
+        if self.continuous_mask is not None:
+            first = self.positions[0]
+            for j, cont in enumerate(self.continuous_mask):
+                if cont:
+                    q_now[j] = first[j] + wrap_angle(q_now[j] - first[j])
         self.times = np.concatenate([[0.0], self.times])
         self.positions = np.vstack([q_now, self.positions])
         if self.velocities is not None:

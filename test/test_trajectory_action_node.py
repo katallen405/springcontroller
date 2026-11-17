@@ -213,3 +213,40 @@ def test_config_file_sets_trajectory_spring_params():
         assert traj.spring.null_stiffness == 2.0     # not in the YAML: default
     finally:
         harness.close()
+
+
+def test_one_point_goal_from_multi_turn_angles(h):
+    # The Gen2 reports multi-turn angles (joint 5 at 7.73 rad on the first
+    # hardware run); HOME here has joints 1, 5, 7 beyond pi as well. A goal
+    # with only an end point starts from the arm's current pose, which the
+    # model reports wrapped into (-pi, pi]. That start used to be prepended
+    # unwrapped, so the plan swept joints a full turn and the wrist whipped.
+    h.run(1.0)
+    q0 = h.q.copy()
+    target = q0 + np.array([0, 0, 0, 0, 0, 0, 0.2])
+    goal = FollowJointTrajectory.Goal()
+    goal.trajectory.joint_names = [f"j2s7s300_joint_{i + 1}" for i in range(7)]
+    goal.trajectory.points.append(JointTrajectoryPoint(
+        positions=list(target), time_from_start=_dur(3.0)))
+    handle, rf = send(h, goal)
+    worst = 0.0
+    for _ in range(800):
+        h.step()
+        worst = max(worst, float(np.max(np.abs(h.q[:6] - q0[:6]))))
+        if rf.done():
+            break
+    res = rf.result()
+    assert res.status == 4, res.result.error_string                 # SUCCEEDED
+    assert worst < 0.1                                               # joints 1-6 stay put
+    np.testing.assert_allclose(h.q[6], target[6], atol=0.06)
+
+
+def test_joint_speed_limit_rejected(h):
+    # A fast joint 7 spin barely moves the end-effector point, so the
+    # end-effector speed check alone lets it through.
+    h.run(0.5)
+    handle, rf = send(h, make_goal(h.q.copy(), np.array([0, 0, 0, 0, 0, 0, 1.5]),
+                                   duration=1.0))
+    assert h.run(2.0, until=rf.done)
+    msg = rf.result().result.error_string
+    assert rf.result().status == 6 and "j2s7s300_joint_7" in msg and "limit" in msg, msg
