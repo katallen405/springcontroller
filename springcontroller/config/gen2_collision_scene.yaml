@@ -2,22 +2,31 @@
 # file format and how it's loaded). world == the arm's base frame
 # (gen2_robotiq_flat.urdf puts j2s7s300_link_base at the world origin).
 #
-# PLACEHOLDER GEOMETRY: assumes the arm is mounted on a table whose top is
-# flush with the base (z = 0), extending 0.6 m in every horizontal
-# direction. Measure the real table and fix the dimensions/position before
-# using load_collision_scene:=true -- a wrong scene either misses real
-# obstacles or clamps torques for no reason.
+# Load with:
+#   ros2 service call /virtual_spring_node/load_collision_scene \
+#     springcontroller_interfaces/srv/LoadCollisionScene \
+#     "{yaml_path: '/home/katallen/sandbox/src/springcontroller/springcontroller/config/gen2_collision_scene.yaml'}"
 
 objects:
 
   table:
     shape: box
-    dimensions: [1.2, 1.2, 0.05]
+    # 48in (x) x 30in (y) top; 5cm thickness is nominal -- only the top
+    # face matters for the clamp.
+    dimensions: [1.22, 0.76, 0.05]
     frame_id: "world"
     pose:
-      # z = -half the box height so the top face lands at z=0.
-      position: [0.0, 0.0, -0.025]
+      # x/y: the base frame is rotated 180deg about z relative to the
+      # table, so the table extends toward -x/-y. The base is 4in in from
+      # the +x edge and 4in in from the +y edge (the table's bottom-left
+      # corner as seen from the table side), so that corner is at
+      # (+0.1016, +0.1016). center = corner - half-dimension:
+      #   x = 0.1016 - 0.6096 = -0.508, y = 0.1016 - 0.381 = -0.279
+      # Rounded to the nearest cm since nothing finer matters here.
+      # z: the base is mounted 3cm above the table surface, so the top face
+      # is at z = -0.03 and center = -0.03 - half-thickness(0.025).
+      position: [-0.51, -0.28, -0.055]
       orientation: [0.0, 0.0, 0.0, 1.0]
-    # The base sits right on the table surface; without this it registers a
+    # The base sits only 3cm above the table; without this it registers a
     # permanent near-miss and blanket-scales torques.
     exclude_links: ["j2s7s300_link_base"]

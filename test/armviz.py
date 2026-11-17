@@ -977,6 +977,31 @@ node.create_subscription(
     Float64MultiArray, COLLISION_THRESHOLDS_TOPIC, collision_thresholds_cb, _latched_qos
 )
 
+def _draw_bare_dae_from_triangles():
+    """meshcat builds a .dae mesh from the file's own materials and ignores
+    the material pinocchio sends with it, so the URDF colour never reaches a
+    .dae. Meshes with no material of their own (the Gen2 Jaco2's arm halves
+    and spherical wrists) then render in three.js's default white -- which
+    made the Gen2 look like a Gen3. (Recolouring them afterwards with
+    set_property("color") did not take.) Clearing meshPath makes pinocchio
+    draw exactly those from the triangle mesh it already loaded, sent with the
+    URDF material. They are Y_UP with no node transforms, so placement is the
+    same either way; meshes with their own materials keep the .dae path."""
+    for geom in visual_model.geometryObjects:
+        path = geom.meshPath
+        if not path.lower().endswith(".dae"):
+            continue
+        try:
+            with open(path, errors="ignore") as f:
+                if "<material" in f.read():
+                    continue
+        except OSError:
+            continue
+        geom.meshPath = ""
+
+
+_draw_bare_dae_from_triangles()
+
 viz = MeshcatVisualizer(model, collision_model, visual_model)
 viz.initViewer(open=_args.open, zmq_url=_args.zmq_url)
 viz.loadViewerModel()

@@ -44,6 +44,12 @@ sed -i \
     -e "s#package://robotiq_85_description/#$RQ/#g" \
     "$TMP"/*/*.xacro "$TMP"/kinova/kinova.gazebo
 
+# kinova_common.xacro's "carbon_fiber" material is a pale blue-white (0.79
+# 0.82 0.93), which made the black Jaco2 look like a white Gen3 in armviz.
+# Visual only -- dynamics and collision don't read material colours.
+sed -i -e "s#0.792156862745098 0.819607843137255 0.933333333333333 1#0.12 0.12 0.12 1#g" \
+    "$TMP"/kinova/kinova_common.xacro
+
 # Same instantiation as poli2's tablebot.urdf.xacro: arm base at the world origin.
 cat > "$TMP/gen2_robotiq.urdf.xacro" <<XACRO
 <?xml version="1.0"?>
