@@ -48,11 +48,11 @@ def _dur(t):
 
 
 class Harness:
-    def __init__(self):
+    def __init__(self, extra_args=()):
         # use_sim_time is switched on only after construction: startup's
         # fetch_robot_description() times its wait with the node clock, which
         # under sim time wouldn't advance until this harness publishes /clock.
-        args = ["--ros-args",
+        args = ["--ros-args", *extra_args,
                 "-p", f"urdf_path:={URDF}",
                 "-p", f"srdf_path:={SRDF}",
                 "-p", f"locked_joint_names:=[{','.join(LOCKED)}]",
@@ -195,3 +195,21 @@ def test_too_fast_rejected(h):
                                    duration=0.5))
     assert h.run(2.0, until=rf.done)
     assert rf.result().status == 6 and "end-effector speed" in rf.result().result.error_string
+
+
+def test_config_file_sets_trajectory_spring_params():
+    # The config-file loader declares every YAML key before the trajectory
+    # glue runs; it used to re-declare trajectory_spring.* and crash
+    # (ParameterAlreadyDeclaredException) on the first Gen2 hardware run.
+    cfg = PKG / "config" / "gen2_trajectory_first_run.yaml"
+    harness = Harness(["-p", f"config_path:={cfg}"])
+    try:
+        traj = harness.node._traj
+        assert traj.available
+        assert traj.spring.stiffness == 60.0
+        assert traj.spring.rot_damping == 0.1
+        assert traj.spring.max_force == 10.0
+        assert traj._max_ee_speed == 0.10
+        assert traj.spring.null_stiffness == 2.0     # not in the YAML: default
+    finally:
+        harness.close()

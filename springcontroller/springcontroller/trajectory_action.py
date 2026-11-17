@@ -124,6 +124,14 @@ class TrajectoryActionGlue:
                  f"spring on {link} at {local_point}.")
 
     def _declare(self, name, default):
+        # virtual_spring_node's config-file loader declares every key in the
+        # YAML before this runs, so a config that sets trajectory_spring.*
+        # has already declared it: read that value instead of re-declaring.
+        if self._node.has_parameter(name):
+            value = self._node.get_parameter(name).value
+            if isinstance(default, float) and isinstance(value, int):
+                value = float(value)   # "stiffness: 60" in YAML is an int
+            return value
         return self._node.declare_parameter(name, default).value
 
     # ── control loop side (node's /joint_states callback) ──
