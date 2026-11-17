@@ -51,8 +51,17 @@ elbow on MoveIt's plan. If the arm is held back > 8 cm, the anchor waits
       that. Decide: merge it on its own first (branch `jacobian-sign-fix`), and
       feel a Gen3/Gen2 spring with `local_point [0,0,0.1]`. It should feel more
       damped, not less.
-- [ ] Bring `trajectory-spring` up to date (40 commits behind main): merge
-      main into it, run `pytest test/` from the repo root.
+- [x] Bring `trajectory-spring` up to date (done 2026-11-17, `98d37a8`):
+      merged `origin/main` (analysis code only) and `idle-amplification-observer`
+      (Gen2 table collision geometry, Gen2 study panel/gripper/candle buttons,
+      armviz colours). Both merged with no conflicts. Also fixed the study panel failing to
+      start for Gen3/UR3e (unset `candle_joint_angles`). Tests: 245 passed; the
+      one failure, `test_plot_conditions::test_boxplot_draws_one_bracket_per_significant_pair`,
+      also fails on main.
+- [ ] In the lab: `git fetch && git switch trajectory-spring && git pull`,
+      then `colcon build` and source. Note this branch also carries the
+      Jacobian sign fix, so every spring with a `local_point` will behave
+      differently from main.
 - [ ] Gen2 hardware, first run (torque **enabled**, springs ramped, E-STOP):
   - [ ] low gains first, e.g. `trajectory_spring.stiffness` ~100 N/m (default
         300), keep `rot_damping` ≤ 0.2. 1.0 caused a wrist limit cycle in sim.
