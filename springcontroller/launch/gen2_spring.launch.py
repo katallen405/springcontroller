@@ -36,8 +36,9 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 # Same venv/paths gen3_spring.launch.py uses -- see its comments.
@@ -156,6 +157,23 @@ def generate_launch_description():
         ],
     )
 
+    # TF for every link from the same URDF, so the gripper pose is one
+    # `ros2 run tf2_ros tf2_echo j2s7s300_link_base j2s7s300_ee_link` away
+    # (same frame and point as the springs' targets). Also publishes
+    # /robot_description, which virtual_spring_node then reads instead of
+    # waiting 3 s and falling back to urdf_path. The finger joints aren't in
+    # the bridge's joint states, so the finger links get no TF; the chain
+    # to j2s7s300_ee_link is complete without them.
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        output="screen",
+        parameters=[{"robot_description": ParameterValue(
+            Command(["cat ", LaunchConfiguration("urdf_path")]), value_type=str)}],
+        remappings=[("/joint_states", LaunchConfiguration("joint_states_topic"))],
+    )
+
     torque_relay_node = Node(
         package="springcontroller",
         executable="torque_relay",
@@ -236,6 +254,9 @@ def generate_launch_description():
             "/virtual_spring_node/safety_status",
             "/virtual_spring_node/springs_updated",
             "/virtual_spring_node/spring_forces",
+            "/virtual_spring_node/trajectory/state",
+            "/tf",
+            "/tf_static",
             "/gen2/joint_torque_command",
             "/gen2_torque_control/status",
             "/gen2_torque_control/move_status",
@@ -252,6 +273,7 @@ def generate_launch_description():
         SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
         *args,
         bridge,
+        robot_state_publisher,
         virtual_spring_node,
         torque_relay_node,
         enable_torque_control,
