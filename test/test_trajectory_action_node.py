@@ -250,3 +250,15 @@ def test_joint_speed_limit_rejected(h):
     assert h.run(2.0, until=rf.done)
     msg = rf.result().result.error_string
     assert rf.result().status == 6 and "j2s7s300_joint_7" in msg and "limit" in msg, msg
+
+
+def test_abort_names_why_springs_stopped(h):
+    # The first time torque dropped mid-trajectory on hardware, the abort said
+    # "collision clamp or ~/enable"; it should name the actual reason.
+    h.run(1.0)
+    handle, rf = send(h, make_goal(h.q.copy(), np.array([0.3, 0, 0, 0, 0, 0, 0]), duration=5.0))
+    h.run(1.0)
+    h.node._set_springs_enabled(False, reason="test")
+    assert h.run(2.0, until=rf.done)
+    msg = rf.result().result.error_string
+    assert rf.result().status == 6 and "Springs are disabled" in msg, msg

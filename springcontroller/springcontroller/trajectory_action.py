@@ -154,7 +154,11 @@ class TrajectoryActionGlue:
         if running and not springs_enabled:
             outcome = self.follower.stop(
                 PATH_TOLERANCE_VIOLATED,
-                "Springs were disabled (collision clamp or ~/enable) mid-trajectory.")
+                # not_ready_reason names the actual cause (torque dropped,
+                # collision clamp, ~/enable); a fixed "collision clamp or
+                # ~/enable" message misled the first time torque dropped.
+                "Stopped mid-trajectory: "
+                + (not_ready_reason or "springs were disabled."))
         elif running:
             outcome = self.follower.tick(now) or outcome
 
