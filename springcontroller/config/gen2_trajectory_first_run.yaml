@@ -20,15 +20,20 @@
         rest_length:  0.0
 
     # Tracking spring: far softer than the code defaults (300 N/m, 30 N*s/m,
-    # 10 N*m/rad, 40 N, 0.25 m/s). Guesses for a first run, not tuned.
-    # 60 N/m gives ~5 N at the 8 cm pause threshold. Damping acts on the
-    # error in velocity (planned - actual), so it doesn't drag against the
-    # plan the way a plain -b*v damper would.
+    # 10 N*m/rad, 40 N, 0.25 m/s). Damping acts on the error in velocity
+    # (planned - actual), so it doesn't drag against the plan the way a
+    # plain -b*v damper would.
+    #
+    # 2026-11-19: rotation up, position down. On 2026-11-17 every abort was
+    # the wrist not turning (0.3-0.5 rad rotation error, position within a
+    # few cm): rot_stiffness 2 / max_moment 1.5 gave < 1 N*m, under the
+    # wrist's friction. Position had margin, so stiffness 60 -> 40: ~3 N at
+    # the 8 cm pause threshold, ~2 N at the 4.8 cm resume threshold.
     trajectory_spring:
-      stiffness:        60.0     # N/m
+      stiffness:        40.0     # N/m (was 60)
       damping:          5.0      # N*s/m
-      rot_stiffness:    2.0      # N*m/rad
+      rot_stiffness:    6.0      # N*m/rad (was 2)
       rot_damping:      0.1      # N*m*s/rad -- keep <= 0.2 (wrist limit cycle in sim at 1.0)
       max_force:        10.0     # N
-      max_moment:       1.5      # N*m
+      max_moment:       3.0      # N*m (was 1.5)
       max_ee_speed_mps: 0.10     # goals planned faster than this are rejected

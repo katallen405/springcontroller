@@ -63,17 +63,17 @@ Write them as floats (`60.0`, not `60`).
 
 | Parameter | Default | First-run config | What it does |
 |---|---|---|---|
-| `stiffness` | 300 N/m | 60 | Pull toward the anchor position. Higher = tracks closer, feels stiffer when pushed. |
+| `stiffness` | 300 N/m | 40 | Pull toward the anchor position. Higher = tracks closer, feels stiffer when pushed. |
 | `damping` | 30 N·s/m | 5 | Damps the *difference* between planned and actual gripper velocity, so it doesn't drag against the plan. |
-| `rot_stiffness` | 10 N·m/rad | 2 | Pull toward the anchor orientation. **2 is too weak for the Gen2 wrist**: see caveats. |
+| `rot_stiffness` | 10 N·m/rad | 6 | Pull toward the anchor orientation. 2 was too weak for the Gen2 wrist: see caveats. |
 | `rot_damping` | 0.2 N·m·s/rad | 0.1 | Keep ≤ 0.2: 1.0 gave a wrist limit cycle in simulation. |
 | `max_force` | 40 N | 10 | Cap on the spring force. Also caps how hard it can push you. |
-| `max_moment` | 5 N·m | 1.5 | Cap on the spring moment. |
+| `max_moment` | 5 N·m | 3 | Cap on the spring moment. |
 | `null_stiffness` | 2 N·m/rad | (default) | Posture pull toward the planned joint angles, in motions that don't move the gripper. Raise if joint 3 (elbow roll) ends off the plan. |
 | `null_damping` | 0.5 N·m·s/rad | (default) | Damps those motions. |
 
-Rough feel: at 60 N/m a 5 cm error pulls with 3 N. At 2 N·m/rad a 0.3 rad
-twist pushes with 0.6 N·m.
+Rough feel: at 40 N/m a 5 cm error pulls with 2 N. At 6 N·m/rad a 0.3 rad
+twist pushes with 1.8 N·m (at 2 N·m/rad it was 0.6 N·m).
 
 ### Pausing and finishing
 
@@ -138,8 +138,9 @@ spring stays faded out until `trajectory/release`.
 - **The Gen2 wrist needs more rotational stiffness than 2 N·m/rad.** All
   three aborts in the 2026-11-17 16:57 bag were rotation errors of 0.3–0.5 rad
   with the position within a few cm: 2 N·m/rad × 0.4 rad ≈ 0.8 N·m doesn't
-  overcome the wrist's friction. Next to try: `rot_stiffness: 6.0`,
-  `max_moment: 3.0`, keeping `rot_damping` ≤ 0.2.
+  overcome the wrist's friction. The first-run config now has
+  `rot_stiffness: 6.0`, `max_moment: 3.0` and `stiffness: 40.0`
+  (2026-11-19; not yet tried on the arm). Keep `rot_damping` ≤ 0.2.
 - **"Done" is judged per joint, but the spring acts on the gripper.** On a
   7-DOF arm the gripper can be on target with joint 3 off (pushed sideways
   by hand) or joint 7 off (wrist not turned). Only the weak posture term or
