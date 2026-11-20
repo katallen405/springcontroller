@@ -193,6 +193,17 @@ torque_bridge_name : str
 spring_ramp_duration_sec : double
     Ramp duration for spring-force torque after torque-enable. Gravity
     comp is never ramped (see compute_total_torques).
+reanchor_hold_springs_on_enable : bool
+    Default True. On every torque enable, springs whose target (or joint
+    spring's target_angle) was left unconfigured in YAML -- "hold" springs,
+    e.g. tip_spring -- re-anchor to where the arm is now, exactly as they
+    did on startup. Without it they keep the anchor from node start (or
+    the last ~/target message), so after the arm is moved in position mode
+    the next enable pulls it back toward that old point (2026-11-20: a
+    10 N/m tip spring anchored at a sweep pose dragged joint 4 to 328 deg
+    on enable at another pose). Springs with a configured target are never
+    touched. A ~/target sent before enabling is overwritten for hold
+    springs -- send it after.
 collision_check_interval_sec : double
     Throttle interval for the self-collision check; the torque-scaling
     decision still runs every cycle, against the most recent result.
@@ -436,6 +447,9 @@ class VirtualSpringNode(Node):
         # Gen3 output (which springcontroller_ui matches on) unchanged.
         self.declare_parameter("torque_bridge_name", "gen3_torque_control")
         self.declare_parameter("spring_ramp_duration_sec", 1.5)
+        # Re-anchor unconfigured-target springs on each enable -- see the
+        # module docstring.
+        self.declare_parameter("reanchor_hold_springs_on_enable", True)
         # Idle amplification: only while NO springs are loaded, adds
         # α·deadband(τ̂_ext) from a momentum observer on measured joint
         # torque, lowering perceived inertia/impedance. Off by default;
@@ -876,6 +890,9 @@ class VirtualSpringNode(Node):
         # start_time wouldn't line up with the real transient.
         self._spring_ramp_duration = (
             self.get_parameter("spring_ramp_duration_sec").get_parameter_value().double_value
+        )
+        self._reanchor_hold_springs = (
+            self.get_parameter("reanchor_hold_springs_on_enable").get_parameter_value().bool_value
         )
         self._torque_enabled_since = None
         self._last_torque_status = None
@@ -1334,6 +1351,7 @@ class VirtualSpringNode(Node):
             outer_radius=float(_get("outer_radius",0.0)),
     )
         spring._target_pending = target_pending
+        spring._hold_spring = target_pending
         return spring
 
     def _load_one_joint_spring(self, name: str) -> JointSpring:
@@ -1382,6 +1400,7 @@ class VirtualSpringNode(Node):
             name=name,
         )
         spring._target_pending = target_pending
+        spring._hold_spring = target_pending
         return spring
 
     def _load_one_pose_spring(self, name: str) -> PoseSpring:
@@ -1464,13 +1483,30 @@ class VirtualSpringNode(Node):
             self._torque_enabled_since = self.get_clock().now()
             if self._ext_observer is not None:
                 self._ext_observer.reset()
+            reanchored = self._reanchor_hold_springs_for_enable()
             self.get_logger().info(
                 f"Torque control enabled -- ramping spring force in over "
-                f"{self._spring_ramp_duration:.2f}s (gravity comp unramped)."
+                f"{self._spring_ramp_duration:.2f}s (gravity comp unramped)"
+                + (f"; re-anchoring {reanchored} to the current pose." if reanchored else ".")
             )
         elif not is_enabled:
             self._torque_enabled_since = None
         self._last_torque_status = msg.data
+
+    def _reanchor_hold_springs_for_enable(self) -> list:
+        """Mark every hold spring (target unconfigured in YAML) to re-resolve
+        its target to the current pose on the next _joint_state_cb -- the
+        same path as at startup, which runs before that cycle's torques are
+        computed, while the enable ramp is still near zero. Returns their
+        names."""
+        if not getattr(self, "_reanchor_hold_springs", True):
+            return []
+        names = []
+        for spring in self._springs:
+            if getattr(spring, "_hold_spring", False):
+                spring._target_pending = True
+                names.append(spring.name)
+        return names
 
     def _check_torque_control_connected(self) -> None:
         """
