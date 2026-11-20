@@ -14,9 +14,9 @@ import pinocchio as pin
 import pytest
 
 from springcontroller.trajectory_spring import (
-    GOAL_TOLERANCE_VIOLATED, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, FollowerConfig,
-    FollowerState, JointTrajectoryReference, TrackingPoseSpring, TrajectoryFollower,
-    rotation_log, wrap_angle,
+    GOAL_TOLERANCE_VIOLATED, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, CartesianPathReference,
+    FollowerConfig, FollowerState, JointTrajectoryReference, TrackingPoseSpring,
+    TrajectoryFollower, masked_rotation_error, rotation_exp, rotation_log, wrap_angle,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 
@@ -375,3 +375,109 @@ def test_stop_holds_current_pose():
     q_stop = sim.q.copy()
     sim.run(1.0)
     np.testing.assert_allclose(sim.q, q_stop, atol=0.03)
+
+
+# ── Cartesian anchor paths ────────────────────────────────────────────────────
+
+X, Y, Z = np.eye(3)
+
+
+def Rx(a):
+    return rotation_exp(a * X)
+
+
+def Rz(a):
+    return rotation_exp(a * Z)
+
+
+@pytest.mark.parametrize("w", [[0.3, -0.2, 0.5], [0.0, 0.0, 2.5], [1e-8, 0, 0]])
+def test_rotation_exp_log_round_trip(w):
+    np.testing.assert_allclose(rotation_log(rotation_exp(np.array(w))), w, atol=1e-9)
+
+
+def test_masked_rotation_error_swing_twist():
+    E = Rz(1.2) @ Rx(0.3)
+    np.testing.assert_allclose(masked_rotation_error(E, None), rotation_log(E))
+    np.testing.assert_allclose(masked_rotation_error(E, np.zeros((0, 3))), 0.0)
+    # Only z constrained: the twist about z, nothing else.
+    e = masked_rotation_error(E, Z[None])
+    np.testing.assert_allclose(e[:2], 0.0, atol=1e-12)
+    assert e[2] == pytest.approx(1.2, abs=1e-9)
+    assert np.linalg.norm(masked_rotation_error(Rx(0.3), Z[None])) == pytest.approx(0.0, abs=1e-12)
+    # z free: a large yaw is no error at all, the tilt is fully kept.
+    assert np.linalg.norm(masked_rotation_error(Rz(2.0), np.array([X, Y]))) < 1e-9
+    np.testing.assert_allclose(masked_rotation_error(Rx(0.3), np.array([X, Y])), [0.3, 0, 0],
+                               atol=1e-9)
+    assert np.linalg.norm(masked_rotation_error(E, np.array([X, Y]))) == pytest.approx(0.3, abs=1e-9)
+
+
+def test_cartesian_path_sampling():
+    p0, R0 = np.array([0.1, 0.0, 0.5]), np.eye(3)
+    ref = CartesianPathReference([2.0, 4.0], [[0.3, 0.0, 0.5], [0.3, 0.2, 0.5]],
+                                 rotation=Rz(0.4), rotation_axes=np.array([X, Y, Z]))
+    ref.prepend_start(p0, R0)
+    assert ref.duration == 4.0
+    for t, p in [(0.0, p0), (2.0, [0.3, 0, 0.5]), (4.0, [0.3, 0.2, 0.5]), (9.0, [0.3, 0.2, 0.5])]:
+        np.testing.assert_allclose(ref.sample(t)[0], p, atol=1e-12)
+        np.testing.assert_allclose(ref.sample(t)[2], 0.0, atol=1e-12)   # at rest at waypoints
+    np.testing.assert_allclose(ref.sample(1.0)[0], [0.2, 0, 0.5], atol=1e-12)   # halfway
+    assert ref.peak_speed() == pytest.approx(1.875 * 0.2 / 2.0)
+    np.testing.assert_allclose(ref.sample(4.0)[1], Rz(0.4), atol=1e-12)
+    np.testing.assert_allclose(ref.sample(2.0)[1], Rz(0.2), atol=1e-9)      # halfway in time
+    with pytest.raises(ValueError):
+        CartesianPathReference([0.0], [[0, 0, 0]])                          # times must be > 0
+    with pytest.raises(ValueError):
+        CartesianPathReference([1.0], [[0, 0, 0]], rotation_axes=np.array([Z]))   # no target
+
+
+def test_free_rotation_axis_gets_no_moment():
+    arm = make_arm(Q0)
+    T = arm.get_link_transform(LINK)
+    x = T[:3, :3] @ TIP + T[:3, 3]
+    spring = TrackingPoseSpring(LINK, TIP)
+    spring.set_anchor(x, Rz(0.5) @ T[:3, :3])                 # yawed 0.5 rad about world z
+    spring.compute_torques(arm)
+    assert np.linalg.norm(spring.last_state.force[3:]) > 1.0      # all axes held: pulls back
+    spring.set_rotation_axes(np.array([X, Y]))                    # z free
+    spring.compute_torques(arm)
+    assert np.linalg.norm(spring.last_state.force[3:]) < 1e-6
+
+
+def _cartesian_sim(path_points, times, rotation=None, axes=None):
+    sim = Sim(Q0)
+    p0, _ = sim.follower.current_anchor_pose()
+    ref = CartesianPathReference(times, [p0 + np.asarray(p) for p in path_points],
+                                 rotation=rotation, rotation_axes=axes)
+    ok, msg = sim.follower.start(ref, sim.t)
+    assert ok, msg
+    return sim, p0
+
+
+def test_cartesian_position_only_path_closed_loop():
+    sim, p0 = _cartesian_sim([[0.0, 0.0, 0.10]], [3.0])              # 10 cm straight up
+    worst_off_line = 0.0
+    for _ in range(300):
+        sim.run(0.01)
+        x, _ = sim.follower.current_anchor_pose()
+        d = x - p0
+        worst_off_line = max(worst_off_line, float(np.linalg.norm(d[:2])))
+    sim.run(3.0)
+    assert sim.outcomes and sim.outcomes[0].error_code == SUCCESSFUL, sim.outcomes
+    x, _ = sim.follower.current_anchor_pose()
+    np.testing.assert_allclose(x, p0 + [0, 0, 0.10], atol=0.01)
+    assert worst_off_line < 0.01                                    # stays on the line
+    assert sim.follower.state is FollowerState.HOLDING
+
+
+def test_cartesian_orientation_target_closed_loop():
+    sim = Sim(Q0)
+    _, R0 = sim.follower.current_anchor_pose()
+    R_target = Rz(0.3) @ R0
+    p0, _ = sim.follower.current_anchor_pose()
+    ref = CartesianPathReference([3.0], [p0], rotation=R_target, rotation_axes=np.eye(3))
+    ok, msg = sim.follower.start(ref, sim.t)
+    assert ok, msg
+    sim.run(6.0)
+    assert sim.outcomes and sim.outcomes[0].error_code == SUCCESSFUL, sim.outcomes
+    _, R = sim.follower.current_anchor_pose()
+    assert np.linalg.norm(rotation_log(R_target @ R.T)) < 0.05

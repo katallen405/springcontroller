@@ -68,6 +68,86 @@ def rotation_log(R: np.ndarray) -> np.ndarray:
     return angle / (2.0 * np.sin(angle)) * w
 
 
+def rotation_exp(w: np.ndarray) -> np.ndarray:
+    """Rotation matrix of a rotation vector (inverse of rotation_log)."""
+    w = np.asarray(w, dtype=float)
+    angle = float(np.linalg.norm(w))
+    if angle < 1e-12:
+        return np.eye(3)
+    k = w / angle
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+
+def _quat_from_rotation(R: np.ndarray) -> np.ndarray:
+    """(w, x, y, z), w >= 0."""
+    w = rotation_log(R)
+    angle = float(np.linalg.norm(w))
+    if angle < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    q = np.concatenate([[np.cos(angle / 2.0)], np.sin(angle / 2.0) * w / angle])
+    return q if q[0] >= 0 else -q
+
+
+def _rotation_from_quat(q: np.ndarray) -> np.ndarray:
+    q = np.asarray(q, dtype=float) / np.linalg.norm(q)
+    w, x, y, z = q
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, av = a[0], a[1:]
+    bw, bv = b[0], b[1:]
+    return np.concatenate([[aw * bw - av @ bv], aw * bv + bw * av + np.cross(av, bv)])
+
+
+def _twist_about(q: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Twist part of the swing-twist decomposition q = swing * twist about unit u."""
+    t = np.concatenate([[q[0]], (q[1:] @ u) * u])
+    n = float(np.linalg.norm(t))
+    return np.array([1.0, 0.0, 0.0, 0.0]) if n < 1e-12 else t / n
+
+
+def masked_rotation_error(E: np.ndarray, axes: Optional[np.ndarray]) -> np.ndarray:
+    """Rotation vector of the error E = R_d Rᵀ (world), keeping only the
+    rotation about the constrained axes.
+
+    axes: None = all three constrained (plain log); else a (k, 3) array of
+    orthonormal world unit vectors, k = 0..3. Exact for every k via the
+    swing-twist decomposition, not just for small errors:
+      k = 1 (axis c):        only the twist of E about c.
+      k = 2 (free axis a):   E with its twist about a removed (the swing).
+    """
+    if axes is None:
+        return rotation_log(E)
+    axes = np.asarray(axes, dtype=float).reshape(-1, 3)
+    k = axes.shape[0]
+    if k == 0:
+        return np.zeros(3)
+    if k == 3:
+        return rotation_log(E)
+    q = _quat_from_rotation(E)
+    if k == 1:
+        return rotation_log(_rotation_from_quat(_twist_about(q, axes[0])))
+    free = np.cross(axes[0], axes[1])
+    free /= np.linalg.norm(free)
+    twist = _twist_about(q, free)
+    swing = _quat_mul(q, twist * np.array([1.0, -1.0, -1.0, -1.0]))
+    return rotation_log(_rotation_from_quat(swing))
+
+
+def rotation_projector(axes: Optional[np.ndarray]) -> np.ndarray:
+    """3x3 projector onto the constrained rotation axes (identity for None)."""
+    if axes is None:
+        return np.eye(3)
+    axes = np.asarray(axes, dtype=float).reshape(-1, 3)
+    return sum((np.outer(a, a) for a in axes), np.zeros((3, 3)))
+
+
 # ── Reference ─────────────────────────────────────────────────────────────────
 
 class JointTrajectoryReference:
@@ -154,6 +234,93 @@ class JointTrajectoryReference:
         return pos, vel
 
 
+def _min_jerk(s: float) -> tuple[float, float]:
+    """(position, d/ds) of the minimum-jerk blend on s in [0, 1]."""
+    s = min(max(s, 0.0), 1.0)
+    return 10 * s**3 - 15 * s**4 + 6 * s**5, 30 * s**2 - 60 * s**3 + 30 * s**4
+
+
+MIN_JERK_PEAK = 1.875        # peak of d/ds of the minimum-jerk blend
+
+
+class CartesianPathReference:
+    """A path of the tracking spring's anchor point through world-frame
+    points, with an optional orientation target.
+
+    times: (N,) s from start, > 0, strictly increasing. points: (N, 3) world.
+    Each segment (from the previous point, the first from where the anchor
+    is at start) uses a minimum-jerk blend, so every waypoint is reached at
+    rest. Orientation turns from the gripper's start orientation to
+    `rotation` over the whole duration (also minimum-jerk); only the
+    constrained axes (`rotation_axes`, world unit vectors, (k, 3)) matter,
+    and with none the gripper's orientation is free.
+    """
+
+    def __init__(self, times: Sequence[float], points, rotation: Optional[np.ndarray] = None,
+                 rotation_axes: Optional[np.ndarray] = None) -> None:
+        self.times = np.asarray(times, dtype=float)
+        self.points = np.array(points, dtype=float).reshape(-1, 3)
+        if self.times.ndim != 1 or len(self.times) == 0:
+            raise ValueError("Path has no points.")
+        if len(self.times) != len(self.points):
+            raise ValueError("Every point needs a time.")
+        if self.times[0] <= 0.0 or np.any(np.diff(self.times) <= 0.0):
+            raise ValueError("times must be > 0 and strictly increasing.")
+        if not (np.all(np.isfinite(self.points)) and np.all(np.isfinite(self.times))):
+            raise ValueError("Path contains NaN or infinite values.")
+        self.rotation = None if rotation is None else np.asarray(rotation, dtype=float)
+        self.rotation_axes = (np.zeros((0, 3)) if rotation_axes is None
+                              else np.asarray(rotation_axes, dtype=float).reshape(-1, 3))
+        if self.rotation_axes.shape[0] and self.rotation is None:
+            raise ValueError("Constrained rotation axes need a target orientation.")
+        self._start_rotation: Optional[np.ndarray] = None
+        self._rot_delta = np.zeros(3)          # log(R_start^T R_target), start frame
+
+    @property
+    def duration(self) -> float:
+        return float(self.times[-1])
+
+    @property
+    def started(self) -> bool:
+        return self.times[0] == 0.0
+
+    def prepend_start(self, point_now: np.ndarray, rotation_now: np.ndarray) -> None:
+        """Start the path from where the anchor point and gripper are now."""
+        if self.started:
+            return
+        self.times = np.concatenate([[0.0], self.times])
+        self.points = np.vstack([np.asarray(point_now, dtype=float), self.points])
+        self._start_rotation = np.asarray(rotation_now, dtype=float).copy()
+        if self.rotation is not None:
+            self._rot_delta = rotation_log(self._start_rotation.T @ self.rotation)
+
+    def peak_speed(self) -> float:
+        """Peak anchor speed (m/s) over the path; needs prepend_start first."""
+        seg = np.linalg.norm(np.diff(self.points, axis=0), axis=1)
+        return float(np.max(MIN_JERK_PEAK * seg / np.diff(self.times))) if len(seg) else 0.0
+
+    def sample(self, t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """(point, rotation, linear velocity, angular velocity) at time t (world)."""
+        if not self.started:
+            raise RuntimeError("prepend_start() before sampling.")
+        T = self.duration
+        # Orientation: minimum-jerk over the whole path, from the start orientation.
+        b, db = _min_jerk(t / T)
+        R0 = self._start_rotation
+        R = R0 @ rotation_exp(b * self._rot_delta)
+        omega = R0 @ (self._rot_delta * db / T) if 0.0 < t < T else np.zeros(3)
+        if t <= 0.0:
+            return self.points[0].copy(), R, np.zeros(3), np.zeros(3)
+        if t >= T:
+            return self.points[-1].copy(), R, np.zeros(3), np.zeros(3)
+        k = int(np.searchsorted(self.times, t, side="right")) - 1
+        t0, t1 = self.times[k], self.times[k + 1]
+        h = t1 - t0
+        s, ds = _min_jerk((t - t0) / h)
+        p0, p1 = self.points[k], self.points[k + 1]
+        return p0 + s * (p1 - p0), R, (p1 - p0) * ds / h, omega
+
+
 # ── Spring ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -209,7 +376,13 @@ class TrackingPoseSpring:
         self.anchor_rotation: Optional[np.ndarray] = None
         self.anchor_twist = np.zeros(6)
         self.anchor_joints: Optional[np.ndarray] = None
+        # Rotation axes the spring holds (world unit vectors, (k, 3)); None =
+        # all three. Free axes get no rotational stiffness or damping.
+        self.rotation_axes: Optional[np.ndarray] = None
         self._last_state: Optional[TrackingSpringState] = None
+
+    def set_rotation_axes(self, axes: Optional[np.ndarray]) -> None:
+        self.rotation_axes = None if axes is None else np.asarray(axes, dtype=float).reshape(-1, 3)
 
     def set_anchor(self, position, rotation, twist=None, joints=None) -> None:
         self.anchor_position = np.asarray(position, dtype=float).copy()
@@ -220,6 +393,7 @@ class TrackingPoseSpring:
     def clear_anchor(self) -> None:
         self.anchor_position = self.anchor_rotation = self.anchor_joints = None
         self.anchor_twist = np.zeros(6)
+        self.rotation_axes = None
         self._last_state = None
 
     @property
@@ -231,11 +405,12 @@ class TrackingPoseSpring:
         return self._last_state
 
     def pose_error(self, arm) -> tuple[np.ndarray, np.ndarray]:
-        """(x_d − x, log(R_d Rᵀ)) for the current arm state."""
+        """(x_d − x, rotation error about the constrained axes) for the current arm state."""
         T = arm.get_link_transform(self.link_name)
         R = T[:3, :3]
         x = R @ self.local_attachment_point + T[:3, 3]
-        return self.anchor_position - x, rotation_log(self.anchor_rotation @ R.T)
+        return (self.anchor_position - x,
+                masked_rotation_error(self.anchor_rotation @ R.T, self.rotation_axes))
 
     def compute_torques(self, arm) -> np.ndarray:
         n = arm.n_dof
@@ -250,9 +425,10 @@ class TrackingPoseSpring:
         twist = J @ qdot
 
         e_p = self.anchor_position - x
-        e_R = rotation_log(self.anchor_rotation @ R.T)
+        e_R = masked_rotation_error(self.anchor_rotation @ R.T, self.rotation_axes)
+        P = rotation_projector(self.rotation_axes)     # free rotation axes: no damping either
         F = self.stiffness * e_p + self.damping * (self.anchor_twist[:3] - twist[:3])
-        M = self.rot_stiffness * e_R + self.rot_damping * (self.anchor_twist[3:] - twist[3:])
+        M = self.rot_stiffness * e_R + self.rot_damping * (P @ (self.anchor_twist[3:] - twist[3:]))
         F = _saturate(F, self.max_force)
         M = _saturate(M, self.max_moment)
         wrench = np.concatenate([F, M])
@@ -262,11 +438,13 @@ class TrackingPoseSpring:
             q = np.array([arm.get_joint_angle(i) for i in range(n)])
             tau0 = (self.null_stiffness * wrap_angle(self.anchor_joints - q)
                     - self.null_damping * qdot)
-            # Damped pseudo-inverse; N = I − Jᵀ J#ᵀ keeps tau0 out of the
-            # end-effector wrench.
+            # Damped pseudo-inverse of the task the spring controls (position
+            # + constrained rotation axes); N = I − Jtᵀ Jt#ᵀ keeps tau0 out of
+            # that task, so free rotation axes are left to the posture term.
+            Jt = np.vstack([J[:3], P @ J[3:]])
             lam2 = 1e-4
-            J_pinv = J.T @ np.linalg.inv(J @ J.T + lam2 * np.eye(6))
-            torques = torques + (np.eye(n) - J.T @ J_pinv.T) @ tau0
+            J_pinv = Jt.T @ np.linalg.inv(Jt @ Jt.T + lam2 * np.eye(6))
+            torques = torques + (np.eye(n) - Jt.T @ J_pinv.T) @ tau0
 
         self._last_state = TrackingSpringState(x, e_p, e_R, wrench, torques)
         return torques
@@ -348,28 +526,45 @@ class TrajectoryFollower:
         self.hold_stiffness: Optional[float] = None
         self.hold_rot_stiffness: Optional[float] = None
         self.hold_label = ""           # for messages, e.g. "tip_spring"
+        self._posture: Optional[np.ndarray] = None   # Cartesian paths: joints at start
 
     # ── commands ──
 
     def current_angles(self) -> np.ndarray:
         return np.array([self.arm.get_joint_angle(i) for i in range(self.arm.n_dof)])
 
-    def start(self, reference: JointTrajectoryReference, now: float,
+    def current_anchor_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """(attachment point, link rotation) where the arm is now, world."""
+        p, R, _ = self.arm.fk_and_jacobian_at(self.current_angles(), self.spring.link_name,
+                                              self.spring.local_attachment_point)
+        return np.asarray(p), np.asarray(R)
+
+    def start(self, reference, now: float,
               goal_tol_rad: Optional[Sequence[float]] = None,
               goal_time_tol_s: Optional[float] = None) -> tuple[bool, str]:
+        """Start a JointTrajectoryReference or a CartesianPathReference."""
         if self.state in (FollowerState.RUNNING, FollowerState.PAUSED):
             return False, "A trajectory is already running."
-        if reference.n_joints != self.arm.n_dof:
-            return False, f"Trajectory has {reference.n_joints} joints, arm has {self.arm.n_dof}."
         q_now = self.current_angles()
-        reference.prepend_start(q_now)
-        # Unwrapping may have shifted continuous joints by whole turns; FK
-        # doesn't care, and errors are wrapped, so compare wrapped.
-        start_err = np.abs(wrap_angle(reference.positions[0] - q_now))
-        if np.max(start_err) > self.cfg.start_tol_rad:
-            j = int(np.argmax(start_err))
-            return False, (f"Trajectory starts {start_err[j]:.3f} rad from the current pose on "
-                           f"joint {j + 1} (allowed {self.cfg.start_tol_rad:.3f}).")
+        if isinstance(reference, CartesianPathReference):
+            p_now, R_now = self.current_anchor_pose()
+            reference.prepend_start(p_now, R_now)
+            self._posture = q_now                 # posture term holds the start joints
+            self.spring.set_rotation_axes(reference.rotation_axes)
+            goal_tol_rad = np.full(self.arm.n_dof, np.inf)   # no joint goal to check
+        else:
+            if reference.n_joints != self.arm.n_dof:
+                return False, (f"Trajectory has {reference.n_joints} joints, "
+                               f"arm has {self.arm.n_dof}.")
+            reference.prepend_start(q_now)
+            # Unwrapping may have shifted continuous joints by whole turns; FK
+            # doesn't care, and errors are wrapped, so compare wrapped.
+            start_err = np.abs(wrap_angle(reference.positions[0] - q_now))
+            if np.max(start_err) > self.cfg.start_tol_rad:
+                j = int(np.argmax(start_err))
+                return False, (f"Trajectory starts {start_err[j]:.3f} rad from the current pose "
+                               f"on joint {j + 1} (allowed {self.cfg.start_tol_rad:.3f}).")
+            self.spring.set_rotation_axes(None)  # joint plans hold the full orientation
         self.reference = reference
         default_tol = self.cfg.goal_tol_rad if self.cfg.goal_tol_rad > 0 else np.inf
         self._goal_tol = (np.full(self.arm.n_dof, default_tol) if goal_tol_rad is None
@@ -454,7 +649,8 @@ class TrajectoryFollower:
             self._ended_at = now
         q = self.current_angles()
         qdot = np.asarray(self.arm.joint_velocities, dtype=float)
-        joint_err = np.abs(wrap_angle(ref.positions[-1] - q))
+        joint_err = (np.zeros(self.arm.n_dof) if isinstance(ref, CartesianPathReference)
+                     else np.abs(wrap_angle(ref.positions[-1] - q)))
         # The anchor is now the final pose: how hard would the spring that
         # holds it from here on be pulling?
         k_hold = self.spring.stiffness if self.hold_stiffness is None else self.hold_stiffness
@@ -497,6 +693,11 @@ class TrajectoryFollower:
         return None
 
     def _set_anchor_at(self, t: float, moving: bool) -> None:
+        if isinstance(self.reference, CartesianPathReference):
+            p, R, v, w = self.reference.sample(t)
+            twist = np.concatenate([v, w]) if moving else np.zeros(6)
+            self.spring.set_anchor(p, R, twist, self._posture)
+            return
         q_d, qd_d = self.reference.sample(t)
         p, R, J = self.arm.fk_and_jacobian_at(q_d, self.spring.link_name,
                                               self.spring.local_attachment_point)
