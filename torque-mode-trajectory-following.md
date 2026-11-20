@@ -44,7 +44,16 @@ ros2 action send_goal /spring_trajectory_controller/follow_joint_trajectory \
 
 Watch it:
 - `ros2 topic echo /virtual_spring_node/trajectory/state`: state, trajectory
-  time, cross-fade weight, position/rotation error (10 Hz; recorded in the bag)
+  time, cross-fade weight, position/rotation error, and `springs` — the
+  tracking spring's current parameters and weight, and each spring on the
+  same link (e.g. `tip_spring`) with the stiffness it pulls with now and
+  its full stiffness, so you can watch the hand-over (10 Hz; in the bag).
+  The action's own feedback can't carry this: FollowJointTrajectory
+  feedback has no text field.
+- When a goal ends (success, abort or cancel), its result message ends with
+  which springs now hold the gripper, e.g. `Active springs: tracking spring
+  (60 N/m, 6 N*m/rad) holding the gripper where it ended; tip_spring (10 N/m)
+  faded out until ~/trajectory/release.` Also in the spring node's log.
 - `ros2 run tf2_ros tf2_echo j2s7s300_link_base j2s7s300_ee_link`: where the
   gripper actually is, in the same frame and point as the anchor
 
@@ -63,7 +72,7 @@ Write them as floats (`60.0`, not `60`).
 
 | Parameter | Default | First-run config | What it does |
 |---|---|---|---|
-| `stiffness` | 300 N/m | 40 | Pull toward the anchor position. Higher = tracks closer, feels stiffer when pushed. |
+| `stiffness` | 300 N/m | 60 | Pull toward the anchor position. Higher = tracks closer, feels stiffer when pushed. 40 was too soft (lag + stick-slip): see caveats. |
 | `damping` | 30 N·s/m | 5 | Damps the *difference* between planned and actual gripper velocity, so it doesn't drag against the plan. |
 | `rot_stiffness` | 10 N·m/rad | 6 | Pull toward the anchor orientation. 2 was too weak for the Gen2 wrist: see caveats. |
 | `rot_damping` | 0.2 N·m·s/rad | 0.1 | Keep ≤ 0.2: 1.0 gave a wrist limit cycle in simulation. |
@@ -72,26 +81,35 @@ Write them as floats (`60.0`, not `60`).
 | `null_stiffness` | 2 N·m/rad | (default) | Posture pull toward the planned joint angles, in motions that don't move the gripper. Raise if joint 3 (elbow roll) ends off the plan. |
 | `null_damping` | 0.5 N·m·s/rad | (default) | Damps those motions. |
 
-Rough feel: at 40 N/m a 5 cm error pulls with 2 N. At 6 N·m/rad a 0.3 rad
+Rough feel: at 60 N/m a 5 cm error pulls with 3 N. At 6 N·m/rad a 0.3 rad
 twist pushes with 1.8 N·m (at 2 N·m/rad it was 0.6 N·m).
 
-### Pausing and finishing
+### Pausing and finishing: limits on spring pull, not distance
 
-| Parameter | Default | What it does |
-|---|---|---|
-| `pause_error_m` | 0.08 m | If the gripper is further than this from the anchor, trajectory time stops (the anchor waits for the arm). |
-| `pause_error_rad` | 0.5 rad | Same, for orientation. |
-| (fixed) resume at 60 % | | Time restarts only when **both** errors are below 60 % of the pause thresholds: 4.8 cm and 0.30 rad by default. |
-| `pause_timeout_sec` | 10 s | Paused longer than this: aborted ("Held off the path…"). |
-| `goal_tolerance_rad` | 0.05 rad | At the end, **every joint** must be within this of the last point… |
-| (fixed) 0.02 rad/s | | …and every joint slower than this. |
-| `goal_time_tolerance_sec` | 2 s | How long after the plan's end it may take to get there before aborting. |
-| `start_tolerance_rad` | 0.05 rad | Only if the goal has a point at t = 0: how close that point must be to the arm. |
+Both are set as **how hard a spring pulls**, so the allowed error follows
+from spring strength: distance = force ÷ stiffness, angle = moment ÷
+rot_stiffness. A softer spring is automatically more forgiving.
 
-A goal can override the end tolerances itself: `goal_tolerance` per joint
-(0 = use the default, negative = don't check that joint) and
-`goal_time_tolerance`. `path_tolerance` in the goal is ignored; pausing
-replaces it.
+| Parameter | Default | First-run config | What it does |
+|---|---|---|---|
+| `pause_force_n` | 24 N | 4.8 (= 8 cm at 60 N/m) | Trajectory time stops (the anchor waits) when the **tracking** spring pulls harder than this. At steady state the spring pulls as hard as you push, so in practice: *pushed harder than this*. |
+| `pause_moment_nm` | 5 N·m | 3.0 (= 0.5 rad at 6 N·m/rad) | Same, for orientation. |
+| (fixed) resume at 60 % | | 2.9 N / 1.8 N·m (4.8 cm / 0.3 rad) | Time restarts when **both** drop below 60 % of the pause limits. |
+| `pause_timeout_sec` | 10 s | | Paused longer than this: aborted ("Held off the path…"). |
+| `goal_force_tolerance_n` | 4 N | 4 (= **40 cm** via the 10 N/m tip spring) | Done when the spring that **holds the gripper afterwards** would pull at most this. That's the same-link Cartesian spring(s) the trajectory fades out (`tip_spring`, 10 N/m), or the tracking spring if there are none. |
+| `goal_moment_tolerance_nm` | 1.2 N·m | 1.2 (= 0.2 rad) | Same for orientation, on the tracking spring's `rot_stiffness` (the tip spring has no orientation). |
+| `goal_tolerance_rad` | 0 (off) | 0 | Optional per-joint check on top; ≤ 0 = joints not checked. |
+| (fixed) 0.02 rad/s | | | Every joint must also have stopped. |
+| `goal_time_tolerance_sec` | 2 s | | How long after the plan's end it may take before aborting. |
+| `start_tolerance_rad` | 0.05 rad | | Only if the goal has a point at t = 0: how close that point must be to the arm. |
+
+**40 cm is very loose** — that's what 4 N on a 10 N/m spring means. Lower
+`goal_force_tolerance_n` (1 N = 10 cm) or stiffen the tip spring to tighten it.
+
+A goal can still ask for per-joint tolerances itself (`goal_tolerance`:
+positive = check that joint, 0 = use `goal_tolerance_rad`, negative = don't
+check) and `goal_time_tolerance`. `path_tolerance` in the goal is ignored;
+pausing replaces it.
 
 ### Speed limits and other settings
 
@@ -123,8 +141,11 @@ replaces it.
 | `Springs are still ramping in -- try again in a moment.` | Sent within 1.5 s of enable. | Wait. |
 | `Planned end-effector speed peaks at … m/s` | Too fast for `max_ee_speed_mps`. | Longer `time_from_start`. |
 | `Planned speed of j2s7s300_joint_N peaks at …` | Over a joint's URDF speed limit. | Use at least the duration it gives. |
-| `Held off the path for more than 10.0s (end-effector error X m, Y rad)` | Paused and never got back under 60 % of the pause thresholds. | If Y ≥ 0.3 rad: the wrist didn't turn; raise `rot_stiffness`/`max_moment`. If X ≥ 4.8 cm: raise `stiffness`/`max_force`, or something is holding the arm. |
-| `Not within goal tolerance 2.0s after the plan ended (worst joint N: … rad)` | Gripper may be fine, but a joint is off. | Joint 3: raise `null_stiffness`. Joint 7: raise `rot_stiffness`. Or loosen that joint's `goal_tolerance` in the goal. |
+| `Held off the path for more than 10.0s: spring pulling F N (X cm off) and M N*m (Y rad off); resumes below …` | Paused and the pull never dropped under 60 % of the pause limits. | If you weren't holding it: the spring can't move the arm against friction. M high: raise `rot_stiffness`/`max_moment`. F high: raise `stiffness`/`max_force`. Or raise `pause_force_n` / `pause_moment_nm`. |
+| `Not within goal tolerance 2.0s after the plan ended: spring force … (X cm off, tip_spring at 10 N/m; tolerance … cm)` | The holding spring would still pull more than `goal_force_tolerance_n`. | Raise `goal_force_tolerance_n`, or the arm really is far off. |
+| `…: spring moment … (Y rad off)` | Orientation off by more than `goal_moment_tolerance_nm` ÷ `rot_stiffness`. | Raise the moment tolerance or `rot_stiffness`. |
+| `…: joint N … rad off (goal tolerance …)` | Only if the goal (or `goal_tolerance_rad`) asked for per-joint tolerances. | Loosen them. |
+| `…: still moving` | Not stopped (> 0.02 rad/s) yet. | Longer `goal_time_tolerance`. |
 | `Stopped mid-trajectory: Torque control is not ENABLED…` | Torque dropped while running, usually the Gen2 firmware. | See firmware drop-outs. |
 | `Stopped mid-trajectory: Springs are disabled (~/enable or collision clamp).` | Collision clamp or `~/enable false`. | The log will show `SELF-COLLISION detected…` or `COLLISION WITH SCENE OBJECT` if it was the clamp. Move clear, then `~/enable true`. |
 | `Arm is in collision/DANGER -- not starting a trajectory.` | Start pose is under 1 cm from something. | Move clear first. |
@@ -138,13 +159,19 @@ spring stays faded out until `trajectory/release`.
 - **The Gen2 wrist needs more rotational stiffness than 2 N·m/rad.** All
   three aborts in the 2026-11-17 16:57 bag were rotation errors of 0.3–0.5 rad
   with the position within a few cm: 2 N·m/rad × 0.4 rad ≈ 0.8 N·m doesn't
-  overcome the wrist's friction. The first-run config now has
-  `rot_stiffness: 6.0`, `max_moment: 3.0` and `stiffness: 40.0`
-  (2026-11-19; not yet tried on the arm). Keep `rot_damping` ≤ 0.2.
-- **"Done" is judged per joint, but the spring acts on the gripper.** On a
-  7-DOF arm the gripper can be on target with joint 3 off (pushed sideways
-  by hand) or joint 7 off (wrist not turned). Only the weak posture term or
-  the rotation spring corrects those. Both caused goal-tolerance aborts.
+  overcome the wrist's friction. `rot_stiffness: 6.0` / `max_moment: 3.0`
+  fixed it on 2026-11-19 (aborts then were 0.13–0.15 rad). Keep
+  `rot_damping` ≤ 0.2.
+- **Too soft a position spring lags and stick-slips.** At 40 N/m
+  (2026-11-19 15:02 bag) the arm fell steadily behind to 8 cm, then stood
+  still at 7.5 cm — 3 N didn't beat friction and the gravity-comp error.
+  Joint 5 also **stick-slipped** (the "pulsing"): stuck for 0.6–0.8 s while
+  the spring torque built to ~0.13 N·m, lurched ~1.5°, stuck again, about
+  once a second. A softer spring makes each lurch bigger. Back at 60 N/m.
+  A future fix: per-joint friction feed-forward along the planned velocity.
+- **Joints used to be checked one by one at the end** (until 2026-11-19), which
+  failed whenever the 7-DOF arm's elbow (joint 3) or wrist (joint 7) settled
+  elsewhere with the gripper fine. Now the end is judged by spring pull.
 - **Single-point goals move at constant joint speed.** Without
   `velocities` in the points, the plan is interpolated linearly: the anchor
   starts and stops abruptly. MoveIt plans (many points, with velocities)

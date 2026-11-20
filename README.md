@@ -220,12 +220,21 @@ Code: `trajectory_spring.py` (math, ROS-free) and `trajectory_action.py`
   never switches modes. A goal is aborted with the reason otherwise. In
   `gen2_moveit_config` the controller is `spring_trajectory_controller`
   (`default: false` — select it per execution).
-- **Held back = it waits.** If the end effector is more than
-  `trajectory_spring.pause_error_m` (0.08 m) / `pause_error_rad` (0.5) off
-  the anchor, trajectory time stops and the anchor waits; it resumes below
-  60 % of those. Held longer than `pause_timeout_sec` (10 s) → aborted, and
-  the anchor re-seeds where the arm is (it never snaps toward where the plan
-  had got to).
+- **Held back = it waits.** If the tracking spring pulls harder than
+  `trajectory_spring.pause_force_n` (24 N) / `pause_moment_nm` (5 N·m) —
+  in effect, someone pushes harder than that — trajectory time stops and
+  the anchor waits; it resumes below 60 % of those. Held longer than
+  `pause_timeout_sec` (10 s) → aborted, and the anchor re-seeds where the
+  arm is (it never snaps toward where the plan had got to).
+- **Done = the holding spring is content.** After the plan's end it
+  succeeds when the spring that holds the gripper afterwards (the
+  same-link tip-hold spring, else the tracking spring) would pull at most
+  `goal_force_tolerance_n` (4 N) and the rotation at most
+  `goal_moment_tolerance_nm` (1.2 N·m): the allowed error follows from
+  spring strength. Joints aren't checked unless a goal asks. The result
+  message says which springs now hold the gripper; `~/trajectory/state`
+  carries the live spring parameters. Details and every parameter:
+  [torque-mode-trajectory-following.md](torque-mode-trajectory-following.md).
 - **Collision clamp / `~/enable(false)` / torque disabled** mid-trajectory →
   aborted, anchor re-seeded at the current pose. DANGER scaling applies to
   this spring like any other; gravity comp is never touched.
@@ -244,7 +253,9 @@ Parameters (`trajectory_spring.*`): `link` (default: first of
 `end_effector_link`, `j2s7s300_ee_link`, `tool0` in the URDF), `local_point`,
 `stiffness` 300 N/m, `damping` 30 N·s/m, `rot_stiffness` 10 N·m/rad,
 `rot_damping` 0.2 N·m·s/rad, `null_stiffness` 2, `null_damping` 0.5,
-`max_force` 40 N, `max_moment` 5 N·m, `goal_tolerance_rad` 0.05,
+`max_force` 40 N, `max_moment` 5 N·m, `pause_force_n` 24 N,
+`pause_moment_nm` 5 N·m, `goal_force_tolerance_n` 4 N,
+`goal_moment_tolerance_nm` 1.2 N·m, `goal_tolerance_rad` 0 (off),
 `goal_time_tolerance_sec` 2, `start_tolerance_rad` 0.05, `crossfade_sec` 1.
 
 **Keep `rot_damping` low.** Torque is held for a whole control tick, so a
