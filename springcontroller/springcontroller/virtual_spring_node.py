@@ -771,6 +771,13 @@ class VirtualSpringNode(Node):
         self._spring_forces_pub = self.create_publisher(
             SpringForces, "~/spring_forces", 10
         )
+        # Where every spring is, 10 Hz, from the control loop (so it matches
+        # the arm state the torques used): for each spring its attachment
+        # point in the world and what it pulls toward, plus the trajectory
+        # spring's anchor. Recorded in the launch files' bags, so a test's
+        # spring layout can always be reconstructed.
+        self._spring_states_pub = self.create_publisher(String, "~/spring_states", 10)
+        self._last_spring_states_pub = -1.0
 
         # (~/springs_updated publisher created earlier, above the
         # SpringCollection/_load_springs_from_params setup -- see there.)
@@ -1676,6 +1683,8 @@ class VirtualSpringNode(Node):
                 now.nanoseconds / 1e9, ready=not traj_reason, not_ready_reason=traj_reason,
                 springs_enabled=self._springs_on and torque_ok,
             )
+            if now.nanoseconds / 1e9 - self._last_spring_states_pub >= 0.1:
+                self._publish_spring_states(now, spring_scale)
 
             # Gravity comp must never be scaled by anything except the
             # add_gravity_compensation on/off switch itself -- scaling it
@@ -2058,6 +2067,50 @@ class VirtualSpringNode(Node):
                 spring.target_world_point.tolist(),
             )
         ])
+
+    def _publish_spring_states(self, now, spring_scale: float) -> None:
+        """~/spring_states: every spring's attachment point and target, world.
+
+        Called from _joint_state_cb (10 Hz), after the arm model was updated,
+        so positions match the torques computed this tick. Never raises: a
+        logging topic must not break the control loop.
+        """
+        self._last_spring_states_pub = now.nanoseconds / 1e9
+
+        def v3(a):
+            return None if a is None else [round(float(x), 5) for x in np.asarray(a).ravel()[:3]]
+
+        try:
+            springs = []
+            for s in self._springs:
+                d = {"name": s.name, "type": type(s).__name__,
+                     "enabled": bool(getattr(s, "enabled", True)),
+                     "stiffness": float(getattr(s, "stiffness", 0.0)),
+                     "damping": float(getattr(s, "damping", 0.0))}
+                if isinstance(s, JointSpring):
+                    d["joint"] = s.joint_name
+                    d["target_angle"] = float(s.target_angle)
+                    if s.joint_name in self._arm.joint_names:
+                        d["angle"] = round(float(self._arm.get_joint_angle(
+                            self._arm.joint_names.index(s.joint_name))), 5)
+                else:
+                    T = self._arm.get_link_transform(s.link_name)
+                    d["link"] = s.link_name
+                    d["local_point"] = v3(s.local_attachment_point)
+                    d["attachment_world"] = v3(T[:3, :3] @ np.asarray(s.local_attachment_point)
+                                               + T[:3, 3])
+                    d["target"] = v3(getattr(s, "target_world_point", None))
+                    if isinstance(s, PoseSpring):
+                        d["face_normal_world"] = v3(T[:3, :3] @ np.asarray(s.local_face_normal))
+                        d["position_center"] = v3(getattr(s, "position_center", None))
+                        d["position_radius"] = float(getattr(s, "position_radius", 0.0))
+                springs.append(d)
+            msg = {"t": round(now.nanoseconds / 1e9, 3), "frame": "world",
+                   "springs_on": bool(self._springs_on), "spring_scale": round(float(spring_scale), 3),
+                   "springs": springs, "trajectory": self._traj.anchor_report()}
+            self._spring_states_pub.publish(String(data=json.dumps(msg)))
+        except Exception as exc:          # pragma: no cover - logging must not stop control
+            self.get_logger().warn(f"~/spring_states failed: {exc}", throttle_duration_sec=10.0)
 
     def _publish_target(self, spring) -> None:
         """Broadcast a Cartesian-target spring's (VirtualSpring or

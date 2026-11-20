@@ -28,6 +28,7 @@ import numpy as np
 from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -35,7 +36,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from springcontroller.trajectory_spring import (
     INVALID_GOAL, INVALID_JOINTS, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, CartesianPathReference,
     FollowerConfig, FollowerOutcome, JointTrajectoryReference, TrackingPoseSpring,
-    TrajectoryFollower, _rotation_from_quat, wrap_angle,
+    TrajectoryFollower, _quat_from_rotation, _rotation_from_quat, wrap_angle,
 )
 from springcontroller.virtual_spring import VirtualSpring
 
@@ -124,6 +125,9 @@ class TrajectoryActionGlue:
         self._last_state_pub = -1.0
 
         self._state_pub = node.create_publisher(String, "~/trajectory/state", 10)
+        # The tracking spring's anchor (where it pulls the attachment point
+        # to), 10 Hz while it has one; also inside ~/trajectory/state.
+        self._anchor_pub = node.create_publisher(PoseStamped, "~/trajectory/anchor", 10)
         if not self.available:
             log.warn("trajectory_spring: no end-effector link found "
                      f"(tried {list(DEFAULT_LINKS)}; set trajectory_spring.link) -- "
@@ -394,9 +398,43 @@ class TrajectoryActionGlue:
             state["rotation_error_rad"] = round(
                 float(np.linalg.norm(self.spring.last_state.rotation_error)), 4)
         state["springs"] = self._springs_report()
+        anchor = self.anchor_report()
+        if anchor is not None:
+            state["anchor"] = anchor
+            self._publish_anchor_pose(anchor)
         with self._lock:
             self._last_state = state
         self._state_pub.publish(String(data=json.dumps(state)))
+
+    def anchor_report(self) -> Optional[dict]:
+        """Where the tracking spring is pulling to and from, world frame;
+        None without an anchor. For bags: enough to redraw the spring."""
+        s = self.spring
+        if not s.has_anchor:
+            return None
+        q = _quat_from_rotation(s.anchor_rotation)                 # w, x, y, z
+        report = {
+            "frame": self._base_frame,
+            "position": [round(float(v), 5) for v in s.anchor_position],
+            "orientation_xyzw": [round(float(v), 6) for v in (q[1], q[2], q[3], q[0])],
+            "rotation_axes": (None if s.rotation_axes is None
+                              else np.round(s.rotation_axes, 5).tolist()),
+            "twist": [round(float(v), 5) for v in s.anchor_twist],
+        }
+        if s.last_state is not None:
+            report["attachment_point"] = [round(float(v), 5) for v in s.last_state.position]
+            report["force"] = [round(float(v), 4) for v in s.last_state.force[:3]]
+            report["moment"] = [round(float(v), 4) for v in s.last_state.force[3:]]
+        return report
+
+    def _publish_anchor_pose(self, anchor: dict) -> None:
+        msg = PoseStamped()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = anchor["frame"]
+        msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = anchor["position"]
+        (msg.pose.orientation.x, msg.pose.orientation.y,
+         msg.pose.orientation.z, msg.pose.orientation.w) = anchor["orientation_xyzw"]
+        self._anchor_pub.publish(msg)
 
     # ── action side (executor threads) ──
 

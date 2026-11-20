@@ -25,6 +25,7 @@ Differences from gen3_spring.launch.py
 """
 
 import os
+import re
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -62,6 +63,16 @@ GRIPPER_LOCKED_JOINTS = [
     "gripper_finger1_finger_tip_joint",
     "gripper_finger2_finger_tip_joint",
 ]
+
+
+def record_regex(topics):
+    """ros2 bag --regex matching every /virtual_spring_node/ topic plus
+    exactly the given topics (strings or launch substitutions); returned as
+    a substitution list launch concatenates."""
+    parts = ["^(/virtual_spring_node/.*"]
+    for t in topics:
+        parts += ["|", re.escape(t) if isinstance(t, str) else t]
+    return parts + [")$"]
 
 
 def generate_launch_description():
@@ -247,21 +258,22 @@ def generate_launch_description():
             # Unbuffered so a hard-killed recorder still leaves a readable
             # bag -- same reasoning as gen3_spring.launch.py.
             "--max-cache-size", "0",
-            LaunchConfiguration("joint_states_topic"),
-            "/virtual_spring_node/joint_torques",
-            "/virtual_spring_node/repulsion_torques",
-            "/virtual_spring_node/joint_limit_repulsion_torques",
-            "/virtual_spring_node/safety_status",
-            "/virtual_spring_node/springs_updated",
-            "/virtual_spring_node/spring_forces",
-            "/virtual_spring_node/trajectory/state",
-            "/tf",
-            "/tf_static",
-            "/gen2/joint_torque_command",
-            "/gen2_torque_control/status",
-            "/gen2_torque_control/move_status",
-            "/gen2_torque_control/firmware_gravity_torque",
-            "/rosout",
+            # One regex for everything: every virtual_spring_node topic --
+            # ~/spring_states (all spring locations), ~/trajectory/anchor,
+            # ~/target/<spring>, ... including ones created later (springs
+            # added at runtime) -- plus the bridge/TF topics by exact name.
+            # A single regex, not regex + topic list, so it doesn't depend on
+            # how ros2 bag combines the two.
+            "--regex", record_regex([LaunchConfiguration("joint_states_topic")] + [
+                "/tf",
+                "/tf_static",
+                "/gen2/joint_torque_command",
+                "/gen2_torque_control/status",
+                "/gen2_torque_control/move_status",
+                "/gen2_torque_control/firmware_gravity_torque",
+                "/gen2_torque_control/diagnostics",
+                "/rosout",
+            ]),
         ],
         cwd=LaunchConfiguration("rosbag_dir"),
         output="screen",

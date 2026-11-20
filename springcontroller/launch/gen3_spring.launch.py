@@ -63,6 +63,7 @@ Study-participant rosbag routing (participant_id:=... condition_name:=...)
 """
 
 import os
+import re
 import shutil
 from datetime import datetime
 
@@ -119,6 +120,15 @@ GRIPPER_LOCKED_JOINTS = [
     "robotiq_85_left_finger_tip_joint",
     "robotiq_85_right_finger_tip_joint",
 ]
+
+
+def record_regex(topics):
+    """ros2 bag --regex matching every /virtual_spring_node/ topic plus
+    exactly the given topics (strings or launch substitutions)."""
+    parts = ["^(/virtual_spring_node/.*"]
+    for t in topics:
+        parts += ["|", re.escape(t) if isinstance(t, str) else t]
+    return parts + [")$"]
 
 
 def generate_launch_description():
@@ -954,26 +964,24 @@ def generate_launch_description():
                     # lose that whole session's bag outright.
                     "--max-cache-size", "0",
                     *output_name_args,
-                    LaunchConfiguration("joint_states_topic"),
-                    "/kinova/joint_states_lowlevel",
-                    "/virtual_spring_node/joint_torques",
-                    "/virtual_spring_node/repulsion_torques",
-                    "/virtual_spring_node/joint_limit_repulsion_torques",
-                    "/virtual_spring_node/external_torque_estimate",
-                    "/virtual_spring_node/idle_amplification_torques",
-                    "/virtual_spring_node/idle_amplification_enabled_status",
-                    "/virtual_spring_node/safety_status",
-                    "/virtual_spring_node/springs_updated",
-                    "/virtual_spring_node/spring_forces",
-                    "/kinova/joint_torque_command",
-                    "/gen3_torque_control/status",
-                    "/gen3_torque_control/ee_pose",
-                    "/gen3_torque_control/move_status",
-                    "/gen3_torque_control/gripper_state",
-                    "/audio/audio",
-                    "/camera/image_raw_throttled/compressed",
-                    "/camera2/image_raw_throttled/compressed",
-                    "/rosout",
+                    # One regex for everything: every virtual_spring_node
+                    # topic (all spring locations on ~/spring_states, the
+                    # trajectory anchor, per-spring targets, ...) including
+                    # ones created later, plus these by exact name. A single
+                    # regex, not regex + topic list -- see gen2_spring.launch.py.
+                    "--regex", record_regex([
+                        LaunchConfiguration("joint_states_topic"),
+                        "/kinova/joint_states_lowlevel",
+                        "/kinova/joint_torque_command",
+                        "/gen3_torque_control/status",
+                        "/gen3_torque_control/ee_pose",
+                        "/gen3_torque_control/move_status",
+                        "/gen3_torque_control/gripper_state",
+                        "/audio/audio",
+                        "/camera/image_raw_throttled/compressed",
+                        "/camera2/image_raw_throttled/compressed",
+                        "/rosout",
+                    ]),
                 ],
                 cwd=bag_dir,
                 output="screen",
