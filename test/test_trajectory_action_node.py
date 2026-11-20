@@ -290,3 +290,29 @@ def test_abort_names_why_springs_stopped(h):
     assert h.run(2.0, until=rf.done)
     msg = rf.result().result.error_string
     assert rf.result().status == 6 and "Springs are disabled" in msg, msg
+
+
+def test_anchor_path_goal_closed_loop(h):
+    # FollowAnchorPath: the anchor point moves 5 cm up in the base frame,
+    # position only; the simulated arm follows and the goal succeeds.
+    from geometry_msgs.msg import Point
+    from rclpy.action import ActionClient
+    from springcontroller_interfaces.action import FollowAnchorPath
+    h.run(1.0)
+    p0, _, _ = h.arm.fk_and_jacobian_at(h.q, "j2s7s300_ee_link", np.zeros(3))
+    client = ActionClient(h.io, FollowAnchorPath,
+                          "/spring_trajectory_controller/follow_anchor_path")
+    assert client.wait_for_server(timeout_sec=5.0)
+    goal = FollowAnchorPath.Goal()
+    goal.points = [Point(x=float(p0[0]), y=float(p0[1]), z=float(p0[2] + 0.05))]
+    goal.times = [_dur(3.0)]
+    gf = client.send_goal_async(goal)
+    h.run(2.0, until=gf.done)
+    assert gf.done() and gf.result().accepted
+    rf = gf.result().get_result_async()
+    assert h.run(10.0, until=rf.done)
+    res = rf.result()
+    assert res.status == 4, res.result.error_string                 # SUCCEEDED
+    assert "Active springs" in res.result.active_springs
+    p, _, _ = h.arm.fk_and_jacobian_at(h.q, "j2s7s300_ee_link", np.zeros(3))
+    np.testing.assert_allclose(p, p0 + [0, 0, 0.05], atol=0.015)

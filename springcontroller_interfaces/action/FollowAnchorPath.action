@@ -1,0 +1,39 @@
+# Move the trajectory spring's anchor -- where its attachment point on the
+# gripper link (trajectory_spring.local_point) is pulled to -- through
+# points in any TF frame. The arm follows compliantly; no IK.
+# Served by virtual_spring_node on
+# /spring_trajectory_controller/follow_anchor_path.
+
+# Frame of points, orientation and the rotation axes. Empty frame_id = the
+# arm model's base frame (trajectory_spring.base_frame). Looked up once, at
+# goal start.
+std_msgs/Header header
+
+# Anchor positions to pass through, and when (from goal start; > 0,
+# strictly increasing). Each segment is a minimum-jerk move: the anchor is
+# at rest at every point.
+geometry_msgs/Point[] points
+builtin_interfaces/Duration[] times
+
+# Gripper orientation (default: position only). constrain_rotation[i] holds
+# the rotation about header frame axis i (x, y, z): the gripper turns from
+# where it is to `orientation` over the whole goal. false = that rotation is
+# free (no rotational spring about it). All false = position only.
+geometry_msgs/Quaternion orientation
+bool[3] constrain_rotation
+---
+# Same codes as control_msgs/FollowJointTrajectory.
+int32 SUCCESSFUL = 0
+int32 INVALID_GOAL = -1
+int32 PATH_TOLERANCE_VIOLATED = -4
+int32 GOAL_TOLERANCE_VIOLATED = -5
+int32 error_code
+string error_string
+# Which springs hold the gripper now that the goal has ended.
+string active_springs
+---
+string state                  # RUNNING, PAUSED (anchor waiting) or HOLDING
+float64 time_from_start       # path time; stops while paused
+float64 position_error_m      # anchor point vs the attachment point
+float64 rotation_error_rad    # about the constrained axes only
+string springs                # JSON: the springs acting now (see ~/trajectory/state)

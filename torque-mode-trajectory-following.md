@@ -62,6 +62,63 @@ After it ends, the spring keeps holding the final pose until the next goal or:
 ros2 service call /virtual_spring_node/trajectory/release std_srvs/srv/Trigger
 ```
 
+## World-frame goals: `FollowAnchorPath`
+
+`/spring_trajectory_controller/follow_anchor_path`
+(`springcontroller_interfaces/action/FollowAnchorPath`) moves the spring's
+**anchor** — where its attachment point on the gripper link is pulled to —
+through points in any TF frame. No IK: the arm finds its own joints, and the
+posture term keeps them near where they started.
+
+- `points` + `times`: where the anchor goes and when (from goal start, > 0,
+  increasing). Each segment is a minimum-jerk move, at rest at every point.
+  Its peak speed is 1.875 × the segment's average and must stay under
+  `max_ee_speed_mps` (0.10 m/s: 0.4 m needs ≥ 7.5 s).
+- `header.frame_id`: frame of everything in the goal; empty = the base frame
+  (`trajectory_spring.base_frame`, `world`). Other frames are looked up in
+  TF once, at goal start (`robot_state_publisher` provides the arm's links).
+- **Orientation is free by default** (position only). `constrain_rotation`
+  `[x, y, z]` holds the rotation about each axis of the goal frame, turning
+  from the current orientation to `orientation` over the whole goal. Free
+  axes get no rotational spring and no rotational damping; the error on the
+  held axes is exact (swing–twist), not a small-angle approximation.
+- Pausing, finishing, the springs reports and the abort messages work as
+  for joint-space goals. Feedback here does carry text: `state`,
+  `time_from_start`, both errors and `springs` (JSON). The result adds
+  `active_springs`.
+
+```
+# Anchor to A, position only, 15 s
+ros2 action send_goal --feedback /spring_trajectory_controller/follow_anchor_path \
+  springcontroller_interfaces/action/FollowAnchorPath \
+  "{points: [{x: -0.40, y: 0.00, z: 0.50}], times: [{sec: 15}]}"
+
+# A -> B in a straight line (0.57 m: >= 10.6 s), gripper pointing down
+# (tool z = -world z: 180 deg about x), yaw free
+ros2 action send_goal --feedback /spring_trajectory_controller/follow_anchor_path \
+  springcontroller_interfaces/action/FollowAnchorPath \
+  "{points: [{x: 0.00, y: -0.40, z: 0.50}], times: [{sec: 12}], \
+    orientation: {x: 1.0, y: 0.0, z: 0.0, w: 0.0}, constrain_rotation: [true, true, false]}"
+
+# A point in another frame: 10 cm along j2s7s300_ee_link's own +z axis from
+# where that link is now (looked up once at goal start; check which way its
+# z points with tf2_echo or armviz before trying it)
+ros2 action send_goal /spring_trajectory_controller/follow_anchor_path \
+  springcontroller_interfaces/action/FollowAnchorPath \
+  "{header: {frame_id: j2s7s300_ee_link}, points: [{x: 0.0, y: 0.0, z: 0.10}], times: [{sec: 5}]}"
+```
+
+Caveats specific to anchor paths:
+- **No reachability or collision pre-check.** The anchor goes exactly where
+  you say; a point the arm can't reach, or a line through the table, just
+  stalls against the arm (pause → abort) or the collision clamp / repulsion.
+- **The straight line is the anchor's, not the joints'.** Long moves that
+  swing the base a lot may take the elbow somewhere odd; the posture term
+  only gently prefers the start joints.
+- **Gripper rotation speed isn't checked**, only anchor speed.
+- Needs `springcontroller_interfaces` rebuilt; without it the node logs
+  `FollowAnchorPath ... (rebuild it)` and serves only the joint-space action.
+
 ## Parameters
 
 All `trajectory_spring.*` parameters are read **once at startup**: edit the
@@ -121,6 +178,8 @@ pausing replaces it.
 | `link` | first of `end_effector_link`, `j2s7s300_ee_link`, `tool0` | | Link the spring is attached to. |
 | `local_point` | [0, 0, 0] | | Attachment point in that link's frame. |
 | `action_name` | `/spring_trajectory_controller/follow_joint_trajectory` | | |
+| `anchor_action_name` | `/spring_trajectory_controller/follow_anchor_path` | | World-frame goals. |
+| `base_frame` | `world` | | Frame of the arm model; FollowAnchorPath goals are transformed into it. |
 
 ### Node-wide settings that affect trajectories
 

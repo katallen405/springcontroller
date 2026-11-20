@@ -33,11 +33,16 @@ from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 from springcontroller.trajectory_spring import (
-    INVALID_GOAL, INVALID_JOINTS, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, FollowerConfig,
-    FollowerOutcome, JointTrajectoryReference, TrackingPoseSpring, TrajectoryFollower,
-    wrap_angle,
+    INVALID_GOAL, INVALID_JOINTS, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, CartesianPathReference,
+    FollowerConfig, FollowerOutcome, JointTrajectoryReference, TrackingPoseSpring,
+    TrajectoryFollower, _rotation_from_quat, wrap_angle,
 )
 from springcontroller.virtual_spring import VirtualSpring
+
+try:   # needs springcontroller_interfaces rebuilt with action/FollowAnchorPath
+    from springcontroller_interfaces.action import FollowAnchorPath
+except ImportError:                          # pragma: no cover - depends on the install
+    FollowAnchorPath = None
 
 DEFAULT_LINKS = ("end_effector_link", "j2s7s300_ee_link", "tool0")
 
@@ -98,6 +103,13 @@ class TrajectoryActionGlue:
         self._crossfade_sec = max(1e-3, p("trajectory_spring.crossfade_sec", 1.0))
         action_name = p("trajectory_spring.action_name",
                         "/spring_trajectory_controller/follow_joint_trajectory")
+        anchor_action_name = p("trajectory_spring.anchor_action_name",
+                               "/spring_trajectory_controller/follow_anchor_path")
+        # The arm model's world frame: FollowAnchorPath goals are transformed
+        # into it. The URDF root link (world for the Gen2/Gen3 flat URDFs).
+        self._base_frame = p("trajectory_spring.base_frame", "world")
+        self._tf_buffer = None
+        self._last_state: Optional[dict] = None   # latest ~/trajectory/state, for feedback
 
         self._lock = threading.Lock()
         self._pending: Optional[_Command] = None
@@ -126,6 +138,19 @@ class TrajectoryActionGlue:
                             callback_group=group)
         log.info(f"trajectory_spring: FollowJointTrajectory on {action_name}, "
                  f"spring on {link} at {local_point}.")
+        if FollowAnchorPath is None:
+            log.warn("trajectory_spring: springcontroller_interfaces has no FollowAnchorPath "
+                     "(rebuild it) -- anchor-path server not started.")
+            return
+        from tf2_ros import Buffer, TransformListener
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, node)
+        self._anchor_server = ActionServer(
+            node, FollowAnchorPath, anchor_action_name,
+            execute_callback=self._execute_anchor, goal_callback=self._goal_cb,
+            cancel_callback=lambda gh: CancelResponse.ACCEPT, callback_group=group)
+        log.info(f"trajectory_spring: FollowAnchorPath on {anchor_action_name} "
+                 f"(points in any TF frame, base frame '{self._base_frame}').")
 
     def _declare(self, name, default):
         # virtual_spring_node's config-file loader declares every key in the
@@ -199,14 +224,21 @@ class TrajectoryActionGlue:
                 # Prepend the start before checking speeds: a goal with no
                 # t=0 point is otherwise a single held point here, and its
                 # first segment (from the arm to the plan) went unchecked.
-                ref.prepend_start(self.follower.current_angles())
-                too_fast = self._peak_ee_speed(ref)
-                joint_msg = self._joint_speed_violation(ref)
+                if isinstance(ref, CartesianPathReference):
+                    ref.prepend_start(*self.follower.current_anchor_pose())
+                    too_fast = ref.peak_speed()       # the anchor's own speed
+                    joint_msg = ""                    # no joint plan to check
+                else:
+                    ref.prepend_start(self.follower.current_angles())
+                    too_fast = self._peak_ee_speed(ref)
+                    joint_msg = self._joint_speed_violation(ref)
                 if too_fast > self._max_ee_speed:
                     cmd.ok, cmd.message = False, (
                         f"Planned end-effector speed peaks at {too_fast:.2f} m/s, above "
                         f"trajectory_spring.max_ee_speed_mps={self._max_ee_speed:.2f}. "
-                        "Plan with a lower velocity scaling.")
+                        + ("Use longer times between points."
+                           if isinstance(ref, CartesianPathReference)
+                           else "Plan with a lower velocity scaling."))
                 elif joint_msg:
                     cmd.ok, cmd.message = False, joint_msg
                 else:
@@ -362,6 +394,8 @@ class TrajectoryActionGlue:
             state["rotation_error_rad"] = round(
                 float(np.linalg.norm(self.spring.last_state.rotation_error)), 4)
         state["springs"] = self._springs_report()
+        with self._lock:
+            self._last_state = state
         self._state_pub.publish(String(data=json.dumps(state)))
 
     # ── action side (executor threads) ──
@@ -429,40 +463,118 @@ class TrajectoryActionGlue:
             ref, goal_tol, gtt, code, message = self.goal_to_reference(goal_handle.request)
             if ref is None:
                 return self._end(goal_handle, result, "abort", code, message)
-            self._outcome_event.clear()
-            with self._lock:
-                self._outcome = None
-            cmd = self._post(_Command("start", reference=ref, goal_tol=goal_tol,
-                                      goal_time_tol=gtt))
-            if not cmd.ok:
-                return self._end(goal_handle, result, "abort", INVALID_GOAL, cmd.message)
-            cancel_sent = False
-            while not self._outcome_event.wait(0.1):
-                if goal_handle.is_cancel_requested and not cancel_sent:
-                    cancel_sent = True
-                    self._post(_Command("cancel"))
-                with self._lock:
-                    fb, self._feedback = self._feedback, None
-                if fb is not None:
-                    goal_handle.publish_feedback(self._feedback_msg(*fb))
-                if not self._node.context.ok():
-                    return self._end(goal_handle, result, "abort",
-                                     PATH_TOLERANCE_VIOLATED, "Shutting down.")
-            with self._lock:
-                outcome = self._outcome
-            if goal_handle.is_cancel_requested:
-                return self._end(goal_handle, result, "canceled", SUCCESSFUL, outcome.message)
-            return self._end(goal_handle, result, "succeed" if outcome.succeeded else "abort",
-                             outcome.error_code, outcome.message)
+            return self._run_goal(goal_handle, result, ref, goal_tol, gtt,
+                                  self._joint_feedback_msg)
         finally:
             with self._lock:
                 self._goal_active = False
+
+    def _joint_feedback_msg(self):
+        with self._lock:
+            fb, self._feedback = self._feedback, None
+        return None if fb is None else self._feedback_msg(*fb)
+
+    def _run_goal(self, goal_handle, result, ref, goal_tol, gtt, make_feedback):
+        """Start ref on the control loop, publish feedback every 0.1 s until
+        it ends, handle cancel. Shared by both action servers."""
+        self._outcome_event.clear()
+        with self._lock:
+            self._outcome = None
+        cmd = self._post(_Command("start", reference=ref, goal_tol=goal_tol, goal_time_tol=gtt))
+        if not cmd.ok:
+            return self._end(goal_handle, result, "abort", INVALID_GOAL, cmd.message)
+        cancel_sent = False
+        while not self._outcome_event.wait(0.1):
+            if goal_handle.is_cancel_requested and not cancel_sent:
+                cancel_sent = True
+                self._post(_Command("cancel"))
+            fb = make_feedback()
+            if fb is not None:
+                goal_handle.publish_feedback(fb)
+            if not self._node.context.ok():
+                return self._end(goal_handle, result, "abort",
+                                 PATH_TOLERANCE_VIOLATED, "Shutting down.")
+        with self._lock:
+            outcome = self._outcome
+        if goal_handle.is_cancel_requested:
+            return self._end(goal_handle, result, "canceled", SUCCESSFUL, outcome.message)
+        return self._end(goal_handle, result, "succeed" if outcome.succeeded else "abort",
+                         outcome.error_code, outcome.message)
+
+    # ── FollowAnchorPath ──
+
+    def anchor_goal_to_reference(self, goal):
+        """(CartesianPathReference or None, error_code, message)."""
+        n = len(goal.points)
+        if n == 0:
+            return None, INVALID_GOAL, "Goal has no points."
+        if len(goal.times) != n:
+            return None, INVALID_GOAL, f"{n} points but {len(goal.times)} times."
+        frame = goal.header.frame_id or self._base_frame
+        R_tf, t_tf = np.eye(3), np.zeros(3)
+        if frame != self._base_frame:
+            if self._tf_buffer is None:
+                return None, INVALID_GOAL, "No TF listener; give points in the base frame."
+            try:
+                from rclpy.duration import Duration
+                from rclpy.time import Time
+                tf = self._tf_buffer.lookup_transform(self._base_frame, frame, Time(),
+                                                      timeout=Duration(seconds=1.0))
+            except Exception as exc:           # tf2 raises several exception types
+                return None, INVALID_GOAL, (f"Can't transform '{frame}' to "
+                                            f"'{self._base_frame}': {exc}")
+            r, tr = tf.transform.rotation, tf.transform.translation
+            R_tf = _rotation_from_quat([r.w, r.x, r.y, r.z])
+            t_tf = np.array([tr.x, tr.y, tr.z])
+        points = [R_tf @ np.array([pt.x, pt.y, pt.z]) + t_tf for pt in goal.points]
+        times = [_seconds(d) for d in goal.times]
+        constrained = [i for i in range(3) if goal.constrain_rotation[i]]
+        rotation = None
+        if constrained:
+            o = goal.orientation
+            if np.linalg.norm([o.w, o.x, o.y, o.z]) < 1e-9:
+                return None, INVALID_GOAL, "orientation is not a valid quaternion."
+            rotation = R_tf @ _rotation_from_quat([o.w, o.x, o.y, o.z])
+        axes = np.array([R_tf[:, i] for i in constrained]).reshape(-1, 3)
+        try:
+            ref = CartesianPathReference(times, points, rotation=rotation, rotation_axes=axes)
+        except ValueError as exc:
+            return None, INVALID_GOAL, str(exc)
+        return ref, SUCCESSFUL, ""
+
+    def _execute_anchor(self, goal_handle):
+        result = FollowAnchorPath.Result()
+        try:
+            ref, code, message = self.anchor_goal_to_reference(goal_handle.request)
+            if ref is None:
+                return self._end(goal_handle, result, "abort", code, message)
+            return self._run_goal(goal_handle, result, ref, None, None,
+                                  self._anchor_feedback_msg)
+        finally:
+            with self._lock:
+                self._goal_active = False
+
+    def _anchor_feedback_msg(self):
+        with self._lock:
+            state = self._last_state
+        if state is None:
+            return None
+        fb = FollowAnchorPath.Feedback()
+        fb.state = state["state"]
+        fb.time_from_start = float(state["t"])
+        fb.position_error_m = float(state.get("position_error_m", 0.0))
+        fb.rotation_error_rad = float(state.get("rotation_error_rad", 0.0))
+        fb.springs = json.dumps(state["springs"])
+        return fb
 
     def _end(self, goal_handle, result, how, code, message):
         # FollowJointTrajectory feedback has no text field, but the result's
         # error_string is free text (also on success): say which springs now
         # hold the gripper. Live values are on ~/trajectory/state.
-        message = f"{message} {self._active_springs_text()}"
+        springs_text = self._active_springs_text()
+        message = f"{message} {springs_text}"
+        if hasattr(result, "active_springs"):          # FollowAnchorPath
+            result.active_springs = springs_text
         result.error_code = code
         result.error_string = message
         getattr(goal_handle, how)()

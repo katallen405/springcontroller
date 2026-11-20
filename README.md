@@ -235,6 +235,10 @@ Code: `trajectory_spring.py` (math, ROS-free) and `trajectory_action.py`
   message says which springs now hold the gripper; `~/trajectory/state`
   carries the live spring parameters. Details and every parameter:
   [torque-mode-trajectory-following.md](torque-mode-trajectory-following.md).
+- **World-frame goals:** `/spring_trajectory_controller/follow_anchor_path`
+  (`springcontroller_interfaces/action/FollowAnchorPath`) moves the spring's
+  anchor through points in any TF frame, no IK; orientation is free unless
+  you hold individual rotation axes. See the same doc.
 - **Collision clamp / `~/enable(false)` / torque disabled** mid-trajectory →
   aborted, anchor re-seeded at the current pose. DANGER scaling applies to
   this spring like any other; gravity comp is never touched.
