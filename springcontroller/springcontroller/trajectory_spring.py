@@ -293,11 +293,22 @@ class FollowerState(enum.Enum):
 
 @dataclass
 class FollowerConfig:
-    pause_error_m: float = 0.08
-    pause_error_rad: float = 0.5
-    resume_fraction: float = 0.6       # resume once errors < this × the pause thresholds
+    # Pause (freeze trajectory time) when the tracking spring pulls harder
+    # than this: the allowed lag follows from its strength (force / stiffness,
+    # moment / rot_stiffness; unsaturated). Defaults = 8 cm / 0.5 rad at the
+    # default 300 N/m / 10 N*m/rad.
+    pause_force_n: float = 24.0
+    pause_moment_nm: float = 5.0
+    resume_fraction: float = 0.6       # resume once both are < this × the pause limits
     pause_timeout_s: float = 10.0
-    goal_tol_rad: float = 0.05         # per joint, at the end of the plan
+    # Done when the spring that holds the final pose afterwards pulls with at
+    # most this force/moment -- see TrajectoryFollower.hold_stiffness. A
+    # softer spring is automatically more forgiving.
+    goal_force_tol_n: float = 4.0
+    goal_moment_tol_nm: float = 1.2
+    # Per-joint check on top of that, at the end of the plan; <= 0 = off. A
+    # goal's own goal_tolerance entries still apply.
+    goal_tol_rad: float = 0.0
     stopped_vel_rad_s: float = 0.02
     goal_time_tol_s: float = 2.0
     start_tol_rad: float = 0.05        # first point vs current pose
@@ -329,7 +340,14 @@ class TrajectoryFollower:
         self._paused_since: Optional[float] = None
         self._ended_at: Optional[float] = None
         self._goal_time_tol = config.goal_time_tol_s
-        self._goal_tol = np.full(arm.n_dof, config.goal_tol_rad)
+        self._goal_tol = np.full(arm.n_dof, config.goal_tol_rad if config.goal_tol_rad > 0
+                                 else np.inf)
+        # Stiffness of the static spring(s) that hold the gripper after the
+        # trajectory (e.g. the tip-hold spring); the end tolerance is
+        # goal_force_tol_n / hold_stiffness. None = the tracking spring's own.
+        self.hold_stiffness: Optional[float] = None
+        self.hold_rot_stiffness: Optional[float] = None
+        self.hold_label = ""           # for messages, e.g. "tip_spring"
 
     # ── commands ──
 
@@ -353,7 +371,8 @@ class TrajectoryFollower:
             return False, (f"Trajectory starts {start_err[j]:.3f} rad from the current pose on "
                            f"joint {j + 1} (allowed {self.cfg.start_tol_rad:.3f}).")
         self.reference = reference
-        self._goal_tol = (np.full(self.arm.n_dof, self.cfg.goal_tol_rad) if goal_tol_rad is None
+        default_tol = self.cfg.goal_tol_rad if self.cfg.goal_tol_rad > 0 else np.inf
+        self._goal_tol = (np.full(self.arm.n_dof, default_tol) if goal_tol_rad is None
                           else np.asarray(goal_tol_rad, dtype=float))
         self._goal_time_tol = (self.cfg.goal_time_tol_s if goal_time_tol_s is None
                                else goal_time_tol_s)
@@ -403,21 +422,28 @@ class TrajectoryFollower:
 
         e_p, e_R = self.spring.pose_error(self.arm)
         ep, eR = float(np.linalg.norm(e_p)), float(np.linalg.norm(e_R))
+        # How hard the tracking spring is pulling (unsaturated).
+        pull_f = self.spring.stiffness * ep
+        pull_m = self.spring.rot_stiffness * eR
         if self.state is FollowerState.RUNNING:
-            if ep > cfg.pause_error_m or eR > cfg.pause_error_rad:
+            if pull_f > cfg.pause_force_n or pull_m > cfg.pause_moment_nm:
                 self.state = FollowerState.PAUSED
                 self._paused_since = now
             else:
                 self.t_traj += dt
         if self.state is FollowerState.PAUSED:
-            if (ep < cfg.resume_fraction * cfg.pause_error_m
-                    and eR < cfg.resume_fraction * cfg.pause_error_rad):
+            if (pull_f < cfg.resume_fraction * cfg.pause_force_n
+                    and pull_m < cfg.resume_fraction * cfg.pause_moment_nm):
                 self.state = FollowerState.RUNNING
                 self._paused_since = None
             elif now - self._paused_since > cfg.pause_timeout_s:
-                return self.stop(PATH_TOLERANCE_VIOLATED,
-                                 f"Held off the path for more than {cfg.pause_timeout_s:.1f}s "
-                                 f"(end-effector error {ep:.3f} m, {eR:.2f} rad).")
+                return self.stop(
+                    PATH_TOLERANCE_VIOLATED,
+                    f"Held off the path for more than {cfg.pause_timeout_s:.1f}s: spring "
+                    f"pulling {pull_f:.1f} N ({ep * 100:.1f} cm off) and {pull_m:.2f} N*m "
+                    f"({eR:.2f} rad off); resumes below "
+                    f"{cfg.resume_fraction * cfg.pause_force_n:.1f} N and "
+                    f"{cfg.resume_fraction * cfg.pause_moment_nm:.2f} N*m.")
 
         ref = self.reference
         self._set_anchor_at(self.t_traj, moving=self.state is FollowerState.RUNNING)
@@ -429,15 +455,42 @@ class TrajectoryFollower:
         q = self.current_angles()
         qdot = np.asarray(self.arm.joint_velocities, dtype=float)
         joint_err = np.abs(wrap_angle(ref.positions[-1] - q))
-        if np.all(joint_err <= self._goal_tol) and np.all(np.abs(qdot) <= cfg.stopped_vel_rad_s):
+        # The anchor is now the final pose: how hard would the spring that
+        # holds it from here on be pulling?
+        k_hold = self.spring.stiffness if self.hold_stiffness is None else self.hold_stiffness
+        kr_hold = (self.spring.rot_stiffness if self.hold_rot_stiffness is None
+                   else self.hold_rot_stiffness)
+        force = k_hold * ep
+        moment = kr_hold * eR
+        force_ok = force <= cfg.goal_force_tol_n
+        moment_ok = moment <= cfg.goal_moment_tol_nm
+        joints_ok = bool(np.all(joint_err <= self._goal_tol))
+        stopped = bool(np.all(np.abs(qdot) <= cfg.stopped_vel_rad_s))
+        if force_ok and moment_ok and joints_ok and stopped:
             self.state = FollowerState.HOLDING      # anchor stays on the final pose
             self.reference = None
             return FollowerOutcome(SUCCESSFUL, True, "Trajectory finished.")
         if now - self._ended_at > self._goal_time_tol:
+            why = []
+            if not force_ok:
+                src = (f"{self.hold_label} at {k_hold:g} N/m" if self.hold_label
+                       else f"{k_hold:g} N/m")
+                tol_cm = cfg.goal_force_tol_n / k_hold * 100    # k_hold > 0 here: force > tol >= 0
+                why.append(f"spring force {force:.2f} N > {cfg.goal_force_tol_n:.2f} N "
+                           f"({ep * 100:.1f} cm off, {src}; tolerance {tol_cm:.1f} cm)")
+            if not moment_ok:
+                why.append(f"spring moment {moment:.2f} N*m > {cfg.goal_moment_tol_nm:.2f} N*m "
+                           f"({eR:.2f} rad off)")
+            if not joints_ok:
+                j = int(np.argmax(joint_err - self._goal_tol))
+                why.append(f"joint {j + 1} {joint_err[j]:.3f} rad off (goal tolerance "
+                           f"{self._goal_tol[j]:.3f})")
+            if not stopped:
+                why.append("still moving")
             outcome = FollowerOutcome(
                 GOAL_TOLERANCE_VIOLATED, False,
-                f"Not within goal tolerance {self._goal_time_tol:.1f}s after the plan ended "
-                f"(worst joint {int(np.argmax(joint_err)) + 1}: {np.max(joint_err):.3f} rad).")
+                f"Not within goal tolerance {self._goal_time_tol:.1f}s after the plan ended: "
+                + "; ".join(why) + ".")
             self.hold_current()
             self.reference = None
             return outcome

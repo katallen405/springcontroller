@@ -24,16 +24,33 @@
     # (planned - actual), so it doesn't drag against the plan the way a
     # plain -b*v damper would.
     #
-    # 2026-11-19: rotation up, position down. On 2026-11-17 every abort was
-    # the wrist not turning (0.3-0.5 rad rotation error, position within a
-    # few cm): rot_stiffness 2 / max_moment 1.5 gave < 1 N*m, under the
-    # wrist's friction. Position had margin, so stiffness 60 -> 40: ~3 N at
-    # the 8 cm pause threshold, ~2 N at the 4.8 cm resume threshold.
+    # 2026-11-19: rot_stiffness 2 -> 6 and max_moment 1.5 -> 3 fixed the
+    # wrist (2026-11-17 aborts were 0.3-0.5 rad: < 1 N*m didn't beat the
+    # wrist's friction). stiffness 60 -> 40 was too soft: the arm lagged to
+    # 8 cm and stalled at 7.5 cm (3 N), and joint 5 stick-slipped (~1 Hz
+    # "pulsing": sticks while torque builds to ~0.13 N*m, then lurches ~1.5
+    # deg). Back to 60.
+    #
+    # Pause and end limits are on how hard a spring pulls, not on distance,
+    # so the allowed error follows from spring strength:
+    #   pause when the tracking spring pulls > pause_force_n / pause_moment_nm
+    #     (4.8 N / 60 N/m = 8 cm; 3.0 N*m / 6 N*m/rad = 0.5 rad), resume
+    #     below 60 % of that (4.8 cm, 0.3 rad).
+    #   done when the spring that holds afterwards -- the 10 N/m tip_spring
+    #     above -- would pull <= goal_force_tolerance_n: 4 N / 10 N/m = 40 cm
+    #     (!). Orientation uses the tracking spring's rot_stiffness (the tip
+    #     spring has none): 1.2 N*m / 6 N*m/rad = 0.2 rad.
+    #   Joints aren't checked (goal_tolerance_rad 0) unless a goal asks.
     trajectory_spring:
-      stiffness:        40.0     # N/m (was 60)
+      stiffness:        60.0     # N/m
       damping:          5.0      # N*s/m
-      rot_stiffness:    6.0      # N*m/rad (was 2)
+      rot_stiffness:    6.0      # N*m/rad
       rot_damping:      0.1      # N*m*s/rad -- keep <= 0.2 (wrist limit cycle in sim at 1.0)
       max_force:        10.0     # N
-      max_moment:       3.0      # N*m (was 1.5)
+      max_moment:       3.0      # N*m
       max_ee_speed_mps: 0.10     # goals planned faster than this are rejected
+      pause_force_n:    4.8      # N    (8 cm at 60 N/m)
+      pause_moment_nm:  3.0      # N*m  (0.5 rad at 6 N*m/rad)
+      goal_force_tolerance_n:   4.0   # N    (40 cm via the 10 N/m tip spring)
+      goal_moment_tolerance_nm: 1.2   # N*m  (0.2 rad)
+      goal_tolerance_rad:       0.0   # per joint; 0 = not checked

@@ -229,7 +229,10 @@ def test_config_file_sets_trajectory_spring_params():
     try:
         traj = harness.node._traj
         assert traj.available
-        assert traj.spring.stiffness == 40.0
+        assert traj.spring.stiffness == 60.0
+        assert traj.follower.cfg.pause_force_n == 4.8
+        assert traj.follower.cfg.goal_force_tol_n == 4.0
+        assert traj.follower.cfg.goal_tol_rad == 0.0
         assert traj.spring.rot_stiffness == 6.0
         assert traj.spring.max_moment == 3.0
         assert traj.spring.rot_damping == 0.1

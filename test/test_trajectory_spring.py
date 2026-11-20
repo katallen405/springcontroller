@@ -297,13 +297,64 @@ def test_long_hold_aborts():
 
 def test_goal_time_tolerance_when_arm_cannot_reach():
     dq = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8])
-    cfg = FollowerConfig(goal_time_tol_s=0.5, pause_error_m=10.0, pause_error_rad=10.0)
+    # With a spring this weak, any end error is a tiny pull, so the default
+    # force/moment tolerances would call it done -- intended. Ask for tight ones.
+    cfg = FollowerConfig(goal_time_tol_s=0.5, pause_force_n=1e6, pause_moment_nm=1e6,
+                         goal_force_tol_n=1e-4, goal_moment_tol_nm=1e-4)
     # Too weak to beat the joint friction and finish within the tolerance.
     sim = Sim(Q0, cfg=cfg, stiffness=0.0, damping=0.0, rot_stiffness=0.01, rot_damping=0.0,
               null_stiffness=0.0, null_damping=0.0)
     sim.follower.start(JointTrajectoryReference(*plan(Q0, dq, duration=0.5)), sim.t)
     sim.run(2.0)
     assert sim.outcomes and sim.outcomes[0].error_code == GOAL_TOLERANCE_VIOLATED
+    assert "spring moment" in sim.outcomes[0].message
+
+
+def _end_with_hand(hold_stiffness, hand_n=3.0, goal_tol=None, cfg=None):
+    """Short plan; a constant hand force keeps the gripper ~1 cm off the end
+    (3 N on the 300 N/m tracking spring). Returns the outcome."""
+    dq = np.array([0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    sim = Sim(Q0, cfg=cfg)
+    sim.follower.hold_stiffness = hold_stiffness
+    sim.follower.hold_label = "tip_spring"
+    ok, msg = sim.follower.start(JointTrajectoryReference(*plan(Q0, dq, duration=1.0)), sim.t,
+                                 goal_tol_rad=goal_tol)
+    assert ok, msg
+    sim.hand_force = np.array([0.0, 0.0, hand_n])
+    sim.run(5.0)
+    assert sim.outcomes, "no outcome"
+    return sim.outcomes[0]
+
+
+def test_end_tolerance_follows_hold_spring_stiffness():
+    # Same ~1 cm end error: a 10 N/m holding spring pulls ~0.1 N (done); a
+    # 1000 N/m one would pull ~10 N, over the 4 N default (abort).
+    assert _end_with_hand(10.0).error_code == SUCCESSFUL
+    out = _end_with_hand(1000.0)
+    assert out.error_code == GOAL_TOLERANCE_VIOLATED
+    assert "spring force" in out.message and "tip_spring at 1000 N/m" in out.message
+
+
+def test_joints_unchecked_by_default_but_goal_tolerance_applies():
+    assert _end_with_hand(10.0).error_code == SUCCESSFUL           # joints off, not checked
+    out = _end_with_hand(10.0, goal_tol=np.full(7, 1e-5))          # the goal asks
+    assert out.error_code == GOAL_TOLERANCE_VIOLATED and "joint" in out.message
+
+
+def test_pause_is_a_force_limit():
+    # At steady state the spring pulls as hard as the hand pushes, whatever
+    # its stiffness: so the pause limit is "pushed harder than X N".
+    dq = np.array([0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    for pause_n, expect_pause in [(24.0, False), (5.0, True)]:
+        sim = Sim(Q0, cfg=FollowerConfig(pause_force_n=pause_n))
+        sim.follower.start(JointTrajectoryReference(*plan(Q0, dq)), sim.t)
+        sim.run(0.5)
+        sim.hand_force = -10.0 * _travel_direction(sim, dq)
+        paused = False
+        for _ in range(150):
+            sim.run(0.01)
+            paused |= sim.follower.state is FollowerState.PAUSED
+        assert paused == expect_pause, (pause_n, paused)
 
 
 def test_start_rejected_far_from_plan():

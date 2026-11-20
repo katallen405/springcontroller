@@ -83,10 +83,14 @@ class TrajectoryActionGlue:
             max_moment=p("trajectory_spring.max_moment", 5.0),
         )
         self.follower = TrajectoryFollower(self.spring, arm, FollowerConfig(
-            pause_error_m=p("trajectory_spring.pause_error_m", 0.08),
-            pause_error_rad=p("trajectory_spring.pause_error_rad", 0.5),
+            # Limits on how hard a spring pulls, not on distance: the allowed
+            # error follows from the spring's strength (see FollowerConfig).
+            pause_force_n=p("trajectory_spring.pause_force_n", 24.0),
+            pause_moment_nm=p("trajectory_spring.pause_moment_nm", 5.0),
             pause_timeout_s=p("trajectory_spring.pause_timeout_sec", 10.0),
-            goal_tol_rad=p("trajectory_spring.goal_tolerance_rad", 0.05),
+            goal_force_tol_n=p("trajectory_spring.goal_force_tolerance_n", 4.0),
+            goal_moment_tol_nm=p("trajectory_spring.goal_moment_tolerance_nm", 1.2),
+            goal_tol_rad=p("trajectory_spring.goal_tolerance_rad", 0.0),   # <= 0: joints unchecked
             goal_time_tol_s=p("trajectory_spring.goal_time_tolerance_sec", 2.0),
             start_tol_rad=p("trajectory_spring.start_tolerance_rad", 0.05),
         ))
@@ -206,6 +210,7 @@ class TrajectoryActionGlue:
                 elif joint_msg:
                     cmd.ok, cmd.message = False, joint_msg
                 else:
+                    self._set_hold_stiffness()
                     cmd.ok, cmd.message = self.follower.start(
                         ref, now, cmd.kw.get("goal_tol"), cmd.kw.get("goal_time_tol"))
                     if cmd.ok:
@@ -255,10 +260,31 @@ class TrajectoryActionGlue:
             peak = max(peak, float(np.linalg.norm(J[:3] @ qd)))
         return peak
 
+    def _same_link_springs(self) -> list:
+        """The Cartesian springs on the tracking spring's link (e.g. the Gen2
+        tip-hold spring): faded out while a trajectory runs, back after release."""
+        return [s for s in self._springs
+                if isinstance(s, VirtualSpring) and s.link_name == self.spring.link_name]
+
+    def _set_hold_stiffness(self) -> None:
+        """The end tolerance follows from the spring(s) that hold the gripper
+        after release. Use their own stiffness -- the saved value if a
+        previous trajectory already faded them out."""
+        springs = self._same_link_springs()
+        k = sum(self._suspended[s][0] if s in self._suspended else s.stiffness
+                for s in springs)
+        if springs and k > 0:
+            self.follower.hold_stiffness = k
+            self.follower.hold_label = "+".join(s.name for s in springs)
+        else:                          # nothing else holds it: the tracking spring's own
+            self.follower.hold_stiffness = None
+            self.follower.hold_label = ""
+        # Those springs have no orientation; the tracking spring's rot_stiffness applies.
+        self.follower.hold_rot_stiffness = None
+
     def _suspend_same_link_springs(self) -> None:
-        for spring in self._springs:
-            if (isinstance(spring, VirtualSpring) and spring.link_name == self.spring.link_name
-                    and spring not in self._suspended):
+        for spring in self._same_link_springs():
+            if spring not in self._suspended:
                 self._suspended[spring] = (spring.stiffness, spring.damping)
 
     def _retarget_suspended_springs(self) -> None:
@@ -340,7 +366,9 @@ class TrajectoryActionGlue:
                 continuous_mask=self._arm.continuous_joint_mask())
         except ValueError as exc:
             return None, None, None, INVALID_GOAL, str(exc)
-        goal_tol = np.full(len(arm_names), self.follower.cfg.goal_tol_rad)
+        base_tol = self.follower.cfg.goal_tol_rad
+        # <= 0: joints not checked unless the goal asks (the spring-force check decides).
+        goal_tol = np.full(len(arm_names), base_tol if base_tol > 0 else np.inf)
         for tol in goal.goal_tolerance:
             if tol.name in arm_names and tol.position != 0.0:
                 goal_tol[arm_names.index(tol.name)] = (np.inf if tol.position < 0
