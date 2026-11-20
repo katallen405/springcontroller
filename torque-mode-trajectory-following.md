@@ -213,6 +213,28 @@ After any abort or cancel, the tracking spring holds the arm **where it
 stopped**, not where the plan had got to, so nothing snaps. The tip-hold
 spring stays faded out until `trajectory/release`.
 
+## Replaying a test from its bag
+
+The launch files' bags record every `/virtual_spring_node/` topic, including
+`~/spring_states` (every spring's attachment point and target, 10 Hz) and
+the trajectory anchor in `~/trajectory/state`. To see a test again:
+
+```
+source ~/sandbox/install/setup.bash
+~/.springcontroller_venv/bin/python springcontroller/tools/bag_replay.py \
+  ~/gen2_bags/rosbag2_2026_11_20-13_29_35 --start 140      # --robot gen3 for Gen3 bags
+# -> writes rosbag2_..._replay.html next to the bag; open it in a browser
+```
+
+The page is a 3-D replay (arm, gripper path and pointing axis, anchor path
+and target axis, the springs' pulls and lines to their targets, scene boxes)
+with a scrub bar and linked charts of error, pull, moment and the wrist
+joints, plus the bag's torque / trajectory / collision events. It reads the
+bag only. For bags from before 2026-11-20 the anchor is estimated from the
+recorded spring torques and the page says so (a median 1.4 cm from the exact
+anchor on the 2026-11-20 test). The page loads plotly from a CDN, so it needs
+internet.
+
 ## Caveats
 
 - **The Gen2 wrist needs more rotational stiffness than 2 N·m/rad.** All

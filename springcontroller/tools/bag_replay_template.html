@@ -1,0 +1,415 @@
+<title>Anchor Path Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: lab-notebook replay -- 3-D scene + readouts on top, scrub bar, then linked strip charts. */
+:root {
+  --bg: #f5f7f9;
+  --surface: #fcfdfd;
+  --ink: #12161b;
+  --ink-2: #4b535c;
+  --ink-3: #78818b;
+  --rule: #dde2e8;
+  --grid: #e9edf1;
+  --gripper: #2a78d6;      /* where the gripper was */
+  --anchor: #eb6834;       /* tracking spring: anchor and pull */
+  --tip: #1baf7a;          /* tip-hold spring */
+  --arm: #8c949c;
+  --paused: rgba(235, 104, 52, 0.10);
+  --table: #c9ced4;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111417; --surface: #171b1f; --ink: #eef1f4; --ink-2: #b9c0c8; --ink-3: #8a929b;
+    --rule: #2a3037; --grid: #222830; --gripper: #3987e5; --anchor: #d95926; --tip: #199e70;
+    --arm: #9aa2ab; --paused: rgba(217, 89, 38, 0.16); --table: #3a4048; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111417; --surface: #171b1f; --ink: #eef1f4; --ink-2: #b9c0c8; --ink-3: #8a929b;
+  --rule: #2a3037; --grid: #222830; --gripper: #3987e5; --anchor: #d95926; --tip: #199e70;
+  --arm: #9aa2ab; --paused: rgba(217, 89, 38, 0.16); --table: #3a4048; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px;
+  line-height: 1.5;
+}
+.wrap {
+  max-width: 1180px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+header h1 { font-size: 1.5rem; font-weight: 600; margin: 0; text-wrap: balance; }
+header p { margin: 4px 0 0; color: var(--ink-2); max-width: 75ch; }
+.meta { font-family: var(--font-data); font-size: 0.78rem; color: var(--ink-3); }
+.top { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; }
+@media (max-width: 900px) { .top { grid-template-columns: minmax(0, 1fr); } }
+.scene {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+  height: 520px; min-width: 0;
+}
+@media (max-width: 600px) { .scene { height: 400px; } }
+aside { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; }
+.panel h2 {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3);
+  margin: 0 0 8px; font-weight: 500;
+}
+.readout { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.86rem; }
+.readout dt { color: var(--ink-2); }
+.readout dd { margin: 0; font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; }
+.legend { display: flex; flex-direction: column; gap: 6px; font-size: 0.84rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 18px; height: 3px; border-radius: 2px; flex: none; }
+.sw.dash { background: none; border-top: 2px dashed; height: 0; }
+.chip {
+  display: inline-block; font-family: var(--font-data); font-size: 0.75rem; font-weight: 500;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink);
+}
+.chip[data-s="RUNNING"] { border-color: var(--gripper); }
+.chip[data-s="PAUSED"] { border-color: var(--anchor); background: var(--paused); }
+.chip[data-s="HOLDING"] { border-color: var(--ink-3); }
+.bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px;
+}
+.bar button {
+  font: inherit; font-size: 0.86rem; padding: 5px 12px; border-radius: 4px; cursor: pointer;
+  background: var(--ink); color: var(--bg); border: 1px solid var(--ink);
+}
+.bar button.ghost { background: transparent; color: var(--ink); border-color: var(--rule); }
+.bar button:focus-visible, .bar input:focus-visible, .bar select:focus-visible { outline: 2px solid var(--gripper); outline-offset: 2px; }
+.bar input[type=range] { flex: 1 1 240px; min-width: 0; accent-color: var(--anchor); }
+.bar select { font: inherit; font-size: 0.84rem; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 4px; }
+.time { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 0.9rem; min-width: 12ch; }
+.charts { display: flex; flex-direction: column; gap: 4px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 6px; }
+.chart { height: 150px; position: relative; min-width: 0; }
+.cursor { position: absolute; top: 6px; bottom: 26px; width: 1px; background: var(--ink); opacity: 0.55; pointer-events: none; }
+.findings ol { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 8px; max-width: 78ch; }
+.findings li { color: var(--ink); }
+.findings button { font: inherit; font-family: var(--font-data); font-size: 0.8rem; background: none; border: none; color: var(--gripper); cursor: pointer; padding: 0; text-decoration: underline; }
+.findings p { margin: 10px 0 0; color: var(--ink-2); font-size: 0.86rem; max-width: 78ch; }
+details { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; }
+summary { cursor: pointer; color: var(--ink-2); }
+.tablewrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; font-family: var(--font-data); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+th, td { padding: 3px 10px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--ink-3); font-weight: 500; }
+td:nth-child(2), th:nth-child(2) { text-align: left; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="h1">Spring replay</h1>
+    <p id="summary"></p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="top">
+    <div class="scene" id="scene" role="img" aria-label="3-D view of the arm, the gripper's path and the spring anchor's path"></div>
+    <aside>
+      <div class="panel">
+        <h2>At <span id="tnow">—</span> <span class="chip" id="chip">—</span></h2>
+        <dl class="readout">
+          <dt>Path time</dt><dd id="r-pt">—</dd>
+          <dt>Anchor − gripper</dt><dd id="r-ep">—</dd>
+          <dt>Gripper tilt error</dt><dd id="r-er">—</dd>
+          <dt>Tracking pull</dt><dd id="r-f">—</dd>
+          <dt>Tracking moment</dt><dd id="r-m">—</dd>
+          <dt>Other springs' pull</dt><dd id="r-tip">—</dd>
+          <dt>Joints 5 / 6 / 7</dt><dd id="r-q">—</dd>
+        </dl>
+      </div>
+      <div class="panel">
+        <h2>In the 3-D view</h2>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--arm)"></i>Arm (joint states)</span>
+          <span><i class="sw" style="background:var(--gripper)"></i>Gripper point: trail, now, pointing axis</span>
+          <span><i class="sw" style="background:var(--anchor)"></i>Tracking anchor: trail, now, target axis</span>
+          <span><i class="sw" style="background:var(--anchor);height:5px"></i>Tracking pull on the gripper (1 cm per N)</span>
+          <span><i class="sw dash" style="border-color:var(--tip)"></i>Other springs (e.g. tip hold): attachment to target</span>
+          <span><i class="sw" style="background:var(--table)"></i>Collision-scene boxes</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="bar">
+    <button id="play" type="button">Play</button>
+    <input id="scrub" type="range" min="0" value="0" step="1" aria-label="Time in the bag">
+    <span class="time" id="tlabel">—</span>
+    <label for="speed" class="meta">Speed</label>
+    <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+    <button id="toPause" class="ghost" type="button">Jump to first pause</button>
+  </div>
+
+  <div class="charts" id="charts">
+    <div class="chart" id="c-ep"></div>
+    <div class="chart" id="c-er"></div>
+    <div class="chart" id="c-f"></div>
+    <div class="chart" id="c-m"></div>
+    <div class="chart" id="c-q"></div>
+  </div>
+
+  <section class="panel findings">
+    <h2>Events in the bag (click a time to jump there)</h2>
+    <ol id="findings"></ol>
+    <p id="method"></p>
+  </section>
+
+  <details>
+    <summary>Data table (every 0.5 s)</summary>
+    <div class="tablewrap"><table id="tbl"></table></div>
+  </details>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script>
+const D = __DATA__;
+const N = D.t.length;
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, n = 2) => (v == null || Number.isNaN(v) ? "—" : v.toFixed(n));
+const norm = (v) => (v ? Math.hypot(v[0], v[1], v[2]) : null);
+const firstRun = D.state.findIndex((s) => s === "RUNNING");
+const i0 = Math.max(0, firstRun);            // trails start at the first trajectory
+const firstPause = D.state.findIndex((s) => s === "PAUSED");
+const robot = D.robot === "gen3" ? "Gen3" : "Gen2";
+document.getElementById("h1").textContent = `${robot} spring replay`;
+document.title = `${D.bag} replay`;
+const nAbort = D.events.filter((e) => /abort/.test(e[2])).length;
+const nStart = D.events.filter((e) => e[2] === "Trajectory started.").length;
+document.getElementById("summary").textContent =
+  `${nStart} trajectory goal${nStart === 1 ? "" : "s"}, ${nAbort} abort${nAbort === 1 ? "" : "s"}. ` +
+  `Anchor: ${D.anchor_source}. Spring targets: ${D.springs_source}.`;
+document.getElementById("meta").textContent =
+  `${D.bag} · bag time ${D.t[0].toFixed(1)}–${D.t[N - 1].toFixed(1)} s · ${D.dt} s steps`;
+
+// ── state intervals for shading ──
+const intervals = [];
+for (let i = 0; i < N; i++) {
+  const last = intervals[intervals.length - 1];
+  if (last && last.s === D.state[i]) last.b = D.t[i]; else intervals.push({ s: D.state[i], a: D.t[i], b: D.t[i] });
+}
+
+// ── 3-D scene ──
+const sceneEl = document.getElementById("scene");
+function sceneTraces(i) {
+  const L = D.links[i], x = D.x[i], a = D.anchor[i], F = D.F[i], gz = D.gz[i], az = D.az[i];
+  const trail = (arr) => { const xs = [], ys = [], zs = []; for (let k = i0; k <= i; k++) { const p = arr[k]; if (p) { xs.push(p[0]); ys.push(p[1]); zs.push(p[2]); } } return { x: xs, y: ys, z: zs }; };
+  const seg = (p, q) => (p && q ? { x: [p[0], q[0]], y: [p[1], q[1]], z: [p[2], q[2]] } : { x: [], y: [], z: [] });
+  // Other springs: one dashed segment per spring, NaN-separated in one trace.
+  const sx = [], sy = [], sz = [], tx = [], ty = [], tz = [];
+  for (const [, p, q] of D.springs[i] || []) {
+    if (!p || !q) continue;
+    sx.push(p[0], q[0], NaN); sy.push(p[1], q[1], NaN); sz.push(p[2], q[2], NaN);
+    tx.push(q[0]); ty.push(q[1]); tz.push(q[2]);
+  }
+  const fEnd = a && F ? [x[0] + F[0] * 0.01, x[1] + F[1] * 0.01, x[2] + F[2] * 0.01] : null;
+  return [
+    { ...trail(D.x) },
+    { ...trail(D.anchor) },
+    { x: L.map((p) => p[0]), y: L.map((p) => p[1]), z: L.map((p) => p[2]) },
+    { x: [x[0]], y: [x[1]], z: [x[2]] },
+    a ? { x: [a[0]], y: [a[1]], z: [a[2]] } : { x: [], y: [], z: [] },
+    fEnd ? seg(x, fEnd) : seg(null),
+    fEnd ? { x: [fEnd[0]], y: [fEnd[1]], z: [fEnd[2]] } : { x: [], y: [], z: [] },
+    seg(x, [x[0] + gz[0] * 0.08, x[1] + gz[1] * 0.08, x[2] + gz[2] * 0.08]),
+    a && az ? seg(a, [a[0] + az[0] * 0.08, a[1] + az[1] * 0.08, a[2] + az[2] * 0.08]) : seg(null),
+    { x: sx, y: sy, z: sz },
+    { x: tx, y: ty, z: tz, text: (D.springs[i] || []).map((s) => s[0]) },
+  ];
+}
+function buildScene() {
+  const c = { g: css("--gripper"), a: css("--anchor"), t: css("--tip"), arm: css("--arm"), ink: css("--ink-2"), grid: css("--grid"), tab: css("--table") };
+  const st = sceneTraces(0);
+  const line = (col, w, dash) => ({ type: "scatter3d", mode: "lines", line: { color: col, width: w, dash: dash || "solid" }, hoverinfo: "skip", showlegend: false });
+  const pt = (col, size, sym) => ({ type: "scatter3d", mode: "markers", marker: { color: col, size, symbol: sym || "circle", line: { color: css("--surface"), width: 2 } }, showlegend: false });
+  const traces = [
+    { ...line(c.g, 4), ...st[0], name: "gripper trail" },
+    { ...line(c.a, 4), ...st[1], name: "anchor trail" },
+    { type: "scatter3d", mode: "lines+markers", line: { color: c.arm, width: 9 }, marker: { color: c.arm, size: 4 }, showlegend: false, hoverinfo: "skip", ...st[2] },
+    { ...pt(c.g, 6), ...st[3], name: "gripper", hovertemplate: "gripper<br>%{x:.3f}, %{y:.3f}, %{z:.3f}<extra></extra>" },
+    { ...pt(c.a, 6, "diamond"), ...st[4], name: "anchor", hovertemplate: "anchor<br>%{x:.3f}, %{y:.3f}, %{z:.3f}<extra></extra>" },
+    { ...line(c.a, 10), ...st[5] },
+    { ...pt(c.a, 4, "diamond-open"), ...st[6], hoverinfo: "skip" },
+    { ...line(c.g, 5), ...st[7] },
+    { ...line(c.a, 5, "dash"), ...st[8] },
+    { ...line(c.t, 4, "dash"), ...st[9] },
+    { ...pt(c.t, 5, "square"), ...st[10], name: "spring target", hovertemplate: "%{text} target<br>%{x:.3f}, %{y:.3f}, %{z:.3f}<extra></extra>" },
+    // Collision-scene boxes: top faces.
+    ...(D.scene || []).map((b) => {
+      const [cx, cy, cz] = b.center, [sx2, sy2, sz2] = b.size.map((v) => v / 2), z = cz + sz2;
+      return { type: "mesh3d", name: b.name, x: [cx - sx2, cx + sx2, cx + sx2, cx - sx2], y: [cy - sy2, cy - sy2, cy + sy2, cy + sy2],
+               z: [z, z, z, z], i: [0, 0], j: [1, 2], k: [2, 3], color: c.tab, opacity: 0.35, hoverinfo: "skip", showscale: false };
+    }),
+  ];
+  // Axes: a cube around everything the arm reached, so lengths look true.
+  const P = D.links.flat().concat(D.anchor.filter(Boolean));
+  const lo = [0, 1, 2].map((k) => Math.min(...P.map((p) => p[k]))), hi = [0, 1, 2].map((k) => Math.max(...P.map((p) => p[k])));
+  const half = Math.max(...[0, 1, 2].map((k) => hi[k] - lo[k])) / 2 + 0.08, mid = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+  const rng = (k) => [mid[k] - half, mid[k] + half];
+  const ax = (title, range) => ({ title: { text: title, font: { color: c.ink, size: 11 } }, range, gridcolor: c.grid, zerolinecolor: c.grid, color: c.ink, backgroundcolor: "rgba(0,0,0,0)", showbackground: false, tickfont: { size: 10 } });
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)", margin: { l: 0, r: 0, t: 0, b: 0 }, font: { family: css("--font-body") },
+    scene: {
+      xaxis: ax("x (m)", rng(0)), yaxis: ax("y (m)", rng(1)), zaxis: ax("z (m)", rng(2)),
+      aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 1 },
+      camera: { eye: { x: -1.25, y: -1.45, z: 0.75 }, center: { x: 0, y: 0, z: -0.1 } },
+    },
+    showlegend: false, uirevision: "keep",
+  };
+  Plotly.newPlot(sceneEl, traces, layout, { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["toImage"] });
+}
+function updateScene(i) {
+  const st = sceneTraces(i);
+  const idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  Plotly.restyle(sceneEl, { x: idx.map((k) => st[k].x), y: idx.map((k) => st[k].y), z: idx.map((k) => st[k].z) }, idx);
+}
+
+// ── strip charts ──
+const live = (i) => D.state[i] !== "IDLE";
+const capLine = (v, unit) => (v ? [{ y: v, label: `cap ${v} ${unit}` }] : []);
+const charts = [
+  { id: "c-ep", title: "Anchor − gripper (cm)", series: [{ y: D.ep.map((v, i) => (live(i) ? v : null)), color: "--anchor", name: "position error" }] },
+  { id: "c-er", title: "Rotation error (rad, held axes)", series: [{ y: D.eR.map((v, i) => (live(i) ? v : null)), color: "--anchor", name: "rotation error" }] },
+  { id: "c-f", title: "Pull on the gripper (N)", legend: true, series: [
+      { y: D.F.map((v, i) => (live(i) ? norm(v) : null)), color: "--anchor", name: "tracking spring" },
+      { y: D.Ftip.map(norm), color: "--tip", name: "other springs" }],
+    lines: capLine((D.caps || {}).max_force, "N") },
+  { id: "c-m", title: "Tracking moment (N·m)", series: [{ y: D.M.map((v, i) => (live(i) ? norm(v) : null)), color: "--anchor", name: "moment" }],
+    lines: capLine((D.caps || {}).max_moment, "N·m") },
+  { id: "c-q", title: "Wrist joints (rad)", legend: true, axis: true, series: [
+      { y: D.q.map((q) => q[4]), color: "--ink", dash: "solid", name: "joint 5" },
+      { y: D.q.map((q) => q[5]), color: "--ink-2", dash: "dash", name: "joint 6" },
+      { y: D.q.map((q) => q[6]), color: "--ink-3", dash: "dot", name: "joint 7" }] },
+];
+function buildCharts() {
+  const ink2 = css("--ink-2"), ink3 = css("--ink-3"), grid = css("--grid"), paused = css("--paused");
+  for (const ch of charts) {
+    const el = document.getElementById(ch.id);
+    const traces = ch.series.map((s) => ({
+      x: D.t, y: s.y, type: "scatter", mode: "lines", name: s.name, connectgaps: false,
+      line: { color: css(s.color), width: 2, dash: s.dash || "solid" },
+      hovertemplate: `${s.name}: %{y:.2f}<extra></extra>`,
+    }));
+    const shapes = intervals.filter((v) => v.s === "PAUSED").map((v) => ({
+      type: "rect", xref: "x", yref: "paper", x0: v.a, x1: v.b + 0.05, y0: 0, y1: 1, fillcolor: paused, line: { width: 0 }, layer: "below" }));
+    const annotations = [{ xref: "paper", yref: "paper", x: 0, y: 1.0, xanchor: "left", yanchor: "bottom", text: ch.title, showarrow: false, font: { size: 11, color: ink2 } }];
+    for (const l of ch.lines || []) {
+      shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: l.y, y1: l.y, line: { color: ink3, width: 1, dash: "dot" } });
+      annotations.push({ xref: "paper", x: 1, y: l.y, xanchor: "right", yanchor: "bottom", text: l.label, showarrow: false, font: { size: 10, color: ink3 } });
+    }
+    if (ch.legend) {
+      ch.series.forEach((s, k) => {
+        const yv = s.y; let j = N - 1; while (j > 0 && yv[j] == null) j--;
+        annotations.push({ x: D.t[j], y: yv[j], xanchor: "left", text: " " + s.name, showarrow: false, font: { size: 10, color: ink2 } });
+      });
+    }
+    const layout = {
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 44, r: 92, t: 18, b: ch.axis ? 26 : 8 }, font: { family: css("--font-body"), size: 10, color: ink2 },
+      xaxis: { range: [D.t[0], D.t[N - 1]], showticklabels: !!ch.axis, gridcolor: grid, zeroline: false, color: ink3, ticksuffix: ch.axis ? " s" : "" },
+      yaxis: { gridcolor: grid, zeroline: false, color: ink3, rangemode: "tozero", fixedrange: true },
+      showlegend: false, hovermode: "x unified", hoverlabel: { font: { family: css("--font-data") } },
+      shapes, annotations,
+    };
+    if (ch.id === "c-q") layout.yaxis.rangemode = "normal";
+    Plotly.newPlot(el, traces, layout, { displayModeBar: false, responsive: true });
+    el.on("plotly_click", (ev) => { if (ev.points && ev.points.length) seek(ev.points[0].pointIndex); });
+    let cur = el.querySelector(".cursor");
+    if (!cur) { cur = document.createElement("div"); cur.className = "cursor"; el.appendChild(cur); }
+  }
+}
+function updateCursors(i) {
+  for (const ch of charts) {
+    const el = document.getElementById(ch.id), xa = el._fullLayout && el._fullLayout.xaxis;
+    if (!xa) continue;
+    el.querySelector(".cursor").style.left = xa._offset + xa.l2p(D.t[i]) + "px";
+  }
+}
+
+// ── readouts ──
+const $ = (id) => document.getElementById(id);
+function updateReadout(i) {
+  const s = D.state[i];
+  $("tnow").textContent = D.t[i].toFixed(2) + " s";
+  $("tlabel").textContent = D.t[i].toFixed(2) + " s";
+  $("chip").textContent = s === "IDLE" ? (D.torque[i] === "ENABLED" ? "TIP HOLD" : "TORQUE OFF") : s;
+  $("chip").dataset.s = s;
+  $("r-pt").textContent = D.pt[i] == null || s === "IDLE" ? "—" : fmt(D.pt[i]) + " s";
+  $("r-ep").textContent = D.ep[i] == null || s === "IDLE" ? "—" : fmt(D.ep[i], 1) + " cm";
+  $("r-er").textContent = D.eR[i] == null || s === "IDLE" ? "—" : fmt(D.eR[i]) + " rad (" + fmt(D.eR[i] * 57.2958, 0) + "°)";
+  $("r-f").textContent = s === "IDLE" ? "—" : fmt(norm(D.F[i]), 1) + " N";
+  $("r-m").textContent = s === "IDLE" ? "—" : fmt(norm(D.M[i])) + " N·m";
+  $("r-tip").textContent = fmt(norm(D.Ftip[i])) + " N";
+  const q = D.q[i];
+  $("r-q").textContent = `${q[4].toFixed(2)} / ${q[5].toFixed(2)} / ${q[6].toFixed(2)}`;
+}
+
+// ── playback ──
+const scrub = $("scrub"); scrub.max = N - 1;
+let idx = 0, playing = false, last = 0, acc = 0;
+function seek(i) { idx = Math.max(0, Math.min(N - 1, i)); scrub.value = idx; render(); }
+let pending = false;
+function render() {
+  if (pending) return; pending = true;
+  requestAnimationFrame(() => { pending = false; updateScene(idx); updateCursors(idx); updateReadout(idx); });
+}
+scrub.addEventListener("input", () => seek(+scrub.value));
+$("toPause").addEventListener("click", () => seek(Math.max(0, firstPause - 20)));
+$("play").addEventListener("click", () => {
+  playing = !playing; $("play").textContent = playing ? "Pause" : "Play";
+  if (playing) { if (idx >= N - 1) idx = 0; last = performance.now(); acc = 0; requestAnimationFrame(step); }
+});
+function step(now) {
+  if (!playing) return;
+  acc += (now - last) / 1000 * +$("speed").value; last = now;
+  const dt = D.t[1] - D.t[0];
+  while (acc >= dt && idx < N - 1) { acc -= dt; idx++; }
+  scrub.value = idx; render();
+  if (idx >= N - 1) { playing = false; $("play").textContent = "Play"; return; }
+  requestAnimationFrame(step);
+}
+
+// ── findings and table ──
+const at = (t) => D.t.findIndex((x) => x >= t);
+const ol = $("findings");
+if (!D.events.length) ol.textContent = "No torque, trajectory or collision events in this part of the bag.";
+for (const [t, who, text] of D.events) {
+  const li = document.createElement("li");
+  const b = document.createElement("button"); b.type = "button"; b.textContent = t.toFixed(1) + " s";
+  b.addEventListener("click", () => seek(Math.max(0, at(t) - 10)));
+  const src = document.createElement("span"); src.className = "meta"; src.textContent = ` ${who} `;
+  li.append(b, src, text); ol.appendChild(li);
+}
+$("method").textContent =
+  `How this was drawn: the arm, gripper point and axes are forward kinematics of the recorded joint states. ` +
+  `Tracking anchor: ${D.anchor_source}. Other springs' targets: ${D.springs_source}. ` +
+  `Pulls and moments ${D.anchor_source === "recorded" ? "are the spring's own recorded values" :
+    "come from the recorded spring torques (total minus collision and joint-limit repulsion) solved through the gripper Jacobian; damping and the force cap bend an estimated anchor's direction a little"}.`;
+const tbl = $("tbl");
+tbl.innerHTML = "<thead><tr><th>t (s)</th><th>state</th><th>path t</th><th>error (cm)</th><th>rot. error (rad)</th><th>pull (N)</th><th>moment (N·m)</th><th>other pull (N)</th><th>j5</th><th>j6</th><th>j7</th></tr></thead>";
+const tb = document.createElement("tbody");
+for (let i = 0; i < N; i += 10) {
+  const tr = document.createElement("tr"), q = D.q[i], s = D.state[i], live = s !== "IDLE";
+  [D.t[i].toFixed(1), s, live ? fmt(D.pt[i]) : "—", live ? fmt(D.ep[i], 1) : "—", live ? fmt(D.eR[i]) : "—",
+   live ? fmt(norm(D.F[i]), 1) : "—", live ? fmt(norm(D.M[i])) : "—", fmt(norm(D.Ftip[i])), q[4].toFixed(2), q[5].toFixed(2), q[6].toFixed(2)]
+    .forEach((v) => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+  tb.appendChild(tr);
+}
+tbl.appendChild(tb);
+
+// ── theme ──
+function buildAll() { buildScene(); buildCharts(); idx = Math.max(0, firstRun); scrub.value = idx; render(); }
+function rethemeAll() { const keep = idx; buildScene(); buildCharts(); seek(keep); }
+buildAll();
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rethemeAll);
+new MutationObserver(rethemeAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+window.addEventListener("resize", () => updateCursors(idx));
+</script>
