@@ -307,6 +307,52 @@ class TrajectoryActionGlue:
         with self._lock:
             self._feedback = (q_d.copy(), q, wrap_angle(q_d - q))
 
+    def _springs_report(self) -> dict:
+        """The springs acting on the gripper right now (for ~/trajectory/state).
+
+        tracking: the trajectory spring; weight is its cross-fade (0..1).
+        same_link: Cartesian springs on the same link (e.g. tip_spring);
+        stiffness is what it pulls with now (faded while a trajectory owns
+        the gripper), stiffness_full what it returns to after release.
+        """
+        s = self.spring
+        report = {"tracking": {
+            "active": bool(self.follower.active and self._mix > 0.0),
+            "weight": round(self._mix, 3),
+            "stiffness": s.stiffness, "damping": s.damping,
+            "rot_stiffness": s.rot_stiffness, "rot_damping": s.rot_damping,
+            "max_force": s.max_force, "max_moment": s.max_moment,
+            "null_stiffness": s.null_stiffness,
+        }, "same_link": []}
+        for v in self._same_link_springs():
+            full = self._suspended[v][0] if v in self._suspended else v.stiffness
+            report["same_link"].append({
+                "name": v.name, "stiffness": round(v.stiffness, 3),
+                "stiffness_full": full, "damping": round(v.damping, 3),
+                "enabled": bool(getattr(v, "enabled", True)),
+            })
+        return report
+
+    def _active_springs_text(self) -> str:
+        """One sentence for a goal's result: which springs now hold the gripper."""
+        s = self.spring
+        parts = []
+        if self.follower.active:
+            parts.append(f"tracking spring ({s.stiffness:g} N/m, {s.rot_stiffness:g} N*m/rad) "
+                         f"holding the gripper where it ended")
+        for v in self._same_link_springs():
+            if v in self._suspended:
+                parts.append(f"{v.name} ({self._suspended[v][0]:g} N/m) faded out until "
+                             f"~/trajectory/release")
+            elif getattr(v, "enabled", True) and v.stiffness > 0:
+                parts.append(f"{v.name} ({v.stiffness:g} N/m) active")
+        others = [o.name for o in self._springs
+                  if o not in self._same_link_springs()
+                  and getattr(o, "enabled", True) and getattr(o, "stiffness", 0) > 0]
+        if others:
+            parts.append("also active: " + ", ".join(others))
+        return "Active springs: " + ("; ".join(parts) if parts else "none") + "."
+
     def _publish_state(self) -> None:
         state = {"state": self.follower.state.value, "t": round(self.follower.t_traj, 3),
                  "mix": round(self._mix, 3)}
@@ -315,6 +361,7 @@ class TrajectoryActionGlue:
                 float(np.linalg.norm(self.spring.last_state.position_error)), 4)
             state["rotation_error_rad"] = round(
                 float(np.linalg.norm(self.spring.last_state.rotation_error)), 4)
+        state["springs"] = self._springs_report()
         self._state_pub.publish(String(data=json.dumps(state)))
 
     # ── action side (executor threads) ──
@@ -412,10 +459,16 @@ class TrajectoryActionGlue:
                 self._goal_active = False
 
     def _end(self, goal_handle, result, how, code, message):
+        # FollowJointTrajectory feedback has no text field, but the result's
+        # error_string is free text (also on success): say which springs now
+        # hold the gripper. Live values are on ~/trajectory/state.
+        message = f"{message} {self._active_springs_text()}"
         result.error_code = code
         result.error_string = message
         getattr(goal_handle, how)()
-        if how != "succeed":
+        if how == "succeed":
+            self._node.get_logger().info(f"trajectory_spring succeeded: {message}")
+        else:
             self._node.get_logger().warn(f"trajectory_spring {how}: {message}")
         return result
 
