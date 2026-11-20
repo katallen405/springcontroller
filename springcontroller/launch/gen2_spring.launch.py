@@ -19,6 +19,14 @@ Differences from gen3_spring.launch.py
 * start_bridge:=true (default false) also starts gen2_torque_node from
   here; otherwise run it first in its own terminal:
       ros2 launch gen2_torque_control gen2_torque_control.launch.py
+* With start_bridge:=true the bridge gets arm -0's fitted payload
+  [0.56, 0, 0, -0.159] and both of its corrections (ripple_arm0.csv,
+  gravity_correction_arm0.json) by default. The gravity correction only
+  loads with the payload it was fitted for, so to change the payload also
+  pass gravity_correction_file:="" (and torque_correction_file:="" for no
+  ripple correction). The fitted payload also keeps joint 4's sensor vs
+  gravity-estimate mismatch near 330 deg under the ~2 N*m at which the
+  firmware refuses torque mode (0.55 kg at the flange read ~2.2 N*m there).
 * No study tooling (audio/video capture, participant routing) -- this is
   for bringing the Gen2 up, not running the study.
 * Default springs config has no springs (gen2_springs_none.yaml).
@@ -108,8 +116,20 @@ def generate_launch_description():
             "start_bridge", default_value="false",
             description="Also start gen2_torque_node from this launch file."),
         DeclareLaunchArgument(
-            "gravity_payload", default_value="[0.55, 0.0, 0.0, 0.0]",
-            description="Passed to gen2_torque_node when start_bridge:=true."),
+            "gravity_payload", default_value="[0.56, 0.0, 0.0, -0.159]",
+            description="Passed to gen2_torque_node when start_bridge:=true. Arm -0's "
+                        "fitted payload (gen2_torque_control README, 'Gravity "
+                        "correction'); gravity_correction_file must match it."),
+        DeclareLaunchArgument(
+            "torque_correction_file", default_value="ripple_arm0.csv",
+            description="Bridge's sensor-ripple table (gen2_torque_control config/); "
+                        "'' = none. Passed when start_bridge:=true."),
+        DeclareLaunchArgument(
+            "gravity_correction_file", default_value="gravity_correction_arm0.json",
+            description="Bridge's gravity-model correction (gen2_torque_control "
+                        "config/); '' = none. Fitted for gravity_payload "
+                        "[0.56, 0, 0, -0.159] -- the bridge won't start with another "
+                        "payload unless this is ''. Passed when start_bridge:=true."),
         DeclareLaunchArgument(
             "enable_torque_control", default_value="false",
             description="Auto-enable torque once virtual_spring_node is publishing (see "
@@ -138,7 +158,11 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(PathJoinSubstitution([
             FindPackageShare("gen2_torque_control"), "launch",
             "gen2_torque_control.launch.py"])),
-        launch_arguments={"gravity_payload": LaunchConfiguration("gravity_payload")}.items(),
+        launch_arguments={
+            "gravity_payload": LaunchConfiguration("gravity_payload"),
+            "torque_correction_file": LaunchConfiguration("torque_correction_file"),
+            "gravity_correction_file": LaunchConfiguration("gravity_correction_file"),
+        }.items(),
         condition=IfCondition(LaunchConfiguration("start_bridge")),
     )
 
