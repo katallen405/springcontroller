@@ -1,0 +1,12 @@
+# Compensate a held object's weight (e.g. after a grasp): virtual_spring_node
+# adds the joint torques that hold mass_kg at local_point on link_name up
+# against gravity, alongside gravity compensation (kept when springs are
+# disabled or clamped). mass_kg 0 removes it. The change is ramped linearly
+# over ramp_sec.
+float64 mass_kg
+string link_name        # empty = the trajectory spring's link (the gripper)
+float64[3] local_point  # the object's centre of mass in that link's frame
+float64 ramp_sec        # <= 0 = 0.5 s
+---
+bool success
+string message

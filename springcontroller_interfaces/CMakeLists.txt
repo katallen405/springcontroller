@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/CheckCollisionAtAngles.srv"
   "srv/UpdateSpring.srv"
   "srv/UpdateCollisionThresholds.srv"
+  "srv/SetPayload.srv"
   "action/FollowAnchorPath.action"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )

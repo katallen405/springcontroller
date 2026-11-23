@@ -939,6 +939,20 @@ class PoseSpring:
 # SpringCollection — manage multiple springs at once
 # ---------------------------------------------------------------------------
 
+GRAVITY_MPS2 = 9.81
+
+
+def payload_torques(arm, link_name: str, local_point, mass_kg: float) -> np.ndarray:
+    """Joint torques that hold a point mass at local_point on link_name up
+    against gravity: Jᵀ · (0, 0, m·g), J the point's linear Jacobian (world
+    z is up). Zero for zero mass. Used for a grasped object's weight, added
+    alongside gravity compensation."""
+    if mass_kg == 0.0:
+        return np.zeros(arm.n_dof)
+    J = arm.get_jacobian(link_name, np.asarray(local_point, dtype=float))
+    return J[:3].T @ np.array([0.0, 0.0, mass_kg * GRAVITY_MPS2])
+
+
 class SpringCollection:
     """
     A container that holds multiple :class:`VirtualSpring` objects and

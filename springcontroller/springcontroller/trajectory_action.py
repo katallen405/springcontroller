@@ -123,6 +123,7 @@ class TrajectoryActionGlue:
         self._suspended: dict = {}       # VirtualSpring -> (stiffness, damping)
         self._last_tick: Optional[float] = None
         self._last_state_pub = -1.0
+        self._rehold = False             # set by request_rehold(), applied in tick()
 
         self._state_pub = node.create_publisher(String, "~/trajectory/state", 10)
         # The tracking spring's anchor (where it pulls the attachment point
@@ -156,6 +157,20 @@ class TrajectoryActionGlue:
         log.info(f"trajectory_spring: FollowAnchorPath on {anchor_action_name} "
                  f"(points in any TF frame, base frame '{self._base_frame}').")
 
+    def request_rehold(self) -> None:
+        """Springs were re-enabled: on the next tick, a HOLDING tracking
+        spring re-anchors where the arm is now (it may have been moved while
+        springs were off). Any thread; applied in tick()."""
+        self._rehold = True
+
+    def _apply_rehold(self) -> None:
+        """Control-loop side of request_rehold()."""
+        if not getattr(self, "_rehold", False):
+            return
+        self._rehold = False
+        if self.follower.state.value == "HOLDING":
+            self.follower.hold_current()
+
     def _declare(self, name, default):
         # virtual_spring_node's config-file loader declares every key in the
         # YAML before this runs, so a config that sets trajectory_spring.*
@@ -178,6 +193,7 @@ class TrajectoryActionGlue:
         self._last_tick = now
         outcome = None
 
+        self._apply_rehold()
         with self._lock:
             cmd, self._pending = self._pending, None
         if cmd is not None:

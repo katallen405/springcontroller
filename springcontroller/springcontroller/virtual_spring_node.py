@@ -289,7 +289,7 @@ from std_msgs.msg import String, Float64, Bool, Float64MultiArray
 import os
 
 from springcontroller.virtual_spring import (
-    VirtualSpring, JointSpring, PoseSpring, SpringCollection,
+    VirtualSpring, JointSpring, PoseSpring, SpringCollection, payload_torques,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 from springcontroller.trajectory_action import TrajectoryActionGlue
@@ -304,6 +304,10 @@ from springcontroller_interfaces.srv import (
     UpdateCollisionThresholds,
 )
 from springcontroller_interfaces.msg import SpringForce, SpringForces
+try:   # needs springcontroller_interfaces rebuilt with srv/SetPayload
+    from springcontroller_interfaces.srv import SetPayload
+except ImportError:                          # pragma: no cover - depends on the install
+    SetPayload = None
 
 
 import collections
@@ -1121,6 +1125,22 @@ class VirtualSpringNode(Node):
             UpdateCollisionThresholds, "~/update_collision_thresholds",
             self._update_collision_thresholds_cb,
         )
+
+        # Held-object weight (~/set_payload): torques holding a point mass on
+        # a link up against gravity, ramped, added alongside gravity comp.
+        self.declare_parameter("max_payload_kg", 1.0)
+        self._max_payload_kg = float(self.get_parameter("max_payload_kg").value)
+        # link "" = the trajectory spring's link, resolved when used (the
+        # trajectory glue is created further down).
+        self._payload = {"mass_now": 0.0, "mass_target": 0.0, "rate": 0.0,
+                         "link": "", "point": [0.0, 0.0, 0.0]}
+        self._payload_last_t = None
+        if SetPayload is not None:
+            self._set_payload_srv = self.create_service(
+                SetPayload, "~/set_payload", self._set_payload_cb)
+        else:
+            self.get_logger().warn("springcontroller_interfaces has no SetPayload (rebuild "
+                                   "it) -- ~/set_payload not available.")
         # FollowJointTrajectory → moving end-effector spring (see
         # trajectory_action.py). Its torque is added in _joint_state_cb with
         # the other springs', before the collision clamp/DANGER scaling.
@@ -1732,6 +1752,11 @@ class VirtualSpringNode(Node):
                 self._arm.get_gravity_torques() if self._add_grav_comp
                 else np.zeros_like(torques)
             )
+            # A held object's weight (~/set_payload) is gravity-side: never
+            # scaled or zeroed by the clamps below, like gravity comp.
+            payload_tau = self._payload_torques(now.nanoseconds / 1e9)
+            torques = torques + payload_tau
+            gravity_torques = gravity_torques + payload_tau
             spring_only_torques = torques - gravity_torques
 
             # Treated as spring-side torque so the collision clamp below
@@ -2104,6 +2129,43 @@ class VirtualSpringNode(Node):
             )
         ])
 
+    def _payload_link(self) -> str:
+        return self._payload["link"] or self._traj.spring.link_name
+
+    def _set_payload_cb(self, request, response):
+        mass = float(request.mass_kg)
+        link = request.link_name or ""
+        if not (0.0 <= mass <= self._max_payload_kg):
+            response.success, response.message = False, (
+                f"mass_kg must be in [0, {self._max_payload_kg}] (max_payload_kg); got {mass}.")
+            return response
+        resolved = link or self._traj.spring.link_name
+        if resolved not in self._arm.link_names:
+            response.success, response.message = False, f"Unknown link '{resolved}'."
+            return response
+        ramp = float(request.ramp_sec) if request.ramp_sec > 0 else 0.5
+        p = self._payload
+        p["link"], p["point"] = link, [float(v) for v in request.local_point]
+        p["rate"] = abs(mass - p["mass_now"]) / ramp
+        p["mass_target"] = mass
+        response.success, response.message = True, (
+            f"Payload {p['mass_now']:.3f} -> {mass:.3f} kg on {resolved} at "
+            f"{p['point']} over {ramp:.2f} s.")
+        self.get_logger().info(response.message)
+        return response
+
+    def _payload_torques(self, now_s: float) -> np.ndarray:
+        """Advance the payload ramp and return its holding torques."""
+        p = self._payload
+        dt = 0.0 if self._payload_last_t is None else max(0.0, now_s - self._payload_last_t)
+        self._payload_last_t = now_s
+        if p["mass_now"] != p["mass_target"]:
+            step = p["rate"] * dt if p["rate"] > 0 else abs(p["mass_target"] - p["mass_now"])
+            delta = p["mass_target"] - p["mass_now"]
+            p["mass_now"] = (p["mass_target"] if abs(delta) <= step
+                             else p["mass_now"] + np.sign(delta) * step)
+        return payload_torques(self._arm, self._payload_link(), p["point"], p["mass_now"])
+
     def _publish_spring_states(self, now, spring_scale: float) -> None:
         """~/spring_states: every spring's attachment point and target, world.
 
@@ -2143,7 +2205,11 @@ class VirtualSpringNode(Node):
                 springs.append(d)
             msg = {"t": round(now.nanoseconds / 1e9, 3), "frame": "world",
                    "springs_on": bool(self._springs_on), "spring_scale": round(float(spring_scale), 3),
-                   "springs": springs, "trajectory": self._traj.anchor_report()}
+                   "springs": springs, "trajectory": self._traj.anchor_report(),
+                   "payload": {"mass_kg": round(float(self._payload["mass_now"]), 4),
+                               "target_kg": round(float(self._payload["mass_target"]), 4),
+                               "link": self._payload_link(),
+                               "local_point": self._payload["point"]}}
             self._spring_states_pub.publish(String(data=json.dumps(msg)))
         except Exception as exc:          # pragma: no cover - logging must not stop control
             self.get_logger().warn(f"~/spring_states failed: {exc}", throttle_duration_sec=10.0)
@@ -2417,9 +2483,19 @@ class VirtualSpringNode(Node):
         re-enabling, starts the re-enable ramp -- see
         _springs_reenabled_since's declaration.
         """
+        was_on = self._springs_on
         for spring in self._springs:
             spring.enabled = enabled
         self._springs_on = enabled
+        if enabled and not was_on:
+            # The arm may have been moved while springs were off (e.g. by
+            # hand to teach a pose): hold where it is now, as on a torque
+            # enable, instead of pulling back to the old targets.
+            names = self._reanchor_hold_springs_for_enable()
+            self._traj.request_rehold()
+            if names:
+                self.get_logger().info(f"Springs re-enabled: re-anchoring {names} at the "
+                                       "current pose.")
         if auto:
             self._springs_auto_disabled = not enabled
             if not enabled:
