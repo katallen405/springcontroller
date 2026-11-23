@@ -213,6 +213,57 @@ After any abort or cancel, the tracking spring holds the arm **where it
 stopped**, not where the plan had got to, so nothing snaps. The tip-hold
 spring stays faded out until `trajectory/release`.
 
+## Pick and place test (Gen2)
+
+`springcontroller/tools/pick_place_test.py` picks up a small object and puts
+it down elsewhere with FollowAnchorPath goals (position only, rotation free).
+
+Setup: launch `gen2_spring.launch.py start_bridge:=true …`, enable torque,
+hand on the E-STOP, object on the table (small and light: the payload limit
+is `max_payload_kg`, 1 kg). Then:
+
+```
+source ~/sandbox/install/setup.bash
+~/.springcontroller_venv/bin/python springcontroller/tools/pick_place_test.py
+#   --object-mass 0.08          known mass (kg); otherwise it weighs the object
+#   --pick X Y Z --place X Y Z  skip teaching (a taught run prints these)
+```
+
+1. It checks torque is on and the gripper is activated (it offers to
+   activate it: the jaws sweep fully open and closed), and opens the gripper.
+2. **Teaching**: springs go off and the arm floats on gravity compensation,
+   so hold it. Put the open gripper around the object at grasp height, press
+   Enter; put it where the object should go, Enter; hold the arm where it
+   should start, Enter. Springs come back on holding where the arm is (they
+   re-anchor whenever springs are re-enabled).
+3. It asks before starting, then: above the pick spot (8 cm,
+   `--approach`) → down (2 cm/s) → checks the gripper is within 1.5 cm
+   (`--reach-tol`) → closes → checks the gripper reports an object (not
+   "closed empty") → lifts → weighs it (or uses `--object-mass`) and turns
+   on **payload compensation** → over to above the place spot (5 cm/s) →
+   down → checks → opens → payload off → lifts.
+
+**Payload compensation** (`/virtual_spring_node/set_payload`,
+`springcontroller_interfaces/srv/SetPayload`): holds a grasped object's
+weight by adding `Jᵀ·(0, 0, m·g)` at the gripper point, ramped in over
+0.5 s, alongside gravity compensation (so springs off or the collision clamp
+don't drop it). Without it, 1 N of object sags the gripper ~1.7 cm at
+60 N/m. Shown in `~/spring_states` (`payload`). Weighing compares the
+spring's vertical pull above the pick spot before the grasp and after the
+lift; joint friction limits it to roughly ±0.1 kg, so `--object-mass` is
+better when known.
+
+If anything fails, or on Ctrl-C, it stops: the current goal is cancelled,
+the gripper is left as it is (a held object is never dropped), springs hold
+the arm where it is (turned back on if it stopped during teaching), and it
+prints how to clear the payload if it was on. Every step is in `/rosout`
+(`pick_place: …`), so `tools/bag_replay.py` lists the phases.
+
+Caveats: rotation is free, so the wrist floats (only the posture term holds
+it) and the fingers may turn a little; stick-slip can leave the gripper a
+centimetre or two short, which the reach check catches rather than closing
+in the wrong place.
+
 ## Replaying a test from its bag
 
 The launch files' bags record every `/virtual_spring_node/` topic, including
