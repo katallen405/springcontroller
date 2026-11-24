@@ -15,8 +15,9 @@ import pytest
 
 from springcontroller.trajectory_spring import (
     GOAL_TOLERANCE_VIOLATED, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, CartesianPathReference,
-    FollowerConfig, FollowerState, JointTrajectoryReference, TrackingPoseSpring,
-    TrajectoryFollower, masked_rotation_error, rotation_exp, rotation_log, wrap_angle,
+    FollowerConfig, FollowerState, JointTrajectoryReference, OscillationWatchdog,
+    TrackingPoseSpring, TrajectoryFollower, masked_rotation_error, rotation_exp, rotation_log,
+    wrap_angle,
 )
 from springcontroller.urdf_arm_configuration import URDFArmConfiguration
 
@@ -481,3 +482,55 @@ def test_cartesian_orientation_target_closed_loop():
     assert sim.outcomes and sim.outcomes[0].error_code == SUCCESSFUL, sim.outcomes
     _, R = sim.follower.current_anchor_pose()
     assert np.linalg.norm(rotation_log(R_target @ R.T)) < 0.05
+
+
+# ── oscillation watchdog (synthetic signals, 100 Hz) ─────────────────────────
+
+def _feed(force_fn, moment_fn=lambda t: np.zeros(3), seconds=4.0):
+    w = OscillationWatchdog()
+    for k in range(int(seconds * 100)):
+        t = k * 0.01
+        why = w.update(t, force_fn(t), moment_fn(t))
+        if why:
+            return t, why
+    return None, w.last
+
+
+DIR = np.array([0.6, -0.8, 0.0])
+
+
+def test_watchdog_trips_on_the_incident_oscillation():
+    t, why = _feed(lambda t: 5 * np.sin(2 * np.pi * 3.7 * t) * DIR)
+    assert t is not None and t < 1.2, why
+    assert "force" in why
+    hz = float(why.split("about ")[1].split(" Hz")[0])
+    assert 3.0 <= hz <= 4.5, why                                   # ~3.7 Hz reported
+
+
+def test_watchdog_trips_on_moment_oscillation():
+    t, why = _feed(lambda t: np.zeros(3),
+                   lambda t: 1.5 * np.sin(2 * np.pi * 5.0 * t) * np.array([0, 0, 1.0]))
+    assert t is not None and "moment" in why
+
+
+@pytest.mark.parametrize("label,fn", [
+    ("small 3.7 Hz", lambda t: 1.0 * np.sin(2 * np.pi * 3.7 * t) * DIR),
+    ("slow 0.3 Hz pull", lambda t: 8.0 * np.sin(2 * np.pi * 0.3 * t) * DIR),
+    ("ramp", lambda t: min(t, 2.5) * 4.0 * DIR),
+    ("step", lambda t: (6.0 if t > 1.0 else 0.0) * DIR),
+    ("noise", lambda t: np.random.default_rng(int(t * 100)).normal(0, 0.5, 3)),
+    ("stick-slip sawtooth", lambda t: 1.5 * (t % 1.0) * DIR),
+])
+def test_watchdog_quiet_on_normal_signals(label, fn):
+    t, last = _feed(fn)
+    assert t is None, (label, last)
+
+
+def test_watchdog_reset_clears_history():
+    w = OscillationWatchdog()
+    for k in range(150):
+        w.update(k * 0.01, 5 * np.sin(2 * np.pi * 3.7 * k * 0.01) * DIR, np.zeros(3))
+    w.reset()
+    # needs a fresh window before it can trip again
+    assert all(w.update(1.5 + k * 0.01, 5 * np.sin(2 * np.pi * 3.7 * k * 0.01) * DIR,
+                        np.zeros(3)) is None for k in range(70))

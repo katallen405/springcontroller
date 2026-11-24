@@ -1146,6 +1146,8 @@ class VirtualSpringNode(Node):
         # the other springs', before the collision clamp/DANGER scaling.
         self._springs_on = True     # last ~/enable / collision-clamp state
         self._traj = TrajectoryActionGlue(self, self._arm, self._springs)
+        # Oscillation watchdog's last resort: torque off (firmware holds position).
+        self._traj.on_unstable = self._call_torque_disable_service
 
     def _load_arm(self) -> URDFArmConfiguration:
         """

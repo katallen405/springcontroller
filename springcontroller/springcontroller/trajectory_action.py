@@ -36,7 +36,8 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from springcontroller.trajectory_spring import (
     INVALID_GOAL, INVALID_JOINTS, PATH_TOLERANCE_VIOLATED, SUCCESSFUL, CartesianPathReference,
     FollowerConfig, FollowerOutcome, JointTrajectoryReference, TrackingPoseSpring,
-    TrajectoryFollower, _quat_from_rotation, _rotation_from_quat, wrap_angle,
+    OscillationWatchdog, TrajectoryFollower, _quat_from_rotation, _rotation_from_quat,
+    wrap_angle,
 )
 from springcontroller.virtual_spring import VirtualSpring
 
@@ -124,6 +125,20 @@ class TrajectoryActionGlue:
         self._last_tick: Optional[float] = None
         self._last_state_pub = -1.0
         self._rehold = False             # set by request_rehold(), applied in tick()
+        # Oscillation watchdog (docs/gen2_stability_analysis.md).
+        self._wd_enabled = bool(p("trajectory_spring.watchdog_enabled", True))
+        self._wd_soften = float(p("trajectory_spring.watchdog_soften", 0.25))
+        self._wd = OscillationWatchdog(
+            force_rms_n=p("trajectory_spring.watchdog_force_rms_n", 2.5),
+            moment_rms_nm=p("trajectory_spring.watchdog_moment_rms_nm", 0.6),
+            window_s=p("trajectory_spring.watchdog_window_sec", 1.0))
+        # Seconds after softening before a new trip can escalate to torque off.
+        self._wd_grace = float(p("trajectory_spring.watchdog_grace_sec", 2.0))
+        self._wd_speed = float(p("trajectory_spring.watchdog_joint_speed_rad_s", 4.0))
+        self._softened: Optional[dict] = None   # saved gains while softened
+        self._softened_at = 0.0
+        self.watchdog_trips = 0
+        self.on_unstable = None                  # set by the node: disable torque
 
         self._state_pub = node.create_publisher(String, "~/trajectory/state", 10)
         # The tracking spring's anchor (where it pulls the attachment point
@@ -156,6 +171,67 @@ class TrajectoryActionGlue:
             cancel_callback=lambda gh: CancelResponse.ACCEPT, callback_group=group)
         log.info(f"trajectory_spring: FollowAnchorPath on {anchor_action_name} "
                  f"(points in any TF frame, base frame '{self._base_frame}').")
+
+    GAIN_KEYS = ("stiffness", "damping", "rot_stiffness", "rot_damping")
+
+    def _watch(self, now: float) -> Optional[FollowerOutcome]:
+        """Oscillation watchdog, once per tick while the tracking spring acts.
+
+        First trip: stop any trajectory and hold where the arm is with the
+        tracking spring's stiffness and damping scaled by watchdog_soften
+        (until release or new gains). A trip while already softened: ask the
+        node to disable torque (the firmware then holds position)."""
+        if not self._wd_enabled or self.spring.last_state is None:
+            return None
+        w = self.spring.last_state.force
+        why = self._wd.update(now, w[:3], w[3:])
+        grace = self._wd_grace
+        # Runaway backstop: a joint far faster than anything in normal use
+        # (2026-11 bags: at most 2.2 rad/s, hand pushes included; the
+        # 2026-11-23 instability itself peaked at 1.5 rad/s, so it's the
+        # oscillation check that catches real instability).
+        qdot = np.abs(np.asarray(self._arm.joint_velocities, dtype=float))
+        if why is None and qdot.size and qdot.max() > self._wd_speed:
+            j = int(np.argmax(qdot))
+            why = (f"joint {j + 1} running away at {qdot[j]:.1f} rad/s "
+                   f"(limit {self._wd_speed:g})")
+            grace = 0.5
+        if why is None:
+            return None
+        if self._softened is not None and now - self._softened_at < grace:
+            self._wd.reset()            # let the softened spring settle first
+            return None
+        self._wd.reset()
+        self.watchdog_trips += 1
+        log = self._node.get_logger()
+        running = self.follower.state.value in ("RUNNING", "PAUSED")
+        if self._softened is None:
+            self._softened_at = now
+            f = self._wd_soften
+            self._softened = {k: getattr(self.spring, k) for k in self.GAIN_KEYS}
+            for k in self.GAIN_KEYS:
+                setattr(self.spring, k, getattr(self.spring, k) * f)
+            msg = (f"Oscillation watchdog: {why}. Holding where the arm is with stiffness and "
+                   f"damping x{f:g} (back on trajectory/release or new trajectory_spring gains)")
+            log.error(msg)
+            if running:
+                return self.follower.stop(PATH_TOLERANCE_VIOLATED, msg + ".")
+            self.follower.hold_current()
+            return None
+        msg = f"Oscillation watchdog: still {why} after softening -- disabling torque"
+        log.error(msg)
+        if self.on_unstable is not None:
+            self.on_unstable(msg)
+        if running:
+            return self.follower.stop(PATH_TOLERANCE_VIOLATED, msg + ".")
+        return None
+
+    def _restore_gains(self) -> None:
+        if self._softened is not None:
+            for k, v in self._softened.items():
+                setattr(self.spring, k, v)
+            self._softened = None
+            self._node.get_logger().info("Oscillation watchdog: tracking-spring gains restored.")
 
     def request_rehold(self) -> None:
         """Springs were re-enabled: on the next tick, a HOLDING tracking
@@ -223,6 +299,9 @@ class TrajectoryActionGlue:
         tau = np.zeros(n)
         if springs_enabled and self.follower.active and self._mix > 0.0:
             tau = self._mix * self.spring.compute_torques(self._arm)
+            outcome = self._watch(now) or outcome
+        else:
+            self._wd.reset()
 
         self._snapshot_feedback()
         if now - self._last_state_pub >= 0.1:
@@ -350,6 +429,7 @@ class TrajectoryActionGlue:
             spring.stiffness, spring.damping = k, b
         self._suspended.clear()
         self.follower.release()
+        self._restore_gains()           # a softened tracking spring is back to normal
 
     def _snapshot_feedback(self) -> None:
         if self.follower.reference is None or not self.spring.has_anchor:
@@ -414,6 +494,8 @@ class TrajectoryActionGlue:
             state["rotation_error_rad"] = round(
                 float(np.linalg.norm(self.spring.last_state.rotation_error)), 4)
         state["springs"] = self._springs_report()
+        state["watchdog"] = {**self._wd.last, "softened": self._softened is not None,
+                             "trips": self.watchdog_trips, "enabled": self._wd_enabled}
         anchor = self.anchor_report()
         if anchor is not None:
             state["anchor"] = anchor

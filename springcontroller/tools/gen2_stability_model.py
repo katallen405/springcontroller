@@ -60,9 +60,14 @@ def arm():
 
 
 def simulate(q0, gains, delay_ticks=6, coulomb=0.3, viscous=0.3, vel_noise=0.0,
-             seconds=6.0, ctrl_dt=0.01, sim_dt=0.0002, kick=0.02, rotation_axes=None, seed=0):
+             seconds=6.0, ctrl_dt=0.01, sim_dt=0.0002, kick=0.02, rotation_axes=None, seed=0,
+             on_tick=None):
     """Release the arm 2 cm (kick) from a fixed anchor; returns (swing_cm over
-    the last 3 s, dominant frequency Hz). inf swing = it blew up."""
+    the last 3 s, dominant frequency Hz). inf swing = it blew up.
+
+    on_tick(t, spring, arm), if given, runs every control tick right after the
+    spring's torque is computed (arm = the delayed state the spring saw), e.g.
+    to run the oscillation watchdog; gain changes it makes apply next tick."""
     a = arm()
     model = a._model
     data = model.createData()
@@ -76,13 +81,15 @@ def simulate(q0, gains, delay_ticks=6, coulomb=0.3, viscous=0.3, vel_noise=0.0,
     hist = deque([(q.copy(), v.copy())] * (delay_ticks + 1), maxlen=delay_ticks + 1)
     n_sub = int(round(ctrl_dt / sim_dt))
     xs = []
-    for _ in range(int(seconds / ctrl_dt)):
+    for tick in range(int(seconds / ctrl_dt)):
         hist.append((q.copy(), v.copy()))
         q_seen, v_seen = hist[0]
         if vel_noise:
             v_seen = v_seen + rng.normal(0.0, vel_noise, a.n_dof)
         a.update_from_angles(q_seen, v_seen)
         tau = spring.compute_torques(a)
+        if on_tick is not None:
+            on_tick(tick * ctrl_dt, spring, a)
         a.update_from_angles(q, v)
         xs.append(a.get_link_transform(LINK)[:3, 3].copy())
         for _ in range(n_sub):

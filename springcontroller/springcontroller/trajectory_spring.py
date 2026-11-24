@@ -460,6 +460,89 @@ def _saturate(v: np.ndarray, limit: float) -> np.ndarray:
     return v if norm <= limit or norm == 0.0 else v * (limit / norm)
 
 
+# ── Oscillation watchdog ──────────────────────────────────────────────────────
+
+class OscillationWatchdog:
+    """Spots the spring driving the arm into a sustained oscillation.
+
+    The loop on the Gen2 has ~60 ms of delay (docs/gen2_stability_analysis.md),
+    so stiff gains go unstable at a few Hz. Normal tracking makes the spring
+    force change slowly; an oscillation makes it swing back and forth. Each
+    update high-passes the force and moment (subtracting an exponential
+    average with time constant hp_tau_s), and over the last window_s looks at
+    the swing's RMS and how often its main component reverses sign. It trips
+    when either swing is above its RMS limit AND reverses at min_hz..max_hz.
+
+    One step, a slow pull, noise or a single bump don't trip it: they give no
+    sustained reversals, or too small an RMS.
+    """
+
+    def __init__(self, force_rms_n: float = 2.5, moment_rms_nm: float = 0.6,
+                 window_s: float = 1.0, hp_tau_s: float = 0.25,
+                 min_hz: float = 1.5, max_hz: float = 20.0) -> None:
+        self.force_rms_n = force_rms_n
+        self.moment_rms_nm = moment_rms_nm
+        self.window_s = window_s
+        self.hp_tau_s = hp_tau_s
+        self.min_hz = min_hz
+        self.max_hz = max_hz
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_t: Optional[float] = None
+        self._slow_f = self._slow_m = None
+        self._buf: list = []                      # (t, hp force, hp moment)
+        self.last = {"force_rms": 0.0, "moment_rms": 0.0, "freq_hz": 0.0}
+
+    def _swing(self, arr: np.ndarray, span: float) -> tuple[float, float]:
+        """(RMS of the vector swing, reversal frequency of its main component)."""
+        rms = float(np.sqrt(np.mean(np.sum(arr * arr, axis=1))))
+        if rms <= 1e-9:
+            return 0.0, 0.0
+        axis = np.linalg.svd(arr - arr.mean(axis=0), full_matrices=False)[2][0]
+        proj = arr @ axis
+        # Count sign changes with hysteresis, ignoring wobble near zero.
+        band, sign, flips = 0.2 * rms, 0, 0
+        for p in proj:
+            s = 1 if p > band else (-1 if p < -band else 0)
+            if s and sign and s != sign:
+                flips += 1
+            if s:
+                sign = s
+        return rms, flips / (2.0 * span)
+
+    def update(self, t: float, force, moment) -> Optional[str]:
+        """Feed one control tick. Returns why it tripped, or None."""
+        f = np.asarray(force, dtype=float)
+        m = np.asarray(moment, dtype=float)
+        if self._last_t is None:
+            self._slow_f, self._slow_m, self._last_t = f.copy(), m.copy(), t
+            return None
+        dt = max(0.0, t - self._last_t)
+        self._last_t = t
+        a = dt / (self.hp_tau_s + dt)
+        self._slow_f = self._slow_f + a * (f - self._slow_f)
+        self._slow_m = self._slow_m + a * (m - self._slow_m)
+        self._buf.append((t, f - self._slow_f, m - self._slow_m))
+        while self._buf and t - self._buf[0][0] > self.window_s:
+            self._buf.pop(0)
+        span = self._buf[-1][0] - self._buf[0][0]
+        if span < 0.8 * self.window_s:
+            return None
+        hf = np.array([b[1] for b in self._buf])
+        hm = np.array([b[2] for b in self._buf])
+        f_rms, f_hz = self._swing(hf, span)
+        m_rms, m_hz = self._swing(hm, span)
+        self.last = {"force_rms": round(f_rms, 3), "moment_rms": round(m_rms, 3),
+                     "freq_hz": round(f_hz if f_rms / self.force_rms_n >= m_rms / self.moment_rms_nm
+                                      else m_hz, 2)}
+        if f_rms > self.force_rms_n and self.min_hz <= f_hz <= self.max_hz:
+            return f"spring force oscillating {f_rms:.1f} N RMS at about {f_hz:.1f} Hz"
+        if m_rms > self.moment_rms_nm and self.min_hz <= m_hz <= self.max_hz:
+            return f"spring moment oscillating {m_rms:.2f} N*m RMS at about {m_hz:.1f} Hz"
+        return None
+
+
 # ── Follower ──────────────────────────────────────────────────────────────────
 
 class FollowerState(enum.Enum):
