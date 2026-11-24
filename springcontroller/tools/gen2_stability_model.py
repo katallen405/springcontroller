@@ -108,12 +108,55 @@ def gains(stiffness, damping, **kw):
     return g
 
 
+def task_space(q, joint_viscous=0.3):
+    """Effective mass at the gripper along its principal directions,
+    Lambda = (Jv M^-1 Jv^T)^-1, and the joint viscous friction seen there as
+    damping, C = Lambda Jv M^-1 (c I) M^-1 Jv^T Lambda, per direction."""
+    a = arm()
+    qq = a._angles_to_q(np.asarray(q, float))
+    a.update_from_angles(np.asarray(q, float), np.zeros(a.n_dof))
+    M = pin.crba(a._model, a._model.createData(), qq)
+    M = (M + M.T) / 2
+    Jv = a.get_jacobian(LINK, np.zeros(3))[:3]
+    Minv = np.linalg.inv(M)
+    Lam = np.linalg.inv(Jv @ Minv @ Jv.T)
+    Lam = (Lam + Lam.T) / 2
+    masses, dirs = np.linalg.eigh(Lam)
+    C = Lam @ Jv @ Minv @ (joint_viscous * np.eye(a.n_dof)) @ Minv @ Jv.T @ Lam
+    return masses, np.array([d @ C @ d for d in dirs.T])
+
+
+def loop_margins(k, b, m, c, tau):
+    """Classical margins of L(s) = (k + b s) e^{-s tau} / (m s^2 + c s):
+    (gain-crossover Hz, phase margin deg, gain margin dB)."""
+    from scipy.optimize import brentq
+    mag = lambda w: np.hypot(k, b * w) / (w * np.hypot(m * w, c))        # noqa: E731
+    phase = lambda w: (np.arctan(b * w / k) - np.pi / 2 - np.arctan2(m * w, c)  # noqa: E731
+                       - w * tau)
+    wc = brentq(lambda w: mag(w) - 1.0, 1e-3, 1e4)
+    ws = np.linspace(1e-2, 300, 30000)
+    below = phase(ws) < -np.pi
+    gm = -20 * np.log10(mag(ws[np.argmax(below)])) if below.any() else np.inf
+    return wc / (2 * np.pi), float(np.degrees(phase(wc) + np.pi)), float(gm)
+
+
+def phase_crossover_hz(k, b, tau):
+    """Where a pure-mass loop's phase reaches -180 deg: atan(b w / k) = w tau.
+    A delay-unstable loop oscillates near here."""
+    from scipy.optimize import brentq
+    return brentq(lambda w: np.arctan(b * w / k) - w * tau, 1e-3,
+                  np.pi / (2 * tau)) / (2 * np.pi)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("map", help="stable/unstable table over stiffness x damping")
     c = sub.add_parser("check", help="one gain set at every recorded pose")
-    for p in (m, c):
+    mg = sub.add_parser("margins", help="classical (Bode) phase/gain margins per direction")
+    mg.add_argument("--gains", default="60:5,100:5,150:5,200:10,300:30",
+                    help="stiffness:damping pairs, comma-separated")
+    for p in (m, c, mg):
         p.add_argument("--delay-ms", type=int, default=MEASURED_DELAY_MS)
         p.add_argument("--pose", help="7 comma-separated joint angles (default: recorded poses)")
     c.add_argument("--stiffness", type=float, required=True)
@@ -121,6 +164,21 @@ def main(argv=None):
     a = ap.parse_args(argv)
     poses = ({"given": [float(v) for v in a.pose.split(",")]} if a.pose else POSES)
     ticks = int(round(a.delay_ms / 10))
+    if a.cmd == "margins":
+        tau = a.delay_ms / 1000 + 0.005                       # + half a held 10 ms tick
+        print(f"loop delay {a.delay_ms} ms + 5 ms hold; L(s) = (k + b s) e^(-s tau) / (m s^2 + c s)")
+        for name, q in poses.items():
+            masses, damps = task_space(q)
+            print(f"\n{name} pose: effective mass {np.round(masses, 2)} kg, joint friction "
+                  f"as damping {np.round(damps, 1)} N*s/m")
+            for pair in a.gains.split(","):
+                k, b = (float(v) for v in pair.split(":"))
+                cells = []
+                for mm, cc in zip(masses, damps):
+                    fc, pm, gm = loop_margins(k, b, mm, cc, tau)
+                    cells.append(f"PM {pm:7.1f} deg GM {gm:5.1f} dB @ {fc:4.1f} Hz")
+                print(f"  {k:5.0f}/{b:<4.0f} " + " | ".join(cells))
+        return 0
     if a.cmd == "check":
         ok = True
         for name, q in poses.items():

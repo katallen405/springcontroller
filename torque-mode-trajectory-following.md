@@ -333,6 +333,9 @@ consider `null_damping` 0.1.
 `test/test_gen2_stability_model.py` keeps the model honest against the two
 hardware observations.
 
+Full notes, measurements, the classical (Bode) margins and how to reproduce
+everything: [docs/gen2_stability_analysis.md](docs/gen2_stability_analysis.md).
+
 **Not yet covered:** rotation gains with rotation held (the 2026-11-20 wrist
 swinging, 2.5–3 s period, may be the same delay effect), more poses, the
 delay's source (bridge, USB or firmware torque loop) and whether it varies.
