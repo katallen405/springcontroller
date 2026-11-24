@@ -167,7 +167,7 @@ def main():
     t_first, t_last = S["js"][0][0], S["js"][0][-1]
     t0, t1 = max(a.start, t_first), min(a.end, t_last)
     dt = max(0.05, (t1 - t0) / a.max_samples)
-    recorded_anchor = any("anchor" in json.loads(m.data) for m in S["st"][1][:50]) if S["st"][1] else False
+    recorded_anchor = any('"anchor"' in m.data for m in S["st"][1])   # any sample, not just the first
     recorded_states = bool(S["ss"][1])
 
     keys = ["t", "state", "torque", "links", "x", "gz", "anchor", "az", "F", "M", "Ftip",
