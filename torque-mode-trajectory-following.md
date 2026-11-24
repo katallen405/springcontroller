@@ -286,6 +286,58 @@ recorded spring torques and the page says so (a median 1.4 cm from the exact
 anchor on the 2026-11-20 test). The page loads plotly from a CDN, so it needs
 internet.
 
+## Stability: which gains are safe on the Gen2
+
+**What happened (2026-11-23 18:58 bag):** the first pick-and-place run was
+launched without a config, so the tracking spring ran at the code's defaults
+(300 N/m, 30 N·s/m, 40 N cap). It tracked well for 9.5 s, then oscillated at
+**3.7 Hz** (joints 1, 3 and 5; force swinging ±30–40 N; gripper 2–5 cm)
+until the arm's power was cut. Since then `gen2_spring.launch.py` passes the
+hardware-tested gains (below) as defaults; a config still overrides them.
+
+**Where the model was wrong: delay.** A rigid-body simulation of the Gen2
+at 100 Hz calls both 60/5 and 300/30 stable. The real loop lags: the
+measured joint torque follows the command by **52–64 ms** (cross-correlation
+during the oscillation, joints 1/3/5). With that delay in the model,
+`tools/gen2_stability_model.py` reproduces both observations — 60/5 stable,
+300/30 unstable — and its oscillation frequency falls toward the observed
+3.7 Hz at the same ~60 ms (20 ms → 10 Hz, 40 ms → 5.8 Hz). Friction and
+velocity noise barely change the result. With delay, damping can make
+things *worse*: it pushes at the wrong time.
+
+**Model map at 60 ms delay** (the two recorded poses agree; `ok` = settles
+from a 2 cm offset, position only):
+
+| stiffness \ damping | 2 | 5 | 10 | 20 | 30 |
+|---|---|---|---|---|---|
+| 30 – 100 N/m | ok | ok | ok | ok | ok |
+| 150 N/m | ok | ok | ok | unstable (one pose) | unstable |
+| 200 N/m | unstable | ok | ok | unstable | unstable |
+| 300 N/m | unstable | unstable | unstable | unstable | unstable |
+
+So for now: **stiffness ≤ 100 N/m, damping 2–10 N·s/m.** The working 60/5 is
+well inside. 150–200 N/m is marginal and only with damping 5–10.
+
+**Second model finding: joint 7.** The last wrist joint's inertia is
+0.00094 kg·m²; a damper held for a 10 ms tick is unstable on it above
+b ≈ 2I/Δt ≈ 0.19 N·m·s/rad. `null_damping` (0.5, the posture term) is above
+that and `rot_damping`'s old default (0.2) sits on it. Joint 7's friction
+hides it on the arm, and delay makes it worse; keep `rot_damping` ≤ 0.1 and
+consider `null_damping` 0.1.
+
+**Check gains before trying them on the arm:**
+```
+~/.springcontroller_venv/bin/python springcontroller/tools/gen2_stability_model.py check --stiffness 100 --damping 5
+~/.springcontroller_venv/bin/python springcontroller/tools/gen2_stability_model.py map --delay-ms 60
+```
+`test/test_gen2_stability_model.py` keeps the model honest against the two
+hardware observations.
+
+**Not yet covered:** rotation gains with rotation held (the 2026-11-20 wrist
+swinging, 2.5–3 s period, may be the same delay effect), more poses, the
+delay's source (bridge, USB or firmware torque loop) and whether it varies.
+Confirm on the arm with small, watched steps before relying on the map.
+
 ## Caveats
 
 - **The Gen2 wrist needs more rotational stiffness than 2 N·m/rad.** All
