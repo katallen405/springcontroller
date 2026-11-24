@@ -74,7 +74,7 @@ ROBOTS = {
 EVENT_KEYS = ("trajectory_spring", "Torque control ENABLED", "left torque mode",
               "COLLISION", "torque control DISABLED", "Joint move finished",
               "pick_place:", "Payload ", "Springs enabled", "Springs disabled",
-              "Springs re-enabled")
+              "Springs re-enabled", "step_test:", "Oscillation watchdog")
 
 
 def read_bag(bag, topics, t0, t1):

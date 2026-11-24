@@ -174,9 +174,11 @@ Reading it:
 - **Before trying new gains on the arm:**
   `gen2_stability_model.py check --stiffness K --damping B` and
   `gen2_stability_model.py margins --gains K:B`.
-- **On the arm:** an oscillation watchdog that softens the spring and, if
-  that fails, disables torque (in progress), and a step test that walks up
-  the gains with the watchdog armed (in progress).
+- **On the arm:** the oscillation watchdog softens the spring and, if that
+  fails, disables torque; `tools/stability_step_test.py` walks up the gains
+  with 1.5 cm anchor steps, the watchdog armed. Both are described in
+  `torque-mode-trajectory-following.md` (Stability section); neither has
+  run on the arm yet.
 
 ## 6. Joint 7: the discrete damping limit
 
@@ -207,8 +209,9 @@ b ≈ 2 · 0.00094 / 0.01 ≈ **0.19 N·m·s/rad** at 100 Hz.
 - Force saturation (max_force) and the collision repulsion field (which
   fired at the onset) are not in the linear analysis.
 - Next on the arm: step responses at 60 → 80 → 100 N/m in x, y, z with the
-  watchdog armed; compare overshoot and ringing frequency with the model, and
-  refine the delay and friction from that.
+  watchdog armed (`tools/stability_step_test.py`); compare overshoot and
+  ringing frequency with the model, and refine the delay and friction from
+  that.
 
 ## Reproducing
 

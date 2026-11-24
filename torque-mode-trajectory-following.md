@@ -336,6 +336,76 @@ hardware observations.
 Full notes, measurements, the classical (Bode) margins and how to reproduce
 everything: [docs/gen2_stability_analysis.md](docs/gen2_stability_analysis.md).
 
+### Oscillation watchdog
+
+Runs in the control loop whenever the tracking spring is active. It
+high-passes the spring's force and moment and, over a 1 s window, trips when
+the RMS exceeds 2.5 N or 0.6 N·m *and* the signal reverses at 1.5–20 Hz.
+Any joint faster than 4 rad/s also trips it (runaway backstop; normal use
+peaks at about 2.2 rad/s).
+- **First trip:** stiffness, damping, rot_stiffness and rot_damping ×0.25,
+  hold where the arm is (`Oscillation watchdog: ...` in `/rosout`; a running
+  goal aborts).
+- **Another trip** after a 2 s grace (0.5 s for a speed trip): torque control
+  is disabled through the bridge.
+- Softening is undone on release or by setting gains live (below).
+- `~/trajectory/state` has a `"watchdog"` field (`force_rms`, `moment_rms`,
+  `freq_hz`, `softened`, `trips`).
+- Validated: synthetic signals; closed loop on the delayed model (catches
+  300/30 within 0.4–0.8 s, then the softened hold settles); every
+  2026-11 bag (no trips on the 25 working runs; trips on the incident 5 s
+  before the visible oscillation). **Not yet tried live.**
+
+| parameter (`trajectory_spring.`) | default | |
+|---|---|---|
+| `watchdog_enabled` | true | |
+| `watchdog_force_rms_n` / `watchdog_moment_rms_nm` | 2.5 / 0.6 | trip levels |
+| `watchdog_window_sec` | 1.0 | |
+| `watchdog_soften` | 0.25 | gain factor on the first trip |
+| `watchdog_grace_sec` | 2.0 | before a second trip disables torque |
+| `watchdog_joint_speed_rad_s` | 4.0 | runaway backstop |
+
+It doesn't see slow swinging below 1.5 Hz (the 2026-11-20 wrist motion was
+0.35–0.5 Hz).
+
+### Changing gains live
+
+`stiffness`, `damping`, `rot_stiffness`, `rot_damping`, `max_force`,
+`max_moment`, `null_stiffness` and `null_damping` (all `trajectory_spring.`)
+can be set while running; they apply on the next control tick, also mid-goal:
+```
+ros2 param set /virtual_spring_node trajectory_spring.stiffness 80.0
+```
+Negative or non-numeric values are refused. Other parameters still need a
+restart.
+
+### Step test: walking up the gains on the arm
+
+`springcontroller/tools/stability_step_test.py` checks the model's map on
+the hardware. For each `stiffness:damping` level (default
+`60:5,80:5,100:5,100:10,150:5`) it:
+1. runs the stability model at the arm's current pose and **skips levels it
+   predicts unstable** (`--allow-predicted-unstable` to try them anyway);
+2. sets the gains live, holds the current gripper point;
+3. steps the anchor 1.5 cm along +x, back, +y, back, +z, back (0.3 s
+   each, under the 0.10 m/s anchor speed limit), watching 2.5 s after each;
+4. reports overshoot (% of the step), settling time (within 2 mm), and the
+   ringing left in the last second (mm RMS and its frequency).
+
+It asks before each level, stops at the first watchdog trip or aborted goal,
+and restores the starting gains at the end (also on Ctrl-C). Results print
+as a table and are saved to `~/gen2_bags/step_test_<time>.json`.
+
+```
+# robot launched (gen2_spring.launch.py start_bridge:=true), torque enabled,
+# arm in an open pose clear of the table, hand on the E-STOP; record a bag
+~/.springcontroller_venv/bin/python springcontroller/tools/stability_step_test.py
+#   --ladder 60:5,80:5   --axes z   --step 0.01   --no-prompt
+```
+Its `/rosout` lines start with `step_test:`, so the bag replay lists them as
+events. Compare the ringing frequency with the model's (~3.7 Hz at 60 ms
+delay); a different frequency means the delay estimate needs refining.
+
 **Not yet covered:** rotation gains with rotation held (the 2026-11-20 wrist
 swinging, 2.5–3 s period, may be the same delay effect), more poses, the
 delay's source (bridge, USB or firmware torque loop) and whether it varies.
