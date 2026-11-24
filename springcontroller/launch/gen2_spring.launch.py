@@ -73,6 +73,27 @@ GRIPPER_LOCKED_JOINTS = [
 ]
 
 
+# Trajectory-spring gains that have worked on the Gen2 (2026-11-17/19/20
+# tests, config/gen2_trajectory_first_run.yaml), as the launch defaults: the
+# code's own defaults (300 N/m, 30 N*s/m, 40 N) went unstable on the arm on
+# 2026-11-23 (3.7 Hz oscillation, joints 1/3/5) when no config set these.
+# The safe range is still being worked out -- see
+# torque-mode-trajectory-following.md, "Stability".
+GEN2_TRAJECTORY_DEFAULTS = {
+    "trajectory_spring.stiffness": 60.0,          # N/m
+    "trajectory_spring.damping": 5.0,             # N*s/m
+    "trajectory_spring.rot_stiffness": 6.0,       # N*m/rad
+    "trajectory_spring.rot_damping": 0.1,         # N*m*s/rad
+    "trajectory_spring.max_force": 10.0,          # N
+    "trajectory_spring.max_moment": 3.0,          # N*m
+    "trajectory_spring.max_ee_speed_mps": 0.10,
+    "trajectory_spring.pause_force_n": 4.8,       # 8 cm at 60 N/m
+    "trajectory_spring.pause_moment_nm": 3.0,     # 0.5 rad at 6 N*m/rad
+    "trajectory_spring.goal_force_tolerance_n": 4.0,
+    "trajectory_spring.goal_moment_tolerance_nm": 1.2,
+}
+
+
 def record_regex(topics):
     """ros2 bag --regex matching every /virtual_spring_node/ topic plus
     exactly the given topics (strings or launch substitutions); returned as
@@ -184,8 +205,9 @@ def generate_launch_description():
                 "torque_bridge_name": "gen2_torque_control",
                 "spring_ramp_duration_sec": LaunchConfiguration("spring_ramp_duration_sec"),
                 "caution_threshold": LaunchConfiguration("caution_threshold"),
+                **GEN2_TRAJECTORY_DEFAULTS,
             },
-            LaunchConfiguration("config"),
+            LaunchConfiguration("config"),   # a config that sets trajectory_spring.* wins
         ],
         remappings=[
             ("/joint_states", LaunchConfiguration("joint_states_topic")),
