@@ -137,6 +137,13 @@ class TrajectoryActionGlue:
         self._wd_speed = float(p("trajectory_spring.watchdog_joint_speed_rad_s", 4.0))
         self._softened: Optional[dict] = None   # saved gains while softened
         self._softened_at = 0.0
+        # Live gain changes: `ros2 param set /virtual_spring_node
+        # trajectory_spring.stiffness 80.0` takes effect on the next control
+        # tick (the one parameter callback in this node -- elsewhere live
+        # settings use services, because a plain param set would otherwise
+        # report success while the control loop ignored it).
+        self._pending_gains: dict = {}
+        node.add_on_set_parameters_callback(self._on_set_parameters)
         self.watchdog_trips = 0
         self.on_unstable = None                  # set by the node: disable torque
 
@@ -226,6 +233,45 @@ class TrajectoryActionGlue:
             return self.follower.stop(PATH_TOLERANCE_VIOLATED, msg + ".")
         return None
 
+    LIVE_GAINS = ("stiffness", "damping", "rot_stiffness", "rot_damping", "max_force",
+                  "max_moment", "null_stiffness", "null_damping")
+
+    def _on_set_parameters(self, params):
+        """Validate trajectory_spring.<gain> changes and queue them for tick()."""
+        from rcl_interfaces.msg import SetParametersResult
+        updates = {}
+        for prm in params:
+            if not prm.name.startswith("trajectory_spring."):
+                continue
+            key = prm.name[len("trajectory_spring."):]
+            if key not in self.LIVE_GAINS:
+                continue                      # read at startup only; accepted as before
+            value = prm.value
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                return SetParametersResult(successful=False,
+                                           reason=f"{prm.name} must be a number >= 0")
+            updates[key] = float(value)
+        if updates:
+            with self._lock:
+                self._pending_gains.update(updates)
+        return SetParametersResult(successful=True)
+
+    def _apply_pending_gains(self) -> None:
+        """Control-loop side of a live gain change."""
+        with self._lock:
+            updates, self._pending_gains = self._pending_gains, {}
+        if not updates:
+            return
+        if self._softened is not None:
+            # New gains replace both the softened ones and the saved ones.
+            for k, v in self._softened.items():
+                setattr(self.spring, k, v)
+            self._softened = None
+        for k, v in updates.items():
+            setattr(self.spring, k, v)
+        self._wd.reset()
+        self._node.get_logger().info(f"trajectory_spring gains set live: {updates}")
+
     def _restore_gains(self) -> None:
         if self._softened is not None:
             for k, v in self._softened.items():
@@ -270,6 +316,7 @@ class TrajectoryActionGlue:
         outcome = None
 
         self._apply_rehold()
+        self._apply_pending_gains()
         with self._lock:
             cmd, self._pending = self._pending, None
         if cmd is not None:
