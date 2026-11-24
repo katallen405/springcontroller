@@ -37,7 +37,7 @@ Segments CSV columns (one row per test; extra columns are kept):
 
 The tests (see PLAN_steps1-3.md):
   drift        springs off, let go, hands off. Gives initial acceleration
-               a0 (F_bias = M*a0) and the terminal drift speed.
+               a0 (F_bias = M*a0 + Fc) and the terminal drift speed.
   breakaway    pull with slowly rising force until it moves. Fs = gauge
                peak (force_n), or the wrist sensor on the UR3e.
   pull         steady pull at one force; several at different forces give
@@ -492,17 +492,28 @@ def summarize(rows: list[dict], tol: float = 0.2, T_override: float | None = Non
                       and np.isfinite(_float(r.get("ft_F_bias")))])
         M_best = M_osc if np.isfinite(M_osc) else ft_M
         b_best = b_osc if np.isfinite(b_osc) else (line["b"] if np.isfinite(line["b"]) else ft_b)
+        Fc_best = line["Fc"] if np.isfinite(line["Fc"]) else ft_Fc
+        Fc_or0 = abs(Fc_best) if np.isfinite(Fc_best) else 0.0
+        # Drifting from rest, the bias force is opposed by sliding friction
+        # from the start: M*a0 = F_bias - Fc (in the drift direction), and at
+        # terminal speed b*v = F_bias - Fc. So Fc is added back, signed along
+        # the drift. Without a friction estimate this reads low by Fc.
+        if np.isfinite(M_best) and np.isfinite(a0):
+            F_bias = M_best * a0 + np.sign(a0) * Fc_or0
+        else:
+            F_bias = ft_Fb
+        F_bias_check = (np.sign(v_term) * (b_best * abs(v_term) + Fc_or0)
+                        if np.isfinite(b_best) and np.isfinite(v_term) else np.nan)
         step1.append({
             "robot": robot, "pose": pose, "axis": ax,
             "M_kg": M_best, "b_Ns_per_m": b_best,
-            "Fc_N": line["Fc"] if np.isfinite(line["Fc"]) else ft_Fc,
+            "Fc_N": Fc_best,
             "Fs_N": Fs,
-            "F_bias_N": M_best * a0 if np.isfinite(M_best) and np.isfinite(a0) else ft_Fb,
+            "F_bias_N": F_bias,
             "M_osc": M_osc, "b_osc": b_osc, "n_osc": len(osc),
             "b_pull": line["b"], "Fc_pull": line["Fc"], "pull_r2": line["r2"], "n_pull": line["n"],
             "a0_drift": a0, "v_terminal": v_term, "n_drift": len(by["drift"]),
-            "F_bias_check_b_v": (b_best * v_term + (line["Fc"] if np.isfinite(line["Fc"]) else 0)
-                                 if np.isfinite(b_best) and np.isfinite(v_term) else np.nan),
+            "F_bias_check_b_v": F_bias_check,
             "ft_M": ft_M, "ft_b": ft_b, "ft_Fc": ft_Fc, "ft_F_bias": ft_Fb, "n_ft": len(ft_rows),
             "osc_vs_ft_M_ok": _ratio_ok(M_osc, ft_M, tol),
             "osc_vs_ft_b_ok": _ratio_ok(b_osc, ft_b, tol),

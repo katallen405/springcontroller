@@ -187,6 +187,16 @@ def test_drift_initial_acceleration_and_terminal_speed():
     assert r["terminal_reached"]
 
 
+def test_drift_with_friction_needs_fc_added_back():
+    M, b, Fc, Fb = 2.0, 4.0, 0.3, 1.0
+    t, x, _, _ = simulate(M, b, Fc=Fc, Fb=Fb, hold_until=0.5, T=4.0)
+    _, v, _ = derivs(x)
+    r = idfit.fit_drift(t, x, v)
+    assert r["a0"] == pytest.approx((Fb - Fc) / M, rel=0.2)
+    assert M * r["a0"] + Fc == pytest.approx(Fb, rel=0.1)
+    assert b * r["v_terminal"] + Fc == pytest.approx(Fb, rel=0.05)
+
+
 def test_drift_no_motion():
     t = np.arange(0, 3, DT)
     x = RNG.normal(0, 1e-5, len(t))
@@ -323,7 +333,9 @@ def test_summary_tables():
     s = step1[0]
     assert s["M_kg"] == pytest.approx(2.1)
     assert s["b_Ns_per_m"] == pytest.approx(5.2)
-    assert s["F_bias_N"] == pytest.approx(2.1 * 0.5)
+    # M*a0 plus the sliding friction the drift had to overcome
+    assert s["F_bias_N"] == pytest.approx(2.1 * 0.5 + 1.5)
+    assert s["F_bias_check_b_v"] == pytest.approx(5.2 * 0.1 + 1.5)
     assert s["Fs_N"] == pytest.approx(1.5)
     assert s["b_pull"] == pytest.approx(8.0)
     assert s["Fc_pull"] == pytest.approx(1.5)

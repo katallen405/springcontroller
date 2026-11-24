@@ -182,8 +182,8 @@ def fit_drift(t, x, v, threshold: float = DEFAULT_MOTION_THRESHOLD,
     What the arm does when let go with no springs and no hands, as a
     first-order step response (constant bias force against damping):
         v(t) = v_terminal * (1 - e^(-t/tau)),  tau = M/b
-      a0          initial acceleration = v_terminal/tau; F_bias = M*a0
-                  (minus any static friction it had to overcome)
+      a0          initial acceleration = v_terminal/tau; F_bias = M*a0 + Fc
+                  (sliding friction opposes the drift from the start)
       v_terminal  final drift speed; F_bias = b*v_terminal + Fc (cross-check)
       tau         M/b
     Falls back to a quadratic over the first window_s when the fit fails.
