@@ -8,6 +8,7 @@ no ROS nodes, nothing joins the ROS graph) and runs fit + summary on it.
 """
 
 import csv
+import json
 import os
 import sys
 
@@ -349,24 +350,28 @@ def test_summary_tables():
 
 # ── End to end: synthetic UR3e bag -> fit -> summary ──────────────────────────
 
-def _write_ur3e_bag(path, segments):
+def _write_ur3e_bag(path, segments, spring_states=()):
     """
     segments: list of (t_offset, t, x_tangent, f_tangent or None). The tip
     moves along the shoulder-pan tangent: joint 1 = x / r, where r is the
     tip's distance from the base z axis; the wrench is that tangential
     force, expressed in the tool frame.
+    spring_states: (time, snapshot dict) pairs written as the
+    virtual_spring_node's JSON ~/spring_states.
     """
     rosbag2_py = pytest.importorskip("rosbag2_py")
     from rclpy.serialization import serialize_message
     from geometry_msgs.msg import WrenchStamped
     from sensor_msgs.msg import JointState
+    from std_msgs.msg import String
 
     w = rosbag2_py.SequentialWriter()
     w.open(rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
            rosbag2_py.ConverterOptions("", ""))
     for i, (name, typ) in enumerate([("/joint_states", "sensor_msgs/msg/JointState"),
                                      (idbag.ROBOTS["ur3e"]["wrench"],
-                                      "geometry_msgs/msg/WrenchStamped")]):
+                                      "geometry_msgs/msg/WrenchStamped"),
+                                     (idbag.SPRING_STATES_TOPIC, "std_msgs/msg/String")]):
         try:
             meta = rosbag2_py.TopicMetadata(id=i, name=name, type=typ,
                                             serialization_format="cdr")
@@ -378,6 +383,9 @@ def _write_ur3e_bag(path, segments):
     P0, _ = idbag.make_fk("ur3e")(q_home[None])
     r = np.hypot(P0[0, 0], P0[0, 1])
     t_base = 1_700_000_000.0
+    for ts, snap in spring_states:
+        w.write(idbag.SPRING_STATES_TOPIC, serialize_message(String(data=json.dumps(snap))),
+                int((t_base + ts) * 1e9))
     for t_off, t, x, f in segments:
         for ti, xi, fi in zip(t, x, f if f is not None else [None] * len(t)):
             q = q_home.copy()
@@ -401,6 +409,79 @@ def _write_ur3e_bag(path, segments):
             ws.wrench.force.x, ws.wrench.force.y, ws.wrench.force.z = f_tool.tolist()
             w.write(idbag.ROBOTS["ur3e"]["wrench"], serialize_message(ws), ns + 1000)
     del w
+
+
+# ── Poses and spring states ─────────────────────────────────────────────────
+
+def _prow(robot="gen3", pose="", q=None, test="pull"):
+    return {"robot": robot, "pose": pose, "test": test,
+            "_q0": None if q is None else np.asarray(q, dtype=float)}
+
+
+def test_assign_poses_groups_by_joint_angles():
+    a = [0.0, 0.5, 1.0, -1.0, 0.0, 0.3, 0.0]
+    near = [x + 0.05 for x in a]                       # same pose, drifted a bit
+    far = list(a)
+    far[1] += 0.6                                      # shoulder moved: new pose
+    wrapped = list(a)
+    wrapped[0] = 2 * np.pi - 0.05                      # continuous joint, = -0.05
+    rows = [_prow(q=a), _prow(q=near), _prow(q=far), _prow(q=wrapped),
+            _prow(robot="gen2", q=a)]
+    impedance_id.assign_poses(rows, 0.15)
+    assert [r["pose"] for r in rows] == ["P1", "P1", "P2", "P1", "P1"]
+    assert all(r["pose_source"] == "auto" for r in rows)
+
+
+def test_assign_poses_keeps_typed_names_and_never_reuses_them():
+    a = [0.0] * 7
+    b = [0.5] * 7
+    rows = [_prow(pose="P1", q=b), _prow(q=a), _prow(pose="home", q=a)]
+    impedance_id.assign_poses(rows, 0.15)
+    assert rows[0]["pose"] == "P1" and rows[0]["pose_source"] == "csv"
+    assert rows[1]["pose"] == "P2"                     # P1 is taken by the typed label
+    assert rows[2]["pose"] == "home"
+
+
+def _snap(*springs, on=True, scale=1.0):
+    return {"springs_on": on, "spring_scale": scale, "springs": list(springs)}
+
+
+def _spring(name, typ="VirtualSpring", k=100.0, d=0.0, enabled=True):
+    return {"name": name, "type": typ, "stiffness": k, "damping": d, "enabled": enabled}
+
+
+def test_test_spring_from_states():
+    one = idbag.test_spring_from_states(_snap(_spring("tip", k=80, d=2),
+                                              _spring("off", enabled=False)))
+    assert (one["k"], one["d"], one["active"], one["note"]) == (80, 2, ["tip"], "")
+    # mid-ramp: what's acting is the scaled value
+    assert idbag.test_spring_from_states(_snap(_spring("tip", k=80), scale=0.5))["k"] == 40
+    two = idbag.test_spring_from_states(_snap(_spring("a"), _spring("b")))
+    assert np.isnan(two["k"]) and "several position springs" in two["note"]
+    extra = idbag.test_spring_from_states(_snap(_spring("tip"), _spring("j7", "JointSpring")))
+    assert extra["k"] == 100 and "j7" in extra["note"]
+    assert idbag.test_spring_from_states(_snap(_spring("tip"), on=False))["active"] == []
+    assert "no spring_states" in idbag.test_spring_from_states(None)["note"]
+
+
+def test_springs_at_picks_latest_snapshot():
+    data = {"springs_t": np.array([0.0, 1.0, 2.0]), "springs": ["a", "b", "c"]}
+    assert idbag.springs_at(data, 1.5) == "b"
+    assert idbag.springs_at(data, -1.0) == "a"
+    assert idbag.springs_at({}, 1.0) is None
+
+
+def test_apply_spring_states_fills_k_and_flags_springs_left_on():
+    data = {"springs_t": np.array([0.0]), "springs": [_snap(_spring("tip", k=120, d=3))]}
+    osc = {"test": "oscillation", "start": "0", "end": "4", "k_test": "", "d_test": ""}
+    impedance_id.apply_spring_states(osc, data)
+    assert (osc["k_test"], osc["d_test"], osc["k_source"]) == (120, 3, "bag")
+    typed = {"test": "oscillation", "start": "0", "end": "4", "k_test": "50", "d_test": ""}
+    impedance_id.apply_spring_states(typed, data)
+    assert typed["k_test"] == "50" and typed["k_source"] == "csv"
+    drift = {"test": "drift", "start": "0", "end": "4", "k_test": "", "d_test": ""}
+    impedance_id.apply_spring_states(drift, data)
+    assert "springs on" in drift["spring_note"]
 
 
 def _ramp(t, on, off, rise=0.15):
@@ -439,20 +520,28 @@ def test_end_to_end_ur3e_bag(tmp_path):
     segs = [(0.0, t1, x1, np.zeros_like(t1))]
     off = 6.0
     for tp, xp, fp in pulls:
-        # continue from where the arm ended, as a real bag would
-        segs.append((off, tp, xp + segs[-1][2][-1], fp))
+        # put back at the test pose before each test, as the procedure says
+        segs.append((off, tp, xp, fp))
         off += 5.0
+    # the test spring is on for the oscillation, everything off for the pulls
+    spring_on = {"springs_on": True, "spring_scale": 1.0, "springs": [
+        {"name": "test_tip", "type": "VirtualSpring", "enabled": True,
+         "stiffness": K, "damping": 0.0}]}
+    spring_off = {"springs_on": False, "spring_scale": 0.0, "springs": spring_on["springs"]}
+    states = [(tt, spring_on) for tt in np.arange(0.0, 5.0, 0.1)]
+    states += [(tt, spring_off) for tt in np.arange(5.0, 21.0, 0.1)]
     bag = tmp_path / "ur3e_test_bag"
-    _write_ur3e_bag(bag, segs)
+    _write_ur3e_bag(bag, segs, states)
 
     seg_csv = tmp_path / "segments.csv"
     with open(seg_csv, "w", newline="") as fh:
         wr = csv.writer(fh)
         wr.writerow(impedance_id.SEGMENT_COLUMNS)
-        wr.writerow([bag.name, "ur3e", "P1", "oscillation", 0.0, 5.0, "auto", "", K, 0, ""])
+        # pose, axis, k_test, d_test all blank: read from the bag
+        wr.writerow([bag.name, "ur3e", "", "oscillation", 0.0, 5.0, "", "", "", "", ""])
         for i in range(3):
             s0 = 6.0 + 5.0 * i
-            wr.writerow([bag.name, "ur3e", "P1", "pull", s0, s0 + 3.9, "auto", "", "", "", ""])
+            wr.writerow([bag.name, "ur3e", "", "pull", s0, s0 + 3.9, "", "", "", "", ""])
 
     out = tmp_path / "res"
     impedance_id.main(["fit", str(seg_csv), "--out", str(out)])
@@ -460,6 +549,12 @@ def test_end_to_end_ur3e_bag(tmp_path):
         res = list(csv.DictReader(fh))
     assert all(not r.get("error") for r in res), [r.get("error") for r in res]
     osc = res[0]
+    # filled in from the bag, not the CSV
+    assert osc["k_source"] == "bag" and float(osc["k_test"]) == K
+    assert float(osc["d_test"]) == 0.0
+    assert [r["pose"] for r in res] == ["P1"] * 4
+    assert all(r["pose_source"] == "auto" for r in res)
+    assert not any(r.get("spring_note") for r in res), [r.get("spring_note") for r in res]
     assert float(osc["M"]) == pytest.approx(M, rel=0.05)
     assert float(osc["b_robot"]) == pytest.approx(b, rel=0.15)
     assert float(osc["off_axis"]) < 0.1

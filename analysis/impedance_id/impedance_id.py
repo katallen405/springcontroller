@@ -10,8 +10,8 @@ Three commands, in the order you use them:
 
   overview BAG --robot R [--out DIR]
       Plots tip motion over time and drafts a segments CSV with one row
-      per burst of motion it finds. Fill in test/pose/axis/force/k/d and
-      fix the start/end times by reading the plot.
+      per burst of motion it finds. Fill in `test` (and force_n for gauge
+      tests), check start/end against the plot, delete non-test rows.
 
   fit SEGMENTS.csv [--out DIR]
       Fits every labeled segment. Writes DIR/results.csv and one check
@@ -23,16 +23,22 @@ Three commands, in the order you use them:
       the UR3e F/T cross-check) and the step-2 table (K_max per D vs.
       the passivity prediction).
 
-Segments CSV columns (one row per test; extra columns are kept):
+Segments CSV columns (one row per test; extra columns are kept).
+Required -- overview fills all but `test`:
   bag      bag folder (absolute, ~, or relative to the CSV's folder)
   robot    gen2 | gen3 | ur3e
-  pose     your label for the test pose (e.g. P1)
   test     drift | breakaway | pull | oscillation | stability
   start, end   seconds since the bag's first joint state (overview's time axis)
-  axis     x | y | z | auto | ux,uy,uz   (base frame; auto = main direction moved)
-  force_n  force-gauge reading (N): breakaway peak, or the steady pull force
-  k_test   test spring stiffness (N/m): oscillation and stability tests
-  d_test   test spring damping (N*s/m), default 0
+Only when needed (blank = worked out from the bag):
+  force_n  force-gauge reading (N): breakaway peak, or the steady pull force.
+           Needed for breakaway/pull on Gen2/Gen3 (the UR3e measures it).
+  k_test   test spring stiffness (N/m), oscillation/stability. Blank = read
+           from /virtual_spring_node/spring_states when the bag has it.
+  d_test   test spring damping (N*s/m). Blank = from spring_states, else 0.
+  pose     a name for the test pose. Blank = grouped automatically by the
+           joint angles at the segment's start (P1, P2, ...).
+  axis     x | y | z | auto | ux,uy,uz (base frame). Blank/auto = the
+           direction the tip mainly moved.
   notes    free text
 
 The tests (see PLAN_steps1-3.md):
@@ -55,7 +61,7 @@ gets a direct fit of M, b, Fc, F_bias from measured force (columns ft_*).
 That's the reference the force-free oscillation method is checked
 against. The UR3e launch file doesn't record a bag; record at least
   /joint_states  /force_torque_sensor_broadcaster/wrench
-  /virtual_spring_node/joint_torques  /rosout
+  /virtual_spring_node/joint_torques  /virtual_spring_node/spring_states  /rosout
 Check the wrench's frame_id once (--wrench-frame tool|base, default tool)
 and its sign with a known pull (--wrench-sign).
 
@@ -208,11 +214,13 @@ def cmd_overview(a):
     print(f"joint states: {data['joint_states_topic']}, {len(data['t'])} msgs, "
           f"{1 / dt:.0f} Hz, {tu[-1]:.1f} s")
     print(f"wrench: {'yes, frame ' + repr(data.get('wrench_frame')) if 'wrench_f' in data else 'no'}"
-          f";  spring torques: {'yes' if 'tau' in data else 'no'}")
+          f";  spring torques: {'yes' if 'tau' in data else 'no'}"
+          f";  spring states: {'yes (k_test/d_test read from the bag)' if 'springs' in data else 'no (type k_test/d_test)'}")
     print(f"{len(rows)} motion bursts -> {seg_path}")
     print(f"plot -> {png}")
-    print("Next: fill in pose/test/axis/force_n/k_test, fix start/end from the plot, "
-          "delete rows that aren't tests, then run `fit`.")
+    print("Next: fill in `test` for each row (and force_n for gauge tests), check start/end "
+          "against the plot, delete rows that aren't tests, then run `fit`. "
+          "See README step 3.")
 
 
 # ── fit ───────────────────────────────────────────────────────────────────────
@@ -288,7 +296,8 @@ def fit_segment(row, s, a):
         if k > 0:
             out.update(idfit.oscillation_to_mass_damping(r["wn"], r["zeta"], k, d))
         else:
-            out["warning"] = "oscillation test without k_test: no M or b"
+            out["warning"] = ("no test-spring stiffness (k_test blank and no single "
+                              "position spring in the bag's spring_states): no M or b")
     elif test == "stability":
         r = idfit.stability_metrics(s["t"], s["x"], s["v"], tau=s["tau"],
                                     hf_hz=a.hf_hz)
@@ -354,6 +363,19 @@ def plot_segment(path: Path, row, s, res, curve):
     plt.close(fig)
 
 
+def _keep_row(r: dict) -> bool:
+    if not r["test"]:
+        print(f"row {r['_n']}: no test, skipped")
+        return False
+    if r["test"] not in TESTS:
+        print(f"row {r['_n']}: test {r['test']!r} not one of {', '.join(TESTS)}, skipped")
+        return False
+    if r["robot"] not in idbag.ROBOTS:
+        print(f"row {r['_n']}: robot {r['robot']!r} not one of {list(idbag.ROBOTS)}, skipped")
+        return False
+    return True
+
+
 def load_segments(path: Path) -> list[dict]:
     with open(path, newline="") as fh:
         rows = list(csv.DictReader(fh))
@@ -365,29 +387,114 @@ def load_segments(path: Path) -> list[dict]:
     return rows
 
 
+def _wrap(d):
+    return (np.asarray(d, dtype=float) + np.pi) % (2 * np.pi) - np.pi
+
+
+def assign_poses(rows: list[dict], tol_rad: float = 0.15):
+    """
+    Fill blank `pose` from each row's starting joint angles (row["_q0"]):
+    rows of the same robot whose joints are all within tol_rad of a pose's
+    first segment share its name, P1, P2, ... in order of first
+    appearance. Angle differences wrap at +-pi (continuous joints).
+    Typed-in pose names are kept and never reused for an automatic pose.
+    Sets row["pose_source"] to "csv" or "auto".
+    """
+    used = {(r["robot"], (r.get("pose") or "").strip()) for r in rows
+            if (r.get("pose") or "").strip()}
+    refs: dict[str, list] = {}
+    for r in rows:
+        if (r.get("pose") or "").strip():
+            r["pose_source"] = "csv"
+            continue
+        q = r.get("_q0")
+        if q is None:
+            continue
+        robot = r["robot"]
+        for name, q_ref in refs.setdefault(robot, []):
+            if np.all(np.abs(_wrap(q - q_ref)) <= tol_rad):
+                r["pose"] = name
+                break
+        else:
+            k = len(refs[robot]) + 1
+            while (robot, f"P{k}") in used:
+                k += 1
+            name = f"P{k}"
+            used.add((robot, name))
+            refs[robot].append((name, q))
+            r["pose"] = name
+        r["pose_source"] = "auto"
+
+
+def apply_spring_states(row: dict, data: dict):
+    """
+    Fill blank k_test/d_test from the bag's spring_states, at the middle of
+    the segment, and flag springs left on during a test meant to have none.
+    Sets k_source ("csv" / "bag" / ""), springs_active, spring_note.
+    """
+    t_mid = 0.5 * (_float(row["start"]) + _float(row["end"]))
+    snap = idbag.springs_at(data, t_mid)
+    info = idbag.test_spring_from_states(snap)
+    row["springs_active"] = " ".join(info["active"])
+    notes = []
+    if row["test"] in ("oscillation", "stability"):
+        if np.isfinite(_float(row.get("k_test"))):
+            row["k_source"] = "csv"
+        elif np.isfinite(info["k"]):
+            row["k_test"] = info["k"]
+            row["k_source"] = "bag"
+            if not np.isfinite(_float(row.get("d_test"))):
+                row["d_test"] = info["d"]
+        else:
+            row["k_source"] = ""
+        if info["note"]:
+            notes.append(info["note"])
+    elif info["active"]:
+        notes.append(f"{row['test']} test with springs on: {', '.join(info['active'])}")
+    row["spring_note"] = "; ".join(notes)
+
+
 def cmd_fit(a):
     seg_path = Path(a.segments)
-    rows = load_segments(seg_path)
+    rows = [r for r in load_segments(seg_path) if _keep_row(r)]
     out = Path(a.out)
     (out / "plots").mkdir(parents=True, exist_ok=True)
     cache = BagCache(a)
+
+    # Pass 1: load bags, starting joint angles (for poses), spring settings.
+    for row in rows:
+        try:
+            row["_bag"] = resolve_bag(row["bag"], seg_path.parent)
+            data, _ = cache.get(row["_bag"], row["robot"])
+            t0 = _float(row["start"])
+            sel = (data["t"] >= t0) & (data["t"] <= t0 + 0.2)
+            if sel.any():
+                row["_q0"] = np.median(data["q"][sel], axis=0)
+            apply_spring_states(row, data)
+        except Exception as exc:
+            row["_error"] = str(exc)
+    assign_poses(rows, a.pose_tol_rad)
+
+    # Pass 2: fit.
     results = []
     for row in rows:
         n = row["_n"]
-        if not row["test"]:
-            print(f"row {n}: no test, skipped")
-            continue
-        if row["robot"] not in idbag.ROBOTS:
-            print(f"row {n}: robot {row['robot']!r} not one of {list(idbag.ROBOTS)}, skipped")
-            continue
         base = {k: v for k, v in row.items() if not k.startswith("_")}
         base["row"] = n
+        if row.get("_q0") is not None:
+            base["pose_q"] = " ".join(f"{v:.2f}" for v in row["_q0"])
+        if row.get("_error"):
+            base["error"] = row["_error"]
+            print(f"row {n}: ERROR {row['_error']}")
+            results.append(base)
+            continue
         try:
-            bag = resolve_bag(row["bag"], seg_path.parent)
-            data, fk = cache.get(bag, row["robot"])
+            data, fk = cache.get(row["_bag"], row["robot"])
             s = segment_signals(data, fk, _float(row["start"]), _float(row["end"]),
                                 row["axis"], a)
             res, curve = fit_segment(row, s, a)
+            if row.get("spring_note"):
+                res["warning"] = "; ".join(w for w in (res.get("warning"), row["spring_note"]) if w)
             png = out / "plots" / f"{n:03d}_{row['robot']}_{row.get('pose', '')}_{row['test']}.png"
             plot_segment(png, row, s, res, curve)
             base.update(res)
@@ -617,6 +724,9 @@ def main(argv=None):
                    help="hands-off seconds at each segment's end used to zero the wrench")
     p.add_argument("--hf-hz", type=float, default=10.0,
                    help="stability: power above this counts as chatter (default 10)")
+    p.add_argument("--pose-tol-rad", type=float, default=0.15,
+                   help="blank-pose rows whose starting joints all agree within this "
+                        "(rad) count as the same pose (default 0.15)")
     p.set_defaults(func=cmd_fit)
 
     p = sub.add_parser("summary", help="step-1 and step-2 tables from results.csv")

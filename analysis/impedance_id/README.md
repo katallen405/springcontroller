@@ -24,17 +24,49 @@ Run with the springcontroller venv python, with the workspace sourced.
 
 1. **Record the tests.**
    - Gen2/Gen3: the normal launch already records the topics needed.
+   - How to physically run each test: [Running the tests on the robot](#running-the-tests-on-the-robot).
+   - Gen2/Gen3: the normal launch already records the topics needed (on the `trajectory-spring` branch it records every `/virtual_spring_node/*` topic, including `spring_states`).
    - UR3e: record by hand:
      ```
      ros2 bag record /joint_states /force_torque_sensor_broadcaster/wrench \
-         /virtual_spring_node/joint_torques /rosout
+         /virtual_spring_node/joint_torques /virtual_spring_node/spring_states /rosout
      ```
    - **End every test with ~1 s hands-off.** On the UR3e this stretch zeros the wrist sensor.
+   - **Write down the gauge reading** after each breakaway or pull test (Gen2/Gen3). It's the only thing the bag can't record.
 2. **Overview:** plots the tip motion and drafts a segments CSV, one row per burst of motion.
    ```
    python3 analysis/impedance_id/impedance_id.py overview BAG --robot ur3e --out impedance_results
    ```
-3. **Label the CSV.** Fill in `pose`, `test`, `axis`, `force_n` (gauge reading), `k_test`, `d_test`. Fix start/end from the plot, and delete rows that aren't tests.
+   - The plot shades each burst, numbered by its row in the CSV.
+   - It also says whether the bag has `spring_states` (so the spring settings are read for you).
+3. **Fill in the CSV.** One row per test. The script reads everything else from the bag.
+   - **Every row: set `test`** to `drift`, `breakaway`, `pull`, `oscillation` or `stability`.
+   - **Every row: check `start` and `end`** against the plot.
+     - `start`: ~1 s before you let go or started pulling. The overview already sets it there.
+     - `end`: after the ~1 s hands-off.
+     - Times are seconds on the plot's x axis.
+   - **Delete rows that aren't tests:** moving the arm back to the pose, bumps, adjusting the cord.
+   - **Only when needed:**
+
+     | Column | Fill in when | What to put | If blank |
+     |---|---|---|---|
+     | `force_n` | breakaway or pull on **Gen2/Gen3** | the gauge's peak (breakaway) or the steady reading you held (pull), in N | UR3e: read from its wrist sensor. Gen2/Gen3: that row gives no force |
+     | `k_test` | oscillation/stability, only if the bag has no `spring_states` | test spring stiffness, N/m | read from the bag |
+     | `d_test` | same as `k_test` | test spring damping, N·s/m | read from the bag, else 0 |
+     | `pose` | optional | your own name for the pose | grouped by joint angles at the segment's start: P1, P2, … |
+     | `axis` | optional | `x`/`y`/`z` (robot base frame) to force a direction | the direction the tip mainly moved |
+     | `notes` | optional | anything | — |
+
+   - **Example**, a Gen3 session (bag path shortened). Only `test` and `force_n` were typed; the rest came from `overview`:
+     ```
+     bag,robot,pose,test,start,end,axis,force_n,k_test,d_test,notes
+     ~/gen3_bags/imp_0412,gen3,,drift,3.2,8.9,auto,,,,
+     ~/gen3_bags/imp_0412,gen3,,breakaway,12.0,17.5,auto,4.8,,,+x
+     ~/gen3_bags/imp_0412,gen3,,pull,21.4,25.0,auto,3.0,,,
+     ~/gen3_bags/imp_0412,gen3,,pull,28.9,32.1,auto,5.0,,,
+     ~/gen3_bags/imp_0412,gen3,,oscillation,40.3,46.0,auto,,,,spring 80 N/m
+     ```
+   - **Springs left on:** if the bag shows springs on during a drift, breakaway or pull row, `fit` warns. Those tests assume springs off.
 4. **Fit:** writes `results.csv`, plus one check plot per segment in `plots/`. **Look at the plots:** a bad fit still prints confident numbers.
    ```
    python3 analysis/impedance_id/impedance_id.py fit impedance_results/BAG_segments.csv --out impedance_results
@@ -43,6 +75,57 @@ Run with the springcontroller venv python, with the workspace sourced.
    ```
    python3 analysis/impedance_id/impedance_id.py summary impedance_results/results.csv
    ```
+
+## Running the tests on the robot
+
+### Equipment
+
+- **Force gauge:** a digital push-pull gauge. Needed for breakaway and pull on Gen2/Gen3; the UR3e measures force itself.
+  - **Capacity:** ~50 N (5 kg / 10 lbf). Test forces are ~1–15 N; 50 N leaves headroom without losing resolution.
+  - **Resolution:** 0.05 N or finer. **Accuracy:** ±0.5% of full scale or better.
+  - **Must have:**
+    - peak-hold mode (breakaway)
+    - live reading (pulls)
+    - tension (pull) measurement
+    - a hook attachment
+  - **Worth paying for:** USB/serial output at ≥ 10 Hz. Then the force can be logged over time and lined up with the bag (not supported in the script yet; it depends on the gauge's format). That would give Gen2/Gen3 pulls the same direct force fit the UR3e gets, and you'd no longer have to hold a pull perfectly steady.
+  - **Examples (check current models and prices):**
+    - Lab-grade with USB: Mark-10 Series 5 (M5-10, 50 N), Imada ZTA-50N.
+    - Budget: generic 50 N digital push-pull gauges ("HF-50" style, roughly $60–150). Many have peak hold and USB/RS-232.
+- **Cord:** ~1 m of non-stretch cord (Dyneema/Kevlar) with a loop. It goes around the gripper body near the tool point, and the gauge hooks onto the other end.
+- **Hook weights:** 0.5, 1, 2 kg. To check the gauge reads m·g, and to check the UR3e wrist sensor's frame and sign (hang one from the tool and see which way the force reads).
+- **Painter's tape:** mark the robot's base x/y/z directions and ±3 cm marks on the table under each test pose.
+- Optional: a phone recording video, for checking odd segments later.
+
+### Every session
+
+- Arm at the test pose.
+- Springs off except gravity comp, in its normal mode.
+- E-stop / torque-disable within reach.
+- **UR3e: a second person present.**
+- Bag recording running.
+- Cord loop on the tip, gauge hooked on (for breakaway/pull).
+
+### Every test
+
+- **Move the arm back to the test pose before starting.** Pose grouping uses the joint angles at each test's start (within ~0.15 rad, ~9°, per joint).
+- Pull or push along a taped axis line, keeping the cord level with the tip.
+- Keep motion to a few cm.
+- End with ~1 s hands-off.
+- Gen2/Gen3: write down the gauge reading.
+
+### Step by step
+
+| Test | Gauge mode | What you do | Repeats |
+|---|---|---|---|
+| `drift` | none | hold the tip still 1 s; open your hand away from it; let it drift 2–4 s; catch it | 3 |
+| `breakaway` | peak-hold | cord along the axis; raise the pull slowly over ~3 s until the tip moves; stop; write down the peak; reset the gauge | 3 each direction |
+| `pull` | live | pull so the reading holds steady (e.g. 3, then 5, then 8 N) for ~1 s while the tip moves 5–10 cm; let go; write down the force you held | 1 per force; both directions if you can |
+| `oscillation` | none | turn on one tip position spring (50–100 N/m, no damping); push the tip ~3 cm along the axis to the tape mark; hold 1 s; let go cleanly; hands off 3 s | 3 |
+| `stability` | none | as `oscillation`, at each (K, D) point of the sweep, with a ~2 cm push; stop a D row at the first buzz or swing that doesn't die out | 1 per point |
+
+- **Holding a pull steady by hand is the hardest part.** Watch the gauge, not the arm. A slow, steady walk-back works better than arm strength.
+- **Let go cleanly:** open your hand and move it away. Don't push off.
 
 ## The tests (segment `test` column)
 
@@ -230,6 +313,7 @@ These check the *script*, not a robot. Nothing joins the ROS graph.
 | Stability | a decaying swing is stable; a growing one isn't; a 30 Hz buzz in the torques is caught |
 | Kinematics | UR3e tip position at all-zero joints matches UR's published numbers; Gen2/Gen3 URDFs load, and turning the base joint keeps tip height and radius |
 | Summary | grouping, medians, F_bias, K_max per D and the passivity prediction come out right from a hand-made results table; nearby "auto" axes group together |
-| End to end | writes a fake UR3e bag (moving joints plus a wrist wrench in the tool frame), then runs `overview`, `fit` and `summary` exactly as you would. Checks the numbers come back and the force-free vs. sensor cross-check says "yes" |
+| Poses and springs | segments at nearly the same joint angles share a pose (including across the ±π wrap of a continuous joint); typed pose names are kept and never reused; the test spring's K and D are read from `spring_states` (scaled mid-ramp); several springs on, or springs left on during a spring-free test, give a warning instead of a guess |
+| End to end | writes a fake UR3e bag (moving joints, a wrist wrench in the tool frame, spring states), then runs `overview`, `fit` and `summary` exactly as you would, with `pose`, `axis`, `k_test` and `d_test` left blank. Checks the script fills them in from the bag, the numbers come back, and the force-free vs. sensor cross-check says "yes" |
 
 **What they can't tell you:** whether a real arm behaves like the simple model. That's what the check plots, the `r2` values and the UR3e cross-check are for.

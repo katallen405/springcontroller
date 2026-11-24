@@ -55,6 +55,10 @@ ROBOTS = {
 }
 
 TORQUE_TOPIC = "/virtual_spring_node/joint_torques"
+# 10 Hz JSON snapshot of every spring (stiffness, damping, enabled, ...).
+# Published by virtual_spring_node on the trajectory-spring branch and later;
+# older bags don't have it, and then k_test/d_test come from the CSV.
+SPRING_STATES_TOPIC = "/virtual_spring_node/spring_states"
 
 
 # ── Bag reading ───────────────────────────────────────────────────────────────
@@ -78,15 +82,19 @@ def bag_topics(bag: str) -> dict:
 
 
 def read_bag(bag: str, robot: str, joint_states_topic: str | None = None,
-             wrench_topic: str | None = None, torque_topic: str | None = TORQUE_TOPIC):
+             wrench_topic: str | None = None, torque_topic: str | None = TORQUE_TOPIC,
+             spring_states_topic: str | None = SPRING_STATES_TOPIC):
     """
     Returns a dict:
       t, q            joint-state times (s, from first joint state) and angles,
                       columns in ROBOTS[robot]["joints"] order
       wrench_t, wrench_f, wrench_frame   (if the wrench topic is in the bag)
       tau_t, tau      commanded spring torques (if recorded)
+      springs_t, springs   spring_states snapshots (parsed JSON), if recorded
       topics          every topic in the bag (for error messages)
     """
+    import json
+
     import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -102,7 +110,8 @@ def read_bag(bag: str, robot: str, joint_states_topic: str | None = None,
     if js_topic not in types:
         raise ValueError(f"{bag}: no {js_topic} (topics: {sorted(types)}). "
                          "Pass --joint-states.")
-    wanted = [js_topic] + [tp for tp in (w_topic, torque_topic) if tp and tp in types]
+    wanted = [js_topic] + [tp for tp in (w_topic, torque_topic, spring_states_topic)
+                           if tp and tp in types]
     r.set_filter(rosbag2_py.StorageFilter(topics=wanted))
     cls = {tp: get_message(types[tp]) for tp in wanted}
 
@@ -119,9 +128,17 @@ def read_bag(bag: str, robot: str, joint_states_topic: str | None = None,
     w_t, w_f, w_frame = [], [], ""
     tau_t, tau = [], []
     tau_names = None
+    ss_t, ss = [], []
     while r.has_next():
         topic, data, t_ns = r.read_next()
         msg = deserialize_message(data, cls[topic])
+        if topic == spring_states_topic:
+            try:
+                ss.append(json.loads(msg.data))
+            except (ValueError, AttributeError):
+                continue
+            ss_t.append(t_ns * 1e-9)   # std_msgs/String: no header, receive time
+            continue
         if topic == js_topic:
             names = list(msg.name)
             try:
@@ -157,6 +174,63 @@ def read_bag(bag: str, robot: str, joint_states_topic: str | None = None,
                    wrench_frame=w_frame, wrench_topic=w_topic)
     if tau_t:
         out.update(tau_t=np.asarray(tau_t) - t0, tau=np.asarray(tau))
+    if ss_t:
+        out.update(springs_t=np.asarray(ss_t) - t0, springs=ss)
+    return out
+
+
+# ── Spring states -> the test spring ──────────────────────────────────────────
+
+POSITION_SPRING_TYPES = ("VirtualSpring",)
+
+
+def springs_at(data: dict, t: float):
+    """The spring_states snapshot in effect at time t (latest at or before
+    t; the first one if t is before all of them). None if not recorded."""
+    if "springs_t" not in data:
+        return None
+    i = int(np.searchsorted(data["springs_t"], t, side="right")) - 1
+    return data["springs"][max(i, 0)]
+
+
+def active_springs(snapshot: dict) -> list[dict]:
+    """Springs actually pulling in a snapshot: springs switched on overall,
+    the spring enabled, and nonzero stiffness or damping."""
+    if not snapshot or not snapshot.get("springs_on", True):
+        return []
+    return [s for s in snapshot.get("springs", [])
+            if s.get("enabled", True)
+            and (s.get("stiffness", 0.0) or s.get("damping", 0.0))]
+
+
+def test_spring_from_states(snapshot: dict) -> dict:
+    """
+    What the bag says about springs during a segment:
+      k, d     stiffness and damping of the single active Cartesian
+               position spring (scaled by spring_scale, the on/off ramp);
+               NaN unless exactly one is active
+      active   names of every active spring
+      note     why k/d is NaN, or other springs that add stiffness
+    """
+    out = {"k": np.nan, "d": np.nan, "active": [], "note": ""}
+    if snapshot is None:
+        out["note"] = "no spring_states in bag"
+        return out
+    act = active_springs(snapshot)
+    out["active"] = [s.get("name", "?") for s in act]
+    pos = [s for s in act if s.get("type") in POSITION_SPRING_TYPES]
+    other = [s for s in act if s.get("type") not in POSITION_SPRING_TYPES]
+    scale = float(snapshot.get("spring_scale", 1.0) or 1.0)
+    if len(pos) == 1:
+        out["k"] = float(pos[0].get("stiffness", 0.0)) * scale
+        out["d"] = float(pos[0].get("damping", 0.0)) * scale
+    elif len(pos) > 1:
+        out["note"] = ("several position springs active (" + ", ".join(
+            s.get("name", "?") for s in pos) + "): set k_test/d_test in the CSV")
+    if other:
+        msg = "other active springs add stiffness: " + ", ".join(
+            f"{s.get('name', '?')} ({s.get('type', '?')})" for s in other)
+        out["note"] = f"{out['note']}; {msg}" if out["note"] else msg
     return out
 
 
